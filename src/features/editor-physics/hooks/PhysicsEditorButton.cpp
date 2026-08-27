@@ -58,11 +58,6 @@ void openLab() {
                 NotificationIcon::Success
             );
         }
-    } else if (workspace.empty()) {
-        auto result = workspace.capture(ui, paimon::editorphysics::CaptureRole::ReplaceA);
-        if (result.isOk()) {
-            PaimonNotify::show("La seleccion actual se capturo como cuerpo A.", NotificationIcon::Success);
-        }
     }
 
     if (auto* popup = paimon::editorphysics::PhysicsPopup::create()) popup->show();

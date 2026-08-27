@@ -43,6 +43,7 @@ private:
     void resetView();
     void refreshOverlays();
     void toggleHitboxes();
+    void toggleFocusedMotion();
     void openBodyEditor();
     void selectAt(cocos2d::CCPoint const& location);
     void reloadBodies();

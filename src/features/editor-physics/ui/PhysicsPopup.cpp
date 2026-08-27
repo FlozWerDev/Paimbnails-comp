@@ -49,6 +49,20 @@ constexpr float kWorldGroundHeight = 6000.f;
 constexpr int kCircleSegments = 18;
 constexpr float kTapSlack = 6.f;
 
+// A level whose background or ground colour is nearly black leaves the panel
+// unreadable, so the darkest tints are lifted just enough to tell them apart.
+ccColor3B liftDark(ccColor3B color) {
+    unsigned char const peak = std::max({color.r, color.g, color.b});
+    if (peak >= 70) return color;
+    if (peak < 10) return {70, 72, 90};
+    float const gain = 70.f / static_cast<float>(peak);
+    return {
+        static_cast<GLubyte>(std::min(255.f, color.r * gain)),
+        static_cast<GLubyte>(std::min(255.f, color.g * gain)),
+        static_cast<GLubyte>(std::min(255.f, color.b * gain)),
+    };
+}
+
 // Picking runs on the fixture's bounds: at preview scale that is as precise as
 // a finger gets, and it still tells two stacked objects apart.
 bool containsPoint(Fixture const& fixture, CCPoint point, float slack) {
@@ -236,6 +250,17 @@ bool PhysicsPopup::init() {
     hitboxToggle->setPosition({261.f, 140.f});
     menu->addChild(hitboxToggle);
 
+    if (auto* gravity = paimon::SpriteHelper::safeCreateWithFrameName("GJ_gravityBtn_001.png")) {
+        limitNodeSize(gravity, {15.f, 15.f}, 1.f, 0.05f);
+        auto* motionButton = CCMenuItemExt::createSpriteExtra(
+            gravity, [self](CCMenuItemSpriteExtra*) {
+                if (auto popup = self.lock()) popup->toggleFocusedMotion();
+            }
+        );
+        motionButton->setPosition({261.f, 120.f});
+        menu->addChild(motionButton);
+    }
+
     if (auto* gear = paimon::SpriteHelper::safeCreateWithFrameName("GJ_optionsBtn_001.png")) {
         limitNodeSize(gear, {15.f, 15.f}, 1.f, 0.05f);
         auto* editButton = CCMenuItemExt::createSpriteExtra(
@@ -243,7 +268,7 @@ bool PhysicsPopup::init() {
                 if (auto popup = self.lock()) popup->openBodyEditor();
             }
         );
-        editButton->setPosition({261.f, 120.f});
+        editButton->setPosition({261.f, 100.f});
         menu->addChild(editButton);
     }
 
@@ -328,7 +353,10 @@ bool PhysicsPopup::init() {
         updateFocusLabel();
     }
     if (PhysicsWorkspace::get().empty()) {
-        setStatus("Selecciona A, cierra y vuelve a abrir el laboratorio.", {255, 205, 95});
+        setStatus(
+            "Sin cuerpos: pulsa Elegir A, selecciona los objetos en el editor y vuelve a abrir.",
+            {255, 205, 95}
+        );
     } else {
         setStatus(
             "Listo: toca un objeto para elegirlo y afinalo con el engranaje. "
@@ -395,7 +423,7 @@ void PhysicsPopup::clearBodies() {
     rebuildPreview();
     updateFocusLabel();
     refreshBodies();
-    setStatus("Cuerpos borrados. Selecciona A y pulsa Elegir A.", {255, 205, 95});
+    setStatus("Cuerpos borrados. Pulsa Elegir A y elige los objetos en el editor.", {255, 205, 95});
 }
 
 void PhysicsPopup::preview() {
@@ -553,27 +581,33 @@ void PhysicsPopup::refreshBodies() {
 void PhysicsPopup::buildPreviewScenery(CCNode* clip, float width, float height) {
     auto* editor = LevelEditorLayer::get();
     auto* gameManager = GameManager::sharedState();
-    int const backgroundIndex = editor && editor->m_levelSettings
-        ? editor->m_levelSettings->m_backgroundIndex
-        : 0;
+    // GD numbers its backgrounds from one; index zero asks for a file that does
+    // not exist and the panel stayed black waiting for it.
+    int const backgroundIndex = std::max(
+        1, editor && editor->m_levelSettings ? editor->m_levelSettings->m_backgroundIndex : 1
+    );
 
-    if (auto* background = paimon::SpriteHelper::safeCreate(
-            gameManager->getBGTexture(backgroundIndex))) {
+    auto* background = paimon::SpriteHelper::safeCreate(gameManager->getBGTexture(backgroundIndex));
+    if (!background) {
+        log::warn("[PhysicsLab] sin textura de fondo para el indice {}", backgroundIndex);
+        background = paimon::SpriteHelper::safeCreate("game_bg_01_001.png");
+    }
+    if (background) {
         auto const size = background->getContentSize();
         if (size.width > 0.f && size.height > 0.f) {
             background->setScale(std::max(width / size.width, height / size.height));
             background->setPosition({width * 0.5f, height * 0.5f});
             if (editor && editor->m_background) {
-                background->setColor(editor->m_background->getColor());
+                background->setColor(liftDark(editor->m_background->getColor()));
             }
             clip->addChild(background, 0);
         }
     }
     if (editor && editor->m_groundLayer && editor->m_groundLayer->m_ground1Sprite) {
-        m_groundColor = editor->m_groundLayer->m_ground1Sprite->getColor();
+        m_groundColor = liftDark(editor->m_groundLayer->m_ground1Sprite->getColor());
     }
 
-    clip->addChild(CCLayerColor::create({0, 0, 0, 85}, width, height), 2);
+    clip->addChild(CCLayerColor::create({0, 0, 0, 45}, width, height), 2);
 }
 
 // The ground belongs at y = 0 in level coordinates, inside the world node, so it
@@ -716,6 +750,38 @@ void PhysicsPopup::toggleHitboxes() {
         m_showHitboxes
             ? "Hitboxes a la vista: cada cuerpo muestra la forma con la que choca."
             : "Hitboxes ocultas: la vista queda con los objetos del juego solamente.",
+        {170, 225, 185}
+    );
+}
+
+// The gear reaches the same switch, but flipping a body while watching it fall
+// is the thing you want one tap away.
+void PhysicsPopup::toggleFocusedMotion() {
+    if (m_focusIndex < 0 || static_cast<std::size_t>(m_focusIndex) >= m_resolved.size()) {
+        setStatus(
+            "Toca un cuerpo en la vista para poder cambiarlo entre dinamico y fijo.",
+            {255, 205, 95}
+        );
+        return;
+    }
+    auto& workspace = PhysicsWorkspace::get();
+    std::size_t const index = static_cast<std::size_t>(m_focusIndex);
+    auto result = workspace.toggleMotion(index);
+    if (result.isErr()) {
+        setStatus(result.unwrapErr(), {255, 190, 100});
+        return;
+    }
+    bool const dynamic = result.unwrap() == Motion::Dynamic;
+    if (auto* material = workspace.material(index);
+        material && dynamic && material->gravityScale <= 0.f) {
+        material->gravityScale = 1.f;
+    }
+    reloadBodies();
+    setStatus(
+        fmt::format(
+            "Cuerpo {} ahora es {}.",
+            bodyName(index), dynamic ? "dinamico" : "fijo"
+        ),
         {170, 225, 185}
     );
 }

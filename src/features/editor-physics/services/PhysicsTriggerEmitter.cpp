@@ -65,17 +65,6 @@ std::vector<int> freeGroups(LevelEditorLayer* editor, std::size_t count) {
     return groups;
 }
 
-bool prepareProbe(Ref<GameObject>& output, int objectID) {
-    output = GameObject::createWithKey(objectID);
-    return output && output->m_objectID == objectID;
-}
-
-std::string saveObject(GameObject* object, LevelEditorLayer* editor) {
-    std::string save(object->getSaveString(editor));
-    if (save.empty() || save.back() != ';') save += ';';
-    return save;
-}
-
 bool assignGroup(
     LevelEditorLayer* editor,
     std::vector<GameObject*> const& objects,
@@ -209,18 +198,6 @@ Result<EmitReport> emitToEditor(
     }
     for (auto index : dynamicBodies) animGroups[index] = groups[groupCursor++];
 
-    Ref<GameObject> keyframeProbe;
-    Ref<GameObject> triggerProbe;
-    if (!prepareProbe(keyframeProbe, kKeyframeObject) ||
-        !prepareProbe(triggerProbe, kKeyframeTrigger)) {
-        return Err("Esta version de GD no expone el sistema de keyframes.");
-    }
-    auto* keyframe = typeinfo_cast<KeyframeGameObject*>(keyframeProbe.data());
-    auto* animTrigger = typeinfo_cast<KeyframeAnimTriggerObject*>(triggerProbe.data());
-    if (!keyframe || !animTrigger) {
-        return Err("Los bindings no reconocieron los objetos de keyframe.");
-    }
-
     std::vector<AssignedGroup> assigned;
     for (auto index : dynamicBodies) {
         if (preferredGroups[index] > 0) continue;
@@ -242,8 +219,6 @@ Result<EmitReport> emitToEditor(
     // the timeline. Uniform slices keep the bake independent of whether GD reads a
     // keyframe's duration as the segment reaching it or the one leaving it.
     float const step = trace.frames.back().time / static_cast<float>(samples - 1);
-    std::string payload;
-    payload.reserve(maximumObjects * 90);
     std::vector<int> animations;
     animations.reserve(dynamicBodies.size());
     EmitReport report;
@@ -251,13 +226,23 @@ Result<EmitReport> emitToEditor(
     report.assignedObjects = assigned.size();
     report.groups = requiredGroups;
 
+    // Every object goes through the editor's own create path. Rebuilding a
+    // keyframe from the save string of a loose probe reached
+    // GJEffectManager::getColorSprite with no colour channels behind it, and GD
+    // crashed there instead of creating the object.
+    auto* created = CCArray::create();
+    auto abort = [&](std::string message) -> Result<EmitReport> {
+        for (auto* item : CCArrayExt<CCObject*>(created)) {
+            if (auto* object = typeinfo_cast<GameObject*>(item)) editor->removeObject(object, true);
+        }
+        rollbackAssignments(editor, assigned);
+        return Err(std::move(message));
+    };
+
     std::size_t triggerSlot = 0;
     for (auto index : dynamicBodies) {
         auto* animation = editor->createNewKeyframeAnim();
-        if (!animation) {
-            rollbackAssignments(editor, assigned);
-            return Err("GD no pudo reservar una animacion de keyframes.");
-        }
+        if (!animation) return abort("GD no pudo reservar una animacion de keyframes.");
         int const animationID = animation->getTag();
         animations.push_back(animationID);
 
@@ -268,14 +253,23 @@ Result<EmitReport> emitToEditor(
             float const degrees = -pose.angle * kRadiansToDegrees;
             spins = spins || std::abs(degrees) > 0.002f;
 
-            keyframe->resetGroups();
-            keyframe->addToGroup(animGroups[index]);
-            keyframe->setPosition({pose.position.x, pose.position.y});
+            CCPoint const position{pose.position.x, pose.position.y};
+            auto* keyframe = typeinfo_cast<KeyframeGameObject*>(
+                editor->createObject(kKeyframeObject, position, true)
+            );
+            if (!keyframe) return abort("Esta version de GD no expone el sistema de keyframes.");
+            created->addObject(keyframe);
+
+            // The create path drops the object on the editor grid, so the sampled
+            // position goes back over it.
+            keyframe->setPosition(position);
             keyframe->setRotation(degrees);
+            keyframe->addToGroup(animGroups[index]);
             keyframe->m_keyframeGroup = animationID;
             keyframe->m_keyframeIndex = static_cast<int>(sample);
             keyframe->m_targetGroupID = targetGroups[index];
             keyframe->m_duration = step;
+            keyframe->m_spawnDelay = 0.f;
             keyframe->m_timeMode = 0;
             keyframe->m_curve = false;
             keyframe->m_closeLoop = false;
@@ -287,15 +281,33 @@ Result<EmitReport> emitToEditor(
             keyframe->m_lineOpacity = 1.f;
             keyframe->m_easingType = EasingType::None;
             keyframe->m_easingRate = 2.f;
-            payload += saveObject(keyframe, editor);
+            // The keyframe format is not documented anywhere, so the first one of
+            // a bake is logged to be read back against what GD stored.
+            if (report.keyframes == 0) {
+                log::info("[PhysicsLab] keyframe: {}", std::string(keyframe->getSaveString(editor)));
+            }
             ++report.objects;
             ++report.keyframes;
         }
 
-        animTrigger->resetGroups();
-        animTrigger->setPosition({triggerX, triggerY - static_cast<float>(triggerSlot++) * 30.f});
+        CCPoint const triggerPosition{
+            triggerX,
+            triggerY - static_cast<float>(triggerSlot++) * 30.f,
+        };
+        auto* animTrigger = typeinfo_cast<KeyframeAnimTriggerObject*>(
+            editor->createObject(kKeyframeTrigger, triggerPosition, true)
+        );
+        if (!animTrigger) return abort("Los bindings no reconocieron el trigger de keyframes.");
+        created->addObject(animTrigger);
+
+        animTrigger->setPosition(triggerPosition);
         animTrigger->m_targetGroupID = targetGroups[index];
         animTrigger->m_animationID = animGroups[index];
+        // The animation lasts what the simulation lasted. Left at whatever a fresh
+        // trigger carries, the whole fall replayed in a fraction of the time.
+        animTrigger->m_duration = trace.frames.back().time;
+        animTrigger->m_easingType = EasingType::None;
+        animTrigger->m_easingRate = 2.f;
         animTrigger->m_timeMod = 1.f;
         animTrigger->m_positionXMod = 1.f;
         animTrigger->m_positionYMod = 1.f;
@@ -304,20 +316,11 @@ Result<EmitReport> emitToEditor(
         animTrigger->m_scaleXMod = 1.f;
         animTrigger->m_scaleYMod = 1.f;
         animTrigger->m_isMultiTriggered = true;
-        payload += saveObject(animTrigger, editor);
+        if (report.triggers == 0) {
+            log::info("[PhysicsLab] trigger: {}", std::string(animTrigger->getSaveString(editor)));
+        }
         ++report.objects;
         ++report.triggers;
-    }
-
-    CCArray* created = editor->createObjectsFromString(payload, false, true);
-    if (!created || created->count() != report.objects) {
-        if (created) {
-            for (auto* item : CCArrayExt<CCObject*>(created)) {
-                if (auto* object = typeinfo_cast<GameObject*>(item)) editor->removeObject(object, true);
-            }
-        }
-        rollbackAssignments(editor, assigned);
-        return Err("GD no pudo crear todos los objetos; se revirtieron los cambios.");
     }
 
     LastEmission next;
