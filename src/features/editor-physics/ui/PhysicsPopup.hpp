@@ -42,6 +42,10 @@ private:
     void adjustZoom(float factor);
     void resetView();
     void refreshOverlays();
+    void toggleHitboxes();
+    void openBodyEditor();
+    void selectAt(cocos2d::CCPoint const& location);
+    void reloadBodies();
     void drawBodyOutline(std::size_t index);
     void drawTrajectory();
     void cycleFocus(int direction);
@@ -63,11 +67,13 @@ private:
     bool m_playing = false;
     float m_elapsed = 0.f;
     int m_focusIndex = -1;
+    int m_selectedObject = -1;
     Vec2 m_camera{};
     float m_camScale = 1.f;
     float m_zoom = 1.f;
     bool m_manualCamera = false;
     bool m_panning = false;
+    bool m_showHitboxes = false;
     cocos2d::ccColor3B m_groundColor{30, 30, 45};
 
     cocos2d::CCNode* m_previewWorld = nullptr;

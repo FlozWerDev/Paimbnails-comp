@@ -5,23 +5,31 @@
 
 namespace paimon::editorphysics {
 
+// Four corners cover a rotated block and three a slope, but a silhouette hull
+// keeps the diagonal faces it traced, so it needs the extra room.
+constexpr int kMaxVertices = 8;
+
 struct Vec2 {
     float x = 0.f;
     float y = 0.f;
 };
 
 // A fixture is a box unless it says otherwise: `radius` turns it into a circle
-// (orbs, rings, coins) and `vertices` into a convex polygon (slopes, and any
-// object the editor rotated off the axes). `halfSize` always holds the local
-// bounding half extents, because mass, inertia and substepping only need that.
-// Polygon vertices are relative to `offset` and wound counter-clockwise, which
-// is what makes the solver's edge normals point outwards.
+// (orbs, rings, coins) and `vertices` into a convex polygon (slopes, silhouette
+// hulls, and any object the editor rotated off the axes). `halfSize` always
+// holds the local bounding half extents, because mass, inertia and substepping
+// only need that. Polygon vertices are relative to `offset` and wound
+// counter-clockwise, which is what makes the solver's edge normals point
+// outwards. Negative friction or restitution means the body's own value wins,
+// so an untouched fixture behaves exactly like the body it belongs to.
 struct Fixture {
     Vec2 offset;
     Vec2 halfSize;
     float radius = 0.f;
     int vertexCount = 0;
-    Vec2 vertices[4]{};
+    Vec2 vertices[kMaxVertices]{};
+    float friction = -1.f;
+    float restitution = -1.f;
 };
 
 enum class Motion {

@@ -93,7 +93,7 @@ struct State {
 // slope on its real hypotenuse.
 struct Shape {
     Vec2 center;
-    Vec2 points[4];
+    Vec2 points[kMaxVertices];
     int count = 0;
     float radius = 0.f;
 };
@@ -122,7 +122,7 @@ Shape worldFixture(State const& state, Fixture const& fixture) {
         return shape;
     }
     if (fixture.vertexCount >= 3) {
-        shape.count = std::min(fixture.vertexCount, 4);
+        shape.count = std::min(fixture.vertexCount, kMaxVertices);
         for (int i = 0; i < shape.count; ++i) {
             shape.points[i] = shape.center + rotate(fixture.vertices[i], state.angle);
         }
@@ -304,6 +304,15 @@ bool buildManifold(Shape const& a, Shape const& b, Manifold& manifold) {
     if (circleA) return collideCirclePolygon(a, b, true, manifold);
     if (circleB) return collideCirclePolygon(b, a, false, manifold);
     return collidePolygons(a, b, manifold);
+}
+
+// A fixture only overrides its body when it was given a value of its own.
+float frictionOf(BodySpec const& body, Fixture const& fixture) {
+    return std::max(0.f, fixture.friction >= 0.f ? fixture.friction : body.friction);
+}
+
+float restitutionOf(BodySpec const& body, Fixture const& fixture) {
+    return std::max(0.f, fixture.restitution >= 0.f ? fixture.restitution : body.restitution);
 }
 
 float bodyInertia(BodySpec const& body, float mass) {
@@ -564,11 +573,12 @@ SimulationTrace simulate(
                             constraint.b = j;
                             constraint.normal = manifold.normal;
                             constraint.count = manifold.count;
-                            constraint.restitution =
-                                std::min(bodies[i].restitution, bodies[j].restitution);
+                            constraint.restitution = std::min(
+                                restitutionOf(bodies[i], fixtureA),
+                                restitutionOf(bodies[j], fixtureB)
+                            );
                             constraint.friction = std::sqrt(
-                                std::max(0.f, bodies[i].friction) *
-                                std::max(0.f, bodies[j].friction)
+                                frictionOf(bodies[i], fixtureA) * frictionOf(bodies[j], fixtureB)
                             );
                             for (int point = 0; point < manifold.count; ++point) {
                                 constraint.points[point].point = manifold.points[point];

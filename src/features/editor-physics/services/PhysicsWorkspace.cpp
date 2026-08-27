@@ -139,10 +139,11 @@ Result<CaptureReport> PhysicsWorkspace::capture(EditorUI* ui, CaptureRole role) 
 
     CapturedBody body;
     body.motion = motionFor(role);
-    body.gravityScale = body.motion == Motion::Dynamic ? 1.f : 0.f;
+    body.material.gravityScale = body.motion == Motion::Dynamic ? 1.f : 0.f;
     body.exactGroup = exactGroup(ui->m_editorLayer, objects);
     body.objects.reserve(objects.size());
     for (auto* object : objects) body.objects.emplace_back(object);
+    body.materials.resize(objects.size());
 
     if (target < m_bodies.size()) {
         m_bodies[target] = std::move(body);
@@ -179,17 +180,22 @@ Result<std::vector<ResolvedBody>> PhysicsWorkspace::resolve(
     bool hasStatic = false;
     for (auto const& captured : m_bodies) {
         ResolvedBody body;
+        auto const& material = captured.material;
         body.spec.motion = captured.motion;
-        bool const driven = captured.motion == Motion::Dynamic && captured.gravityScale > 0.f;
-        body.spec.velocity = driven
-            ? Vec2{config.velocityX, config.velocityY}
-            : Vec2{};
-        body.spec.angularVelocity = driven
-            ? config.spinDegrees * kDegreesToRadians
-            : 0.f;
-        body.spec.gravityScale = captured.gravityScale;
-        body.spec.restitution = config.restitution;
-        body.spec.friction = config.friction;
+        // A body with its own launch is launched whatever its gravity does; the
+        // lab velocity still only reaches the ones gravity is pulling on.
+        bool const driven = captured.motion == Motion::Dynamic && material.gravityScale > 0.f;
+        body.spec.velocity = material.customLaunch
+            ? material.launch
+            : driven ? Vec2{config.velocityX, config.velocityY} : Vec2{};
+        body.spec.angularVelocity = (material.customLaunch
+            ? material.spinDegrees
+            : driven ? config.spinDegrees : 0.f) * kDegreesToRadians;
+        body.spec.gravityScale = material.gravityScale;
+        body.spec.restitution = material.restitution >= 0.f
+            ? material.restitution
+            : config.restitution;
+        body.spec.friction = material.friction >= 0.f ? material.friction : config.friction;
 
         std::vector<ObjectShape> shapes;
         shapes.reserve(captured.objects.size());
@@ -222,7 +228,12 @@ Result<std::vector<ResolvedBody>> PhysicsWorkspace::resolve(
         for (std::size_t index = 0; index < body.objects.size(); ++index) {
             auto* object = body.objects[index];
             auto const& shape = shapes[index];
-            body.spec.fixtures.push_back(fixtureFrom(shape, body.spec.position));
+            auto fixture = fixtureFrom(shape, body.spec.position);
+            if (index < captured.materials.size()) {
+                fixture.friction = captured.materials[index].friction;
+                fixture.restitution = captured.materials[index].restitution;
+            }
+            body.spec.fixtures.push_back(fixture);
 
             BodyVisual visual;
             visual.object = object;
@@ -255,11 +266,14 @@ Result<std::vector<ResolvedBody>> PhysicsWorkspace::resolve(
             switch (shape.kind) {
                 case ShapeKind::Ramp: ++body.shapes.ramps; break;
                 case ShapeKind::Round: ++body.shapes.rounds; break;
+                case ShapeKind::Hull: ++body.shapes.hulls; break;
                 case ShapeKind::Box: ++body.shapes.boxes; break;
             }
             area += shape.halfSize.x * shape.halfSize.y * 4.f;
         }
-        body.spec.mass = std::clamp(area / 900.f, 0.1f, 1000.f);
+        body.spec.mass = material.mass > 0.f
+            ? material.mass
+            : std::clamp(area / 900.f, 0.1f, 1000.f);
         body.preferredGroup = exactGroup(ui->m_editorLayer, body.objects);
         resolved.push_back(std::move(body));
         hasDynamic |= captured.motion == Motion::Dynamic;
@@ -280,8 +294,17 @@ Result<Motion> PhysicsWorkspace::toggleMotion(std::size_t index) {
     if (index >= m_bodies.size()) return Err("Ese cuerpo aun no fue capturado.");
     auto& motion = m_bodies[index].motion;
     motion = motion == Motion::Dynamic ? Motion::Static : Motion::Dynamic;
-    if (motion == Motion::Dynamic && index == 1) m_bodies[index].gravityScale = 0.f;
+    if (motion == Motion::Dynamic && index == 1) m_bodies[index].material.gravityScale = 0.f;
     return Ok(motion);
+}
+
+BodyMaterial* PhysicsWorkspace::material(std::size_t index) {
+    return index < m_bodies.size() ? &m_bodies[index].material : nullptr;
+}
+
+ObjectMaterial* PhysicsWorkspace::objectMaterial(std::size_t index, std::size_t object) {
+    if (index >= m_bodies.size() || object >= m_bodies[index].materials.size()) return nullptr;
+    return &m_bodies[index].materials[object];
 }
 
 void PhysicsWorkspace::beginCapture(CaptureRole role) {

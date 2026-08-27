@@ -3,7 +3,9 @@
 #include "../../../core/modules/ModuleRegistry.hpp"
 #include "../../../utils/PaimonNotification.hpp"
 #include "../../../utils/SpriteHelper.hpp"
+#include "../services/PhysicsObjectArt.hpp"
 #include "../services/PhysicsTriggerEmitter.hpp"
+#include "PhysicsBodyPopup.hpp"
 
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/binding/EditorUI.hpp>
@@ -12,7 +14,6 @@
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/LevelEditorLayer.hpp>
 #include <Geode/binding/LevelSettingsObject.hpp>
-#include <Geode/binding/ObjectToolbox.hpp>
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -46,76 +47,18 @@ constexpr float kScrollZoomOut = 0.88f;
 constexpr float kWorldGroundWidth = 30000.f;
 constexpr float kWorldGroundHeight = 6000.f;
 constexpr int kCircleSegments = 18;
-// Text and counter objects need a font texture handed to them, so they never go
-// through the create-by-key path.
-constexpr int kTextObjectID = 914;
-constexpr int kCounterObjectID = 1615;
+constexpr float kTapSlack = 6.f;
 
-std::string bodyName(std::size_t index) {
-    if (index == 0) return "A";
-    if (index == 1) return "B";
-    return fmt::format("Extra {}", index - 1);
-}
-
-// The same recipe the editor uses for its own object buttons: build the object
-// from its ID, run the setup GD would have run, then parent the detail sprite to
-// the object itself so it draws outside the editor's batch layers.
-CCNode* cloneObjectArt(BodyVisual const& visual) {
-    if (visual.objectID <= 0 || visual.objectID == kTextObjectID ||
-        visual.objectID == kCounterObjectID) {
-        return nullptr;
+// Picking runs on the fixture's bounds: at preview scale that is as precise as
+// a finger gets, and it still tells two stacked objects apart.
+bool containsPoint(Fixture const& fixture, CCPoint point, float slack) {
+    float const dx = std::abs(point.x - fixture.offset.x);
+    float const dy = std::abs(point.y - fixture.offset.y);
+    if (fixture.radius > 0.f) {
+        float const reach = fixture.radius + slack;
+        return dx * dx + dy * dy <= reach * reach;
     }
-    auto* clone = GameObject::createWithKey(visual.objectID);
-    if (!clone) return nullptr;
-
-    char const* frame = ObjectToolbox::sharedState()->intKeyToFrame(visual.objectID);
-    if (frame) {
-        clone->customSetup();
-        clone->addColorSprite(frame);
-        clone->setupCustomSprites(frame);
-    }
-    if (auto* detail = clone->m_colorSprite) {
-        if (!clone->m_unk28c) clone->addColorSpriteToSelf();
-        detail->setColor(visual.detailColor);
-        detail->setOpacity(visual.detailOpacity);
-    }
-    clone->setRScaleX(visual.scaleX);
-    clone->setRScaleY(visual.scaleY);
-    clone->setRRotation(visual.rotation);
-    clone->setFlipX(visual.flipX);
-    clone->setFlipY(visual.flipY);
-    clone->setColor(visual.baseColor);
-    clone->setOpacity(visual.baseOpacity);
-    log::info(
-        "[DEBUG-phys-art] clone id={} frame={} children={} detail={} detail-parent={} "
-        "locked={} base-opacity={} detail-opacity={}",
-        visual.objectID, frame ? frame : "<null>", clone->getChildrenCount(),
-        clone->m_colorSprite != nullptr,
-        clone->m_colorSprite && clone->m_colorSprite->getParent() != nullptr,
-        clone->m_unk28c, visual.baseOpacity, visual.detailOpacity
-    );
-    return clone;
-}
-
-// Last resort for objects that refuse to be rebuilt: their main frame stretched
-// over the hitbox, which is what the whole preview used to do.
-CCNode* stretchedObjectArt(BodyVisual const& visual) {
-    log::info("[DEBUG-phys-art] fallback id={}", visual.objectID);
-    if (!visual.object) return nullptr;
-    auto* frame = visual.object->displayFrame();
-    if (!frame) return nullptr;
-    auto* sprite = CCSprite::createWithSpriteFrame(frame);
-    if (!sprite) return nullptr;
-    auto const content = sprite->getContentSize();
-    if (content.width <= 0.f || content.height <= 0.f) return nullptr;
-    sprite->setScaleX(visual.size.x / content.width);
-    sprite->setScaleY(visual.size.y / content.height);
-    sprite->setRotation(visual.rotation);
-    sprite->setFlipX(visual.flipX);
-    sprite->setFlipY(visual.flipY);
-    sprite->setColor(visual.baseColor);
-    sprite->setOpacity(visual.baseOpacity);
-    return sprite;
+    return dx <= fixture.halfSize.x + slack && dy <= fixture.halfSize.y + slack;
 }
 
 CCMenuItemSpriteExtra* textButton(
@@ -285,6 +228,25 @@ bool PhysicsPopup::init() {
         menu->addChild(button);
     }
 
+    auto* hitboxToggle = CCMenuItemExt::createTogglerWithStandardSprites(
+        0.3f, [self](CCMenuItemToggler*) {
+            if (auto popup = self.lock()) popup->toggleHitboxes();
+        }
+    );
+    hitboxToggle->setPosition({261.f, 140.f});
+    menu->addChild(hitboxToggle);
+
+    if (auto* gear = paimon::SpriteHelper::safeCreateWithFrameName("GJ_optionsBtn_001.png")) {
+        limitNodeSize(gear, {15.f, 15.f}, 1.f, 0.05f);
+        auto* editButton = CCMenuItemExt::createSpriteExtra(
+            gear, [self](CCMenuItemSpriteExtra*) {
+                if (auto popup = self.lock()) popup->openBodyEditor();
+            }
+        );
+        editButton->setPosition({261.f, 120.f});
+        menu->addChild(editButton);
+    }
+
     textButton(menu, "Elegir A", 47.f, 73.f, 70, "GJ_button_04.png", [self] {
         if (auto popup = self.lock()) popup->beginCapture(CaptureRole::ReplaceA);
     });
@@ -369,7 +331,8 @@ bool PhysicsPopup::init() {
         setStatus("Selecciona A, cierra y vuelve a abrir el laboratorio.", {255, 205, 95});
     } else {
         setStatus(
-            "Listo: previsualiza antes de crear los triggers. Arrastra la vista y usa la rueda para el zoom.",
+            "Listo: toca un objeto para elegirlo y afinalo con el engranaje. "
+            "Arrastra la vista, usa la rueda para el zoom y la casilla para las hitboxes.",
             {170, 225, 185}
         );
     }
@@ -409,6 +372,7 @@ void PhysicsPopup::toggleBMotion() {
     m_playing = false;
     m_trace = {};
     m_resolved.clear();
+    m_selectedObject = -1;
     rebuildPreview();
     refreshBodies();
     setStatus(
@@ -425,6 +389,7 @@ void PhysicsPopup::clearBodies() {
     m_trace = {};
     m_playing = false;
     m_focusIndex = -1;
+    m_selectedObject = -1;
     m_zoom = 1.f;
     m_manualCamera = false;
     rebuildPreview();
@@ -446,12 +411,13 @@ void PhysicsPopup::preview() {
         shapes.boxes += body.shapes.boxes;
         shapes.ramps += body.shapes.ramps;
         shapes.rounds += body.shapes.rounds;
+        shapes.hulls += body.shapes.hulls;
     }
     setStatus(
         fmt::format(
-            "{} cuerpos | {} bloques + {} rampas + {} redondos | {} impactos | "
+            "{} cuerpos | {} bloques + {} rampas + {} redondos + {} siluetas | {} impactos | "
             "impulso pico {:.1f} | {} frames | hasta {} objetos",
-            m_resolved.size(), shapes.boxes, shapes.ramps, shapes.rounds,
+            m_resolved.size(), shapes.boxes, shapes.ramps, shapes.rounds, shapes.hulls,
             m_trace.impacts, m_trace.peakImpulse, m_trace.frames.size(), estimate
         ),
         {170, 225, 185}
@@ -614,12 +580,28 @@ void PhysicsPopup::buildPreviewScenery(CCNode* clip, float width, float height) 
 // scrolls with the camera. Glued to the bottom of the panel it only pretended to
 // be a floor that bodies then fell straight through.
 void PhysicsPopup::addWorldGround() {
-    auto* ground = CCLayerColor::create(
+    auto* fill = CCLayerColor::create(
         {m_groundColor.r, m_groundColor.g, m_groundColor.b, 235},
         kWorldGroundWidth, kWorldGroundHeight
     );
-    ground->setPosition({-kWorldGroundWidth * 0.5f, -kWorldGroundHeight});
-    m_previewWorld->addChild(ground, -2);
+    fill->setPosition({-kWorldGroundWidth * 0.5f, -kWorldGroundHeight});
+    m_previewWorld->addChild(fill, -3);
+
+    // The level's own ground tile repeated across the world. It is a loose
+    // texture rather than a sheet frame, so GL_REPEAT tiles it directly.
+    auto* editor = LevelEditorLayer::get();
+    auto* source = editor && editor->m_groundLayer
+        ? editor->m_groundLayer->m_ground1Sprite
+        : nullptr;
+    if (auto* texture = source ? source->getTexture() : nullptr) {
+        ccTexParams params{GL_LINEAR, GL_LINEAR, GL_REPEAT, GL_REPEAT};
+        texture->setTexParameters(&params);
+        auto* tile = CCSprite::createWithTexture(texture);
+        tile->setTextureRect({0.f, 0.f, kWorldGroundWidth, texture->getContentSize().height});
+        tile->setAnchorPoint({0.5f, 1.f});
+        tile->setColor(m_groundColor);
+        m_previewWorld->addChild(tile, -2);
+    }
 
     m_groundLine = CCLayerColor::create({255, 255, 255, 120}, kWorldGroundWidth, 1.f);
     m_previewWorld->addChild(m_groundLine, -1);
@@ -646,8 +628,7 @@ void PhysicsPopup::rebuildPreview() {
         m_previewWorld->addChild(container, body.spec.motion == Motion::Dynamic ? 2 : 1);
 
         for (auto const& visual : body.visuals) {
-            auto* art = cloneObjectArt(visual);
-            if (!art) art = stretchedObjectArt(visual);
+            auto* art = buildObjectArt(visual);
             if (!art) continue;
             art->setPosition({visual.offset.x, visual.offset.y});
             container->addChild(art, visual.zOrder);
@@ -728,18 +709,107 @@ void PhysicsPopup::refreshOverlays() {
     }
 }
 
+void PhysicsPopup::toggleHitboxes() {
+    m_showHitboxes = !m_showHitboxes;
+    refreshOverlays();
+    setStatus(
+        m_showHitboxes
+            ? "Hitboxes a la vista: cada cuerpo muestra la forma con la que choca."
+            : "Hitboxes ocultas: la vista queda con los objetos del juego solamente.",
+        {170, 225, 185}
+    );
+}
+
+void PhysicsPopup::openBodyEditor() {
+    if (m_focusIndex < 0 || static_cast<std::size_t>(m_focusIndex) >= m_resolved.size()) {
+        setStatus(
+            "Toca un objeto en la vista o usa las flechas para elegir un cuerpo.",
+            {255, 205, 95}
+        );
+        return;
+    }
+    WeakRef<PhysicsPopup> self = this;
+    auto* popup = PhysicsBodyPopup::create(
+        static_cast<std::size_t>(m_focusIndex), m_selectedObject,
+        [self] {
+            if (auto popup = self.lock()) popup->reloadBodies();
+        }
+    );
+    if (popup) popup->show();
+}
+
+// Bodies are drawn where the simulation left them, so the pick runs against the
+// containers rather than the captured positions.
+void PhysicsPopup::selectAt(CCPoint const& location) {
+    if (m_bodyContainers.size() != m_resolved.size()) return;
+    float const slack = kTapSlack / std::max(previewScale(), 0.001f);
+    for (std::size_t index = m_bodyContainers.size(); index-- > 0;) {
+        auto const local = m_bodyContainers[index]->convertToNodeSpace(location);
+        auto const& fixtures = m_resolved[index].spec.fixtures;
+        for (std::size_t slot = 0; slot < fixtures.size(); ++slot) {
+            if (!containsPoint(fixtures[slot], local, slack)) continue;
+            m_focusIndex = static_cast<int>(index);
+            m_selectedObject = static_cast<int>(slot);
+            updateFocusLabel();
+            refreshOverlays();
+            auto const& body = m_resolved[index];
+            int const objectID = slot < body.visuals.size() ? body.visuals[slot].objectID : 0;
+            setStatus(
+                fmt::format(
+                    "Cuerpo {} | objeto {} de {} (ID {}) | friccion {:.2f} | rebote {:.2f}. "
+                    "Usa el engranaje para cambiarlos.",
+                    bodyName(index), slot + 1, fixtures.size(), objectID,
+                    fixtures[slot].friction >= 0.f ? fixtures[slot].friction : body.spec.friction,
+                    fixtures[slot].restitution >= 0.f
+                        ? fixtures[slot].restitution
+                        : body.spec.restitution
+                ),
+                {170, 225, 185}
+            );
+            return;
+        }
+    }
+    m_selectedObject = -1;
+    updateFocusLabel();
+    refreshOverlays();
+}
+
+void PhysicsPopup::reloadBodies() {
+    auto result = PhysicsWorkspace::get().resolve(editorUI(), m_config);
+    if (result.isErr()) {
+        setStatus(result.unwrapErr(), {255, 190, 100});
+        return;
+    }
+    m_playing = false;
+    m_trace = {};
+    m_resolved = result.unwrap();
+    rebuildPreview();
+    refreshBodies();
+    updateFocusLabel();
+    setStatus("Cuerpo actualizado: previsualiza para ver el cambio.", {170, 225, 185});
+}
+
 void PhysicsPopup::drawBodyOutline(std::size_t index) {
     if (index >= m_outlineNodes.size() || index >= m_resolved.size()) return;
     auto* draw = m_outlineNodes[index];
     draw->clear();
     bool const dynamic = m_resolved[index].spec.motion == Motion::Dynamic;
     bool const focused = m_focusIndex == static_cast<int>(index);
+    // With the hitboxes hidden the preview is nothing but the game's own art,
+    // so the only outline left is the one marking what the user picked.
+    if (!m_showHitboxes && !focused) return;
+
     ccColor4F const border = dynamic
         ? ccc4f(0.55f, 0.95f, 1.f, focused ? 0.95f : 0.35f)
         : ccc4f(1.f, 0.82f, 0.4f, focused ? 0.95f : 0.35f);
     ccColor4F const fill = ccc4f(1.f, 1.f, 1.f, focused ? 0.06f : 0.f);
+    ccColor4F const pickedBorder = ccc4f(1.f, 1.f, 1.f, 0.95f);
     float const borderWidth = (focused ? 1.4f : 0.9f) / std::max(previewScale(), 0.001f);
-    for (auto const& fixture : m_resolved[index].spec.fixtures) {
+    auto const& fixtures = m_resolved[index].spec.fixtures;
+    for (std::size_t slot = 0; slot < fixtures.size(); ++slot) {
+        auto const& fixture = fixtures[slot];
+        bool const picked = focused && static_cast<int>(slot) == m_selectedObject;
+        if (!m_showHitboxes && !picked) continue;
         if (fixture.radius > 0.f) {
             std::array<CCPoint, kCircleSegments> circle{};
             for (int i = 0; i < kCircleSegments; ++i) {
@@ -749,19 +819,25 @@ void PhysicsPopup::drawBodyOutline(std::size_t index) {
                     fixture.offset.y + std::sin(angle) * fixture.radius
                 );
             }
-            draw->drawPolygon(circle.data(), kCircleSegments, fill, borderWidth, border);
+            draw->drawPolygon(
+                circle.data(), kCircleSegments, fill, borderWidth,
+                picked ? pickedBorder : border
+            );
             continue;
         }
         if (fixture.vertexCount >= 3) {
-            CCPoint vertices[4]{};
-            int const count = std::min(fixture.vertexCount, 4);
+            CCPoint vertices[kMaxVertices]{};
+            int const count = std::min(fixture.vertexCount, kMaxVertices);
             for (int i = 0; i < count; ++i) {
                 vertices[i] = ccp(
                     fixture.offset.x + fixture.vertices[i].x,
                     fixture.offset.y + fixture.vertices[i].y
                 );
             }
-            draw->drawPolygon(vertices, static_cast<unsigned int>(count), fill, borderWidth, border);
+            draw->drawPolygon(
+                vertices, static_cast<unsigned int>(count), fill, borderWidth,
+                picked ? pickedBorder : border
+            );
             continue;
         }
         CCPoint vertices[4]{
@@ -770,7 +846,7 @@ void PhysicsPopup::drawBodyOutline(std::size_t index) {
             {fixture.offset.x + fixture.halfSize.x, fixture.offset.y + fixture.halfSize.y},
             {fixture.offset.x - fixture.halfSize.x, fixture.offset.y + fixture.halfSize.y},
         };
-        draw->drawPolygon(vertices, 4, fill, borderWidth, border);
+        draw->drawPolygon(vertices, 4, fill, borderWidth, picked ? pickedBorder : border);
     }
 }
 
@@ -812,6 +888,7 @@ void PhysicsPopup::cycleFocus(int direction) {
     if (next < -1) next = count - 1;
     if (next >= count) next = -1;
     m_focusIndex = count > 0 ? next : -1;
+    m_selectedObject = -1;
     m_manualCamera = false;
     updateFocusLabel();
     if (m_resolved.empty()) return;
@@ -828,9 +905,16 @@ void PhysicsPopup::updateFocusLabel() {
         text = fmt::format("Vista: todos | {}", zoom);
     } else {
         std::size_t const index = static_cast<std::size_t>(m_focusIndex);
+        auto const& visuals = m_resolved[index].visuals;
+        bool const picked = m_selectedObject >= 0 &&
+            static_cast<std::size_t>(m_selectedObject) < visuals.size();
         text = fmt::format(
             "Vista: {} | {} | {}",
-            bodyName(index), objectIDSummary(m_resolved[index]), zoom
+            bodyName(index),
+            picked
+                ? fmt::format("ID {}", visuals[static_cast<std::size_t>(m_selectedObject)].objectID)
+                : objectIDSummary(m_resolved[index]),
+            zoom
         );
     }
     m_focusLabel->setString(text.c_str());
@@ -934,6 +1018,11 @@ void PhysicsPopup::ccTouchMoved(CCTouch* touch, CCEvent* event) {
 void PhysicsPopup::ccTouchEnded(CCTouch* touch, CCEvent* event) {
     if (m_panning) {
         m_panning = false;
+        // A finger that never left where it started is picking an object, not
+        // dragging the view.
+        if (ccpDistance(touch->getLocation(), touch->getStartLocation()) <= kTapSlack) {
+            selectAt(touch->getLocation());
+        }
         return;
     }
     FLAlertLayer::ccTouchEnded(touch, event);

@@ -20,11 +20,29 @@ enum class CaptureRole {
     AddStatic,
 };
 
+// Negative friction or restitution hands the decision back to the lab sliders,
+// and a mass of zero keeps the one derived from the captured area.
+struct BodyMaterial {
+    float mass = 0.f;
+    float gravityScale = 0.f;
+    float friction = -1.f;
+    float restitution = -1.f;
+    Vec2 launch;
+    float spinDegrees = 0.f;
+    bool customLaunch = false;
+};
+
+struct ObjectMaterial {
+    float friction = -1.f;
+    float restitution = -1.f;
+};
+
 struct CapturedBody {
     Motion motion = Motion::Static;
-    float gravityScale = 0.f;
+    BodyMaterial material;
     int exactGroup = 0;
     std::vector<geode::WeakRef<GameObject>> objects;
+    std::vector<ObjectMaterial> materials;
 };
 
 // Enough to rebuild the object in the preview with its own art instead of a
@@ -51,6 +69,7 @@ struct ShapeCounts {
     std::size_t boxes = 0;
     std::size_t ramps = 0;
     std::size_t rounds = 0;
+    std::size_t hulls = 0;
 };
 
 struct ResolvedBody {
@@ -78,6 +97,8 @@ public:
         LabConfig const& config
     ) const;
     geode::Result<Motion> toggleMotion(std::size_t index);
+    BodyMaterial* material(std::size_t index);
+    ObjectMaterial* objectMaterial(std::size_t index, std::size_t object);
 
     void beginCapture(CaptureRole role);
     void clear();
