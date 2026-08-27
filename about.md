@@ -14,6 +14,10 @@ Paimbnails transforms Geometry Dash into a <cl>fully visual experience</c>. Thum
 
 <cp>**17 background styles**</c> for the level info screen: Pixel, Blur, Grayscale, Sepia, Vignette, Scanlines, Bloom, Chromatic, Radial Blur, Glitch, Posterize, Rain, Matrix, Neon Pulse, Wave Distortion, CRT and Normal. <cp>**Stack up to 4 effects**</c> for unique combos. Over <cp>**20 hover effects**</c> on level cells: brightness, darken, sepia, gold, rainbow, invert, pixelate and more. Plus <cp>animated gradients</c>, <cp>mythic particles</c> and <cp>configurable hover animations</c>.
 
+## Paimon RTX
+
+<co>**Real-time screen-space ray tracing**</c> over the whole game. Paimbnails reads the finished frame, derives a surface from it (relief from contrast, normals from its derivatives, emitters from brightness) and marches rays across it for <co>bounced light tinted by whatever reflects it</c>, <co>contact occlusion</c> and <co>screen-space reflections</c>. On top of that: multi-level <co>bloom</c>, <co>volumetric light shafts</c>, four <co>tonemapping curves</c> (ACES, Filmic, Uncharted 2, Reinhard), color grading and lens effects. Built to stay cheap: tracing runs at <co>20-100% of screen resolution</c> with <co>adaptive quality</c>, frame skipping, temporal accumulation and four presets. <co>51 controls</c> in <co>Extras > Paimon RTX</c>.
+
 ## Custom Transitions
 
 Over <cg>**30 screen transitions**</c>: fades, slides, flips, zooms, page curls, tile effects, radial wipes and more. Set a <cg>separate transition for entering levels</c> or create <cg>custom scripted sequences</c> combining fade, move, scale, and rotate.

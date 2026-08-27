@@ -14,6 +14,7 @@
 #include "../features/profiles/services/ProfilePicRenderer.hpp"
 #include "../features/profiles/services/ProfileThumbs.hpp"
 #include "../features/profiles/ui/ProfilePicEditorPopup.hpp"
+#include "../features/rtx/ui/RTXConfigLayer.hpp"
 #include "../features/thumbnails/services/ThumbnailLoader.hpp"
 #include "../features/transitions/services/TransitionManager.hpp"
 #include "../features/transitions/ui/TransitionConfigPopup.hpp"
@@ -1624,7 +1625,7 @@ void PaiConfigLayer::buildExtrasTab() {
     this->addChild(page, 10);
     m_tabPages.push_back(page);
 
-    CCSize const cardSize{std::min(320.f, win.width - 40.f), std::min(190.f, top - bottom)};
+    CCSize const cardSize{std::min(320.f, win.width - 40.f), std::min(224.f, top - bottom)};
     auto* card = makeCardWindow({{cx - cardSize.width / 2.f, midY - cardSize.height / 2.f}, cardSize},
                                 tr("pai.config.extras.title", "Extras").c_str());
     page->addChild(card, 1);
@@ -1656,6 +1657,11 @@ void PaiConfigLayer::buildExtrasTab() {
          "pai.config.extras.transitions_info.title", "Transitions",
          "pai.config.extras.transitions_info.body", "Configure custom scene transition effects.",
          [] { if (auto* p = TransitionConfigPopup::create()) p->show(); }},
+        {"pai.config.extras.rtx", "Paimon RTX", "GJ_button_01.png",
+         "pai.config.extras.rtx_info.title", "Paimon RTX",
+         "pai.config.extras.rtx_info.body",
+         "Traced lighting, occlusion, reflections and color grading over the whole game.",
+         [] { if (auto* p = paimon::rtx::RTXConfigLayer::create()) p->show(); }},
         {"pai.config.extras.clear_cache", "Clear All Cache", "GJ_button_06.png",
          "pai.config.extras.clear_cache_info.title", "Clear Cache",
          "pai.config.extras.clear_cache_info.body", "<cr>Deletes ALL cached data.</c>",

@@ -10,6 +10,7 @@
 #include "../features/editor-colorpicker/ui/ColorPickerOverlay.hpp"
 #include "../features/pet/services/PetManager.hpp"
 #include "../features/quick-hub/services/QuickHubButtonCapture.hpp"
+#include "../features/rtx/services/RTXRenderer.hpp"
 #include "../blur/BlurSystem.hpp"
 #include "../core/RuntimeLifecycle.hpp"
 
@@ -84,6 +85,10 @@ class $modify(CaptureView, CCEGLView) {
             // Sample before drawing the cursor so the picker never sees it.
             paimon::editorcp::ColorPickerOverlay::onPreSwapSample();
         }
+
+        // El back buffer ya tiene el fotograma completo: aqui es donde Paimon RTX
+        // lo relee y lo repinta. Va antes del cursor para no postprocesarlo.
+        paimon::rtx::RTXRenderer::get().renderFrame();
 
         // Revisit the cursor after ImGui and after capture so it stays visible but screenshots remain cursor-free.
         CursorManager::get().renderOverlay();

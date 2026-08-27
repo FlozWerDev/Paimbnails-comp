@@ -58,6 +58,8 @@
 
 ## ![](frame:chestIcon_001.png?height=18) <cy>Extras</c>
 
+- <cl>Paimon RTX</c>: postproceso de <cg>trazado de rayos en espacio de pantalla</c> sobre todo el juego. Del fotograma ya dibujado se deduce la superficie (relieve por el contraste, normales por sus derivadas, emisores por el brillo) y se marchan rayos sobre ella para sacar <cg>luz rebotada con el color del objeto que la refleja</c>, <cg>oclusion de contacto</c> y <cg>reflejos</c>. Encima van bloom por cadena de niveles, rayos de luz volumetricos, mapeo de tonos (ACES, Filmico, Uncharted 2, Reinhard), balance de color y lente (aberracion cromatica, vineteado, grano, nitidez). Se configura entero en <cg>Extras > Paimon RTX</c>: 51 controles repartidos en cinco pestanas.
+- <cl>Paimon RTX</c>: pensado para que no cueste FPS. El trazado corre a una fraccion de la pantalla (del **20%** al **100%**), con <cg>calidad adaptativa</c> que baja la resolucion sola si no llegas a los FPS objetivo, salto de fotogramas, acumulacion temporal con recorte anti-estela y cuatro presets (**Rendimiento**, **Equilibrado**, **Calidad**, **Ultra**). Eliges tambien donde se aplica: nivel, menus, editor, y si sigue trazando en pausa.
 - <cl>Reporte de crasheos</c>: si el juego crashea, al siguiente arranque se manda el crashlog de Geode junto con el log de esa sesion, para que se vea donde revento. El nombre de usuario que aparece en las rutas se reemplaza antes de mandarlo, se manda una sola vez por crasheo y se apaga en <cg>Ajustes > General > Send Crash Reports</c>.
 
 ---

@@ -18,6 +18,7 @@
 #include "../features/discord-presence/ui/DiscordConfigPopup.hpp"
 #include "../features/discord-presence/services/DiscordPresenceManager.hpp"
 #include "../features/beat-shaders/ui/BeatShaderConfigLayer.hpp"
+#include "../features/rtx/ui/RTXConfigLayer.hpp"
 #include "../features/dynamic-songs/ui/DynamicSongPopup.hpp"
 #include "../features/dynamic-volume/ui/DynamicVolumePopup.hpp"
 #include "../features/settings-panel/services/SettingsPanelManager.hpp"
@@ -256,6 +257,11 @@ std::vector<HubActionMeta> getHubActions(int categoryIndex) {
                         popup->show();
                     }
                 }, 5, "Fondos al ritmo"},
+                {"Paimon RTX", "GJ_button_01.png", [](PaimonHubLayer*) {
+                    if (auto popup = paimon::rtx::RTXConfigLayer::create()) {
+                        popup->show();
+                    }
+                }, 5, "Luz trazada en todo el juego"},
                 {"Perfil", "GJ_button_05.png", [](PaimonHubLayer* self) { self->onOpenProfiles(nullptr); }, 5, "Editor de foto de perfil"},
                 {"Actualizar", "GJ_button_02.png", [](PaimonHubLayer*) {
                     auto& chk = paimon::updates::UpdateChecker::get();

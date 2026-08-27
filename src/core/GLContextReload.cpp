@@ -21,6 +21,7 @@
 #include "../features/backgrounds/services/LayerBackgroundManager.hpp"
 #include "../features/custom-slider/services/CustomSliderManager.hpp"
 #include "../features/progressbar/services/ProgressBarManager.hpp"
+#include "../features/rtx/services/RTXRenderer.hpp"
 #include "../features/icon-maker/services/IconApplier.hpp"
 #include "../features/icon-gallery/services/GalleryStore.hpp"
 #include "../features/icon-maker/services/IconThumbs.hpp"
@@ -51,6 +52,9 @@ void onBeforeGameReload() {
     // Overlays persistentes (sobreviven al cambio de escena del reload).
     CursorManager::get().onGLContextReload();
     PetManager::get().onGLContextReload();
+
+    // Postproceso de pantalla completa: FBOs y programas propios.
+    paimon::rtx::RTXRenderer::get().onGLContextReload();
 
     // Fondos / blur / slider / barra de progreso.
     LayerBackgroundManager::get().onGLContextReload();
