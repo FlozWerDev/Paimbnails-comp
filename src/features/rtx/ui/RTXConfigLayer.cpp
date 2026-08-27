@@ -107,11 +107,13 @@ void RTXConfigLayer::refreshStats(float) {
     }
 
     float const ms = renderer.lastFrameMs();
+    int const real = renderer.sceneWidth() > 0
+        ? static_cast<int>(std::lround(100.0 * renderer.traceWidth() / renderer.sceneWidth()))
+        : static_cast<int>(std::lround(renderer.activeScale() * 100.f));
     m_statsLabel->setString(fmt::format(
         "{:.1f} ms  ~{} FPS  |  trazado {}x{} ({}%)",
         ms, ms > 0.01f ? static_cast<int>(std::lround(1000.f / ms)) : 0,
-        renderer.traceWidth(), renderer.traceHeight(),
-        static_cast<int>(std::lround(renderer.activeScale() * 100.f))).c_str());
+        renderer.traceWidth(), renderer.traceHeight(), real).c_str());
 }
 
 void RTXConfigLayer::scheduleRebuild() {
@@ -238,6 +240,10 @@ void RTXConfigLayer::rebuild() {
             kit::makeSliderRow(innerW, "Alcance", "Longitud del rayo en fraccion de pantalla.",
                 cfg.rayDistance, 0.02, 1.0, pct,
                 [this](double v) { RTXManager::get().config().rayDistance = static_cast<float>(v); touched(true); }),
+            kit::makeSliderRow(innerW, "Crecimiento del paso",
+                "1.00 reparte los pasos por igual; mas alto los junta cerca y los separa lejos.",
+                cfg.stepGrowth, 1.0, 1.5, plain,
+                [this](double v) { RTXManager::get().config().stepGrowth = static_cast<float>(v); touched(true); }),
             kit::makeSliderRow(innerW, "Relieve", "Cuanto relieve se deduce del contraste de la imagen.",
                 cfg.normalStrength, 0.5, 24.0, plain,
                 [this](double v) { RTXManager::get().config().normalStrength = static_cast<float>(v); touched(false); }),
@@ -352,21 +358,32 @@ void RTXConfigLayer::rebuild() {
         }));
 
         items.push_back(kit::makeCard(scrollW, "Ruido del trazado", {180, 200, 255}, {
-            kit::makeSliderRow(innerW, "Suavizado", "Filtro espacial que limpia el grano del trazado.",
+            kit::makeSliderRow(innerW, "Pasadas del filtro",
+                "Cada pasada dobla su alcance: 3 cubren 15x15 pixeles.",
+                cfg.atrousPasses, 0.0, 5.0, count,
+                [this](double v) { RTXManager::get().config().atrousPasses = static_cast<int>(std::lround(v)); touched(true); }),
+            kit::makeSliderRow(innerW, "Suavizado",
+                "Cuanto puede mezclarse la luz a traves de un borde del dibujo.",
                 cfg.denoise, 0.0, 4.0, plain,
                 [this](double v) { RTXManager::get().config().denoise = static_cast<float>(v); touched(true); }),
-            kit::makeSliderRow(innerW, "Acumulacion temporal", "Reutiliza el fotograma anterior; alto = mas limpio, mas estela.",
-                cfg.temporal, 0.0, 0.95, pct,
+            kit::makeSliderRow(innerW, "Acumulacion temporal",
+                "Reutiliza el fotograma anterior reproyectado; es lo que mas ruido quita.",
+                cfg.temporal, 0.0, 0.97, pct,
                 [this](double v) { RTXManager::get().config().temporal = static_cast<float>(v); touched(true); }),
             kit::makeToggleRow(innerW, "Recorte anti-estela",
-                "Limita el historial al rango de los vecinos actuales.",
+                "Descarta el historial que se salga del vecindario actual.",
                 cfg.ghostClamp,
                 [this](bool v) { RTXManager::get().config().ghostClamp = v; touched(false); }),
+            kit::makeSliderRow(innerW, "Dureza del recorte",
+                "Desviaciones tipicas que se le permiten al historial. Bajo = sin estela, mas ruido.",
+                cfg.clampSigma, 0.0, 3.0, plain,
+                [this](double v) { RTXManager::get().config().clampSigma = static_cast<float>(v); touched(false); }),
         }));
 
         items.push_back(kit::makeHint(scrollW,
-            "Si al moverte ves rastros detras del jugador, baja la "
-            "<cy>acumulacion temporal</c> o deja el recorte activado."));
+            "El historial se reproyecta con el movimiento de la camara, asi que la "
+            "<cy>acumulacion</c> puede ir alta sin arrastrar. Si aun ves rastros, "
+            "baja la <cy>dureza del recorte</c> antes que la acumulacion."));
     }
 
     m_scroll = kit::makeScrollStack({scrollW, scrollH}, items);

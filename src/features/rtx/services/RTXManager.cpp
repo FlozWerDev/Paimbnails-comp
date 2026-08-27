@@ -12,27 +12,39 @@ using namespace geode::prelude;
 
 namespace paimon::rtx {
 
+// Sube cuando cambia el significado de un campo guardado, no cuando se anade
+// uno nuevo (los nuevos ya entran con su valor por defecto).
+constexpr int kConfigSchema = 2;
+
 void applyPreset(RTXConfig& cfg, Preset preset) {
+    // El escalon de arriba sube muestras Y filtrado a la vez. Al reves (mas
+    // rayos con menos denoise, que es lo intuitivo) el preset caro sale mas
+    // ruidoso que el barato: 8 rayos siguen siendo muy pocos para integrar la
+    // luz por fuerza bruta, asi que la calidad la pone el filtro.
     switch (preset) {
         case Preset::Performance:
-            cfg.renderScale = 0.35f; cfg.rayCount = 2;  cfg.raySteps = 8;
-            cfg.rayDistance = 0.22f; cfg.bloomPasses = 3;
-            cfg.denoise = 2.00f; cfg.temporal = 0.72f; cfg.frameSkip = 1;
+            cfg.renderScale = 0.35f; cfg.rayCount = 2; cfg.raySteps = 10;
+            cfg.rayDistance = 0.24f; cfg.stepGrowth = 1.35f; cfg.bloomPasses = 3;
+            cfg.denoise = 2.60f; cfg.atrousPasses = 2;
+            cfg.temporal = 0.90f; cfg.frameSkip = 1;
             break;
         case Preset::Balanced:
-            cfg.renderScale = 0.50f; cfg.rayCount = 4;  cfg.raySteps = 12;
-            cfg.rayDistance = 0.28f; cfg.bloomPasses = 4;
-            cfg.denoise = 1.60f; cfg.temporal = 0.62f; cfg.frameSkip = 0;
+            cfg.renderScale = 0.50f; cfg.rayCount = 3; cfg.raySteps = 14;
+            cfg.rayDistance = 0.28f; cfg.stepGrowth = 1.28f; cfg.bloomPasses = 4;
+            cfg.denoise = 2.00f; cfg.atrousPasses = 3;
+            cfg.temporal = 0.88f; cfg.frameSkip = 0;
             break;
         case Preset::Quality:
-            cfg.renderScale = 0.70f; cfg.rayCount = 6;  cfg.raySteps = 18;
-            cfg.rayDistance = 0.34f; cfg.bloomPasses = 5;
-            cfg.denoise = 1.20f; cfg.temporal = 0.50f; cfg.frameSkip = 0;
+            cfg.renderScale = 0.65f; cfg.rayCount = 5; cfg.raySteps = 18;
+            cfg.rayDistance = 0.32f; cfg.stepGrowth = 1.22f; cfg.bloomPasses = 5;
+            cfg.denoise = 1.60f; cfg.atrousPasses = 3;
+            cfg.temporal = 0.86f; cfg.frameSkip = 0;
             break;
         case Preset::Ultra:
-            cfg.renderScale = 1.00f; cfg.rayCount = 10; cfg.raySteps = 26;
-            cfg.rayDistance = 0.40f; cfg.bloomPasses = 5;
-            cfg.denoise = 0.90f; cfg.temporal = 0.35f; cfg.frameSkip = 0;
+            cfg.renderScale = 0.85f; cfg.rayCount = 8; cfg.raySteps = 24;
+            cfg.rayDistance = 0.38f; cfg.stepGrowth = 1.18f; cfg.bloomPasses = 5;
+            cfg.denoise = 1.20f; cfg.atrousPasses = 4;
+            cfg.temporal = 0.84f; cfg.frameSkip = 0;
             break;
         case Preset::Custom:
             break;
@@ -112,6 +124,7 @@ void RTXManager::loadConfig() {
     c.rayCount         = getInt("rayCount", c.rayCount);
     c.raySteps         = getInt("raySteps", c.raySteps);
     c.rayDistance      = getFlt("rayDistance", c.rayDistance);
+    c.stepGrowth       = getFlt("stepGrowth", c.stepGrowth);
     c.adaptive         = getBool("adaptive", c.adaptive);
     c.targetFps        = getInt("targetFps", c.targetFps);
     c.frameSkip        = getInt("frameSkip", c.frameSkip);
@@ -145,8 +158,10 @@ void RTXManager::loadConfig() {
     c.godRayY          = getFlt("godRayY", c.godRayY);
 
     c.denoise          = getFlt("denoise", c.denoise);
+    c.atrousPasses     = getInt("atrousPasses", c.atrousPasses);
     c.temporal         = getFlt("temporal", c.temporal);
     c.ghostClamp       = getBool("ghostClamp", c.ghostClamp);
+    c.clampSigma       = getFlt("clampSigma", c.clampSigma);
 
     c.tonemap          = getInt("tonemap", c.tonemap);
     c.exposure         = getFlt("exposure", c.exposure);
@@ -167,6 +182,18 @@ void RTXManager::loadConfig() {
     c.skipWhenPaused   = getBool("skipWhenPaused", c.skipWhenPaused);
 
     sanitize();
+
+    // El esquema 1 guardaba presets con realimentacion temporal baja y casi sin
+    // filtro espacial, que es de donde salia el ruido; ahora significan lo
+    // contrario. Se reaplica el preset guardado salvo en Personalizado, donde
+    // los valores son eleccion del usuario y no se tocan.
+    if (getInt("schema", 1) < kConfigSchema
+        && c.preset != static_cast<int>(Preset::Custom)) {
+        applyPreset(c, static_cast<Preset>(c.preset));
+        saveConfig();
+        log::info("[PaimonRTX] Config migrada al esquema {} (preset {})",
+                  kConfigSchema, presetName(c.preset));
+    }
 }
 
 void RTXManager::saveConfig() {
@@ -174,6 +201,7 @@ void RTXManager::saveConfig() {
 
     RTXConfig const& c = m_config;
     matjson::Value j;
+    j["schema"]           = kConfigSchema;
     j["enabled"]          = c.enabled;
     j["intensity"]        = c.intensity;
 
@@ -182,6 +210,7 @@ void RTXManager::saveConfig() {
     j["rayCount"]         = c.rayCount;
     j["raySteps"]         = c.raySteps;
     j["rayDistance"]      = c.rayDistance;
+    j["stepGrowth"]       = c.stepGrowth;
     j["adaptive"]         = c.adaptive;
     j["targetFps"]        = c.targetFps;
     j["frameSkip"]        = c.frameSkip;
@@ -215,8 +244,10 @@ void RTXManager::saveConfig() {
     j["godRayY"]          = c.godRayY;
 
     j["denoise"]          = c.denoise;
+    j["atrousPasses"]     = c.atrousPasses;
     j["temporal"]         = c.temporal;
     j["ghostClamp"]       = c.ghostClamp;
+    j["clampSigma"]       = c.clampSigma;
 
     j["tonemap"]          = c.tonemap;
     j["exposure"]         = c.exposure;
@@ -265,6 +296,7 @@ void RTXManager::sanitize() {
     c.rayCount         = std::clamp(c.rayCount, 1, 16);
     c.raySteps         = std::clamp(c.raySteps, 4, 32);
     c.rayDistance      = std::clamp(c.rayDistance, 0.02f, 1.f);
+    c.stepGrowth       = std::clamp(c.stepGrowth, 1.f, 1.5f);
     c.targetFps        = std::clamp(c.targetFps, 30, 360);
     c.frameSkip        = std::clamp(c.frameSkip, 0, 3);
 
@@ -297,7 +329,9 @@ void RTXManager::sanitize() {
     c.godRayY          = std::clamp(c.godRayY, 0.f, 1.f);
 
     c.denoise          = std::clamp(c.denoise, 0.f, 4.f);
-    c.temporal         = std::clamp(c.temporal, 0.f, 0.95f);
+    c.atrousPasses     = std::clamp(c.atrousPasses, 0, 5);
+    c.temporal         = std::clamp(c.temporal, 0.f, 0.97f);
+    c.clampSigma       = std::clamp(c.clampSigma, 0.f, 3.f);
 
     c.tonemap          = std::clamp(c.tonemap, 0, 4);
     c.exposure         = std::clamp(c.exposure, -2.f, 2.f);

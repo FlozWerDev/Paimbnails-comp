@@ -26,6 +26,7 @@ public:
     float lastFrameMs() const { return m_frameMs; }
     float activeScale() const { return m_activeScale; }
     int traceWidth() const { return m_traceW; }
+    int sceneWidth() const { return m_sceneW; }
     int traceHeight() const { return m_traceH; }
     bool isBroken() const { return m_broken; }
 
@@ -55,6 +56,7 @@ private:
     void updateAdaptiveScale(RTXConfig const& cfg);
 
     void runTrace(RTXConfig const& cfg);
+    void runFilter(RTXConfig const& cfg);
     void runBloom(RTXConfig const& cfg);
     void runComposite(RTXConfig const& cfg, GLint const* viewport, GLuint prevFbo);
 
@@ -79,12 +81,21 @@ private:
         GLint reflectFade      = -1;
     };
 
-    struct DenoiseProgram {
+    struct TemporalProgram {
         GLuint id = 0;
-        GLint texel    = -1;
-        GLint denoise  = -1;
-        GLint temporal = -1;
-        GLint clampOn  = -1;
+        GLint texel       = -1;
+        GLint temporal    = -1;
+        GLint clampSigma  = -1;
+        GLint reprojNow   = -1;
+        GLint reprojPrev  = -1;
+        GLint reprojScale = -1;
+    };
+
+    struct AtrousProgram {
+        GLuint id = 0;
+        GLint texel  = -1;
+        GLint stride = -1;
+        GLint phi    = -1;
     };
 
     struct BloomProgram {
@@ -121,7 +132,8 @@ private:
     };
 
     TraceProgram     m_trace;
-    DenoiseProgram   m_denoiseProg;
+    TemporalProgram  m_temporalProg;
+    AtrousProgram    m_atrousProg;
     BloomProgram     m_bloom;
     CompositeProgram m_composite;
 
@@ -134,6 +146,7 @@ private:
     Target m_traceSrc;
     Target m_traceRT;
     Target m_history[2];
+    Target m_atrous[2];
     Target m_bloomDown[kBloomLevels];
     Target m_bloomUp[kBloomLevels];
     Target m_rays;
@@ -142,6 +155,14 @@ private:
     int m_traceH = 0;
     int m_historyIndex = 0;
     GLuint m_bloomResultTex = 0;
+    GLuint m_giResultTex = 0;
+
+    // Transformada de la capa de objetos del fotograma trazado anterior, para
+    // reproyectar el historial. Solo se actualiza en los fotogramas que trazan.
+    float m_prevCamX = 0.f;
+    float m_prevCamY = 0.f;
+    float m_prevCamScale = 1.f;
+    bool m_hasPrevCamera = false;
 
     unsigned m_frameCounter = 0;
     unsigned m_idleFrames = 0;

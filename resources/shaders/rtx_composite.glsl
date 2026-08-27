@@ -75,10 +75,12 @@ void main() {
     vec2 uv = v_texCoord;
     vec3 original = texture2D(u_scene, uv).rgb;
 
-    vec2 caOff = (uv - 0.5) * u_ca * 0.02;
-    vec3 base = vec3(texture2D(u_scene, uv + caOff).r,
-                     original.g,
-                     texture2D(u_scene, uv - caOff).b);
+    vec3 base = original;
+    if (u_ca > 0.0) {
+        vec2 caOff = (uv - 0.5) * u_ca * 0.02;
+        base.r = texture2D(u_scene, uv + caOff).r;
+        base.b = texture2D(u_scene, uv - caOff).b;
+    }
 
     if (u_sharpen > 0.0) {
         vec3 soft = (texture2D(u_scene, uv + vec2(u_texel.x, 0.0)).rgb +

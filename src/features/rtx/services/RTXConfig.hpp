@@ -32,6 +32,7 @@ struct RTXConfig {
     int   rayCount         = 4;
     int   raySteps         = 12;
     float rayDistance      = 0.28f;
+    float stepGrowth       = 1.25f;
     bool  adaptive         = true;
     int   targetFps        = 60;
     int   frameSkip        = 0;
@@ -65,8 +66,10 @@ struct RTXConfig {
     float godRayY          = 0.82f;
 
     float denoise          = 1.60f;
-    float temporal         = 0.62f;
+    int   atrousPasses     = 3;
+    float temporal         = 0.88f;
     bool  ghostClamp       = true;
+    float clampSigma       = 1.40f;
 
     int   tonemap          = static_cast<int>(Tonemap::ACES);
     float exposure         = 0.05f;

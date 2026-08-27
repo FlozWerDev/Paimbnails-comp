@@ -5,6 +5,7 @@
 #include "../../../utils/GLSLLoader.hpp"
 
 #include <Geode/Geode.hpp>
+#include <Geode/binding/GJBaseGameLayer.hpp>
 #include <Geode/cocos/shaders/ccGLStateCache.h>
 
 #include <algorithm>
@@ -21,6 +22,11 @@ namespace {
 // Sin actividad durante 5 segundos soltamos los FBOs: entre menus con RTX fuera
 // de ambito no tiene sentido retener ~20 MB de VRAM.
 constexpr unsigned kIdleReleaseFrames = 300;
+
+// Tope duro del lado largo del trazado. El coste va con el numero de pixeles
+// trazados, asi que a 1440p o 4K la escala al 100% se dispara sin que la imagen
+// mejore: el resultado se filtra y se reescala igualmente.
+constexpr int kMaxTraceLongEdge = 1280;
 
 constexpr GLfloat kQuad[] = {
     -1.f,  1.f,  0.f, 1.f,
@@ -101,24 +107,27 @@ bool RTXRenderer::ensurePrograms() {
 
     auto vert = paimon::shaders::readShaderFile("rtx_fullscreen.vert");
     auto traceSrc = paimon::shaders::readShaderFile("rtx_trace.glsl");
-    auto denoiseSrc = paimon::shaders::readShaderFile("rtx_denoise.glsl");
+    auto temporalSrc = paimon::shaders::readShaderFile("rtx_temporal.glsl");
+    auto atrousSrc = paimon::shaders::readShaderFile("rtx_atrous.glsl");
     auto bloomSrc = paimon::shaders::readShaderFile("rtx_bloom.glsl");
     auto compositeSrc = paimon::shaders::readShaderFile("rtx_composite.glsl");
 
-    if (vert.empty() || traceSrc.empty() || denoiseSrc.empty()
+    if (vert.empty() || traceSrc.empty() || temporalSrc.empty() || atrousSrc.empty()
         || bloomSrc.empty() || compositeSrc.empty()) {
         log::warn("[PaimonRTX] faltan shaders en resources/shaders - RTX desactivado");
         return false;
     }
 
     GLuint trace = linkProgram("trace", vert, traceSrc);
-    GLuint denoise = linkProgram("denoise", vert, denoiseSrc);
+    GLuint temporal = linkProgram("temporal", vert, temporalSrc);
+    GLuint atrous = linkProgram("atrous", vert, atrousSrc);
     GLuint bloom = linkProgram("bloom", vert, bloomSrc);
     GLuint composite = linkProgram("composite", vert, compositeSrc);
 
-    if (!trace || !denoise || !bloom || !composite) {
+    if (!trace || !temporal || !atrous || !bloom || !composite) {
         if (trace) glDeleteProgram(trace);
-        if (denoise) glDeleteProgram(denoise);
+        if (temporal) glDeleteProgram(temporal);
+        if (atrous) glDeleteProgram(atrous);
         if (bloom) glDeleteProgram(bloom);
         if (composite) glDeleteProgram(composite);
         return false;
@@ -131,6 +140,7 @@ bool RTXRenderer::ensurePrograms() {
     m_trace.rayCount         = glGetUniformLocation(trace, "u_rayCount");
     m_trace.raySteps         = glGetUniformLocation(trace, "u_raySteps");
     m_trace.rayDistance      = glGetUniformLocation(trace, "u_rayDistance");
+    m_trace.stepGrowth       = glGetUniformLocation(trace, "u_stepGrowth");
     m_trace.lightThreshold   = glGetUniformLocation(trace, "u_lightThreshold");
     m_trace.lightRange       = glGetUniformLocation(trace, "u_lightRange");
     m_trace.bounceFalloff    = glGetUniformLocation(trace, "u_bounceFalloff");
@@ -146,16 +156,26 @@ bool RTXRenderer::ensurePrograms() {
     ccGLUseProgram(trace);
     bindSampler(trace, "u_scene", 0);
 
-    m_denoiseProg = DenoiseProgram{};
-    m_denoiseProg.id       = denoise;
-    m_denoiseProg.texel    = glGetUniformLocation(denoise, "u_texel");
-    m_denoiseProg.denoise  = glGetUniformLocation(denoise, "u_denoise");
-    m_denoiseProg.temporal = glGetUniformLocation(denoise, "u_temporal");
-    m_denoiseProg.clampOn  = glGetUniformLocation(denoise, "u_clamp");
-    ccGLUseProgram(denoise);
-    bindSampler(denoise, "u_current", 0);
-    bindSampler(denoise, "u_history", 1);
-    bindSampler(denoise, "u_scene", 2);
+    m_temporalProg = TemporalProgram{};
+    m_temporalProg.id          = temporal;
+    m_temporalProg.texel       = glGetUniformLocation(temporal, "u_texel");
+    m_temporalProg.temporal    = glGetUniformLocation(temporal, "u_temporal");
+    m_temporalProg.clampSigma  = glGetUniformLocation(temporal, "u_clampSigma");
+    m_temporalProg.reprojNow   = glGetUniformLocation(temporal, "u_reprojNow");
+    m_temporalProg.reprojPrev  = glGetUniformLocation(temporal, "u_reprojPrev");
+    m_temporalProg.reprojScale = glGetUniformLocation(temporal, "u_reprojScale");
+    ccGLUseProgram(temporal);
+    bindSampler(temporal, "u_current", 0);
+    bindSampler(temporal, "u_history", 1);
+
+    m_atrousProg = AtrousProgram{};
+    m_atrousProg.id     = atrous;
+    m_atrousProg.texel  = glGetUniformLocation(atrous, "u_texel");
+    m_atrousProg.stride = glGetUniformLocation(atrous, "u_stride");
+    m_atrousProg.phi    = glGetUniformLocation(atrous, "u_phi");
+    ccGLUseProgram(atrous);
+    bindSampler(atrous, "u_src", 0);
+    bindSampler(atrous, "u_guide", 1);
 
     m_bloom = BloomProgram{};
     m_bloom.id        = bloom;
@@ -297,17 +317,30 @@ bool RTXRenderer::ensureFullTargets(int srcW, int srcH) {
 }
 
 bool RTXRenderer::ensureTraceTargets(int srcW, int srcH, float scale) {
-    int const w = std::max(64, static_cast<int>(std::lround(srcW * scale)));
-    int const h = std::max(64, static_cast<int>(std::lround(srcH * scale)));
+    int w = std::max(64, static_cast<int>(std::lround(srcW * scale)));
+    int h = std::max(64, static_cast<int>(std::lround(srcH * scale)));
+
+    int const longEdge = std::max(w, h);
+    if (longEdge > kMaxTraceLongEdge) {
+        float const k = static_cast<float>(kMaxTraceLongEdge) / static_cast<float>(longEdge);
+        w = std::max(64, static_cast<int>(std::lround(w * k)));
+        h = std::max(64, static_cast<int>(std::lround(h * k)));
+    }
+
     if (m_traceRT.fbo && w == m_traceW && h == m_traceH) return true;
 
     if (!makeTarget(m_traceSrc, w, h)) return false;
     if (!makeTarget(m_traceRT, w, h)) return false;
     if (!makeTarget(m_history[0], w, h)) return false;
     if (!makeTarget(m_history[1], w, h)) return false;
+    if (!makeTarget(m_atrous[0], w, h)) return false;
+    if (!makeTarget(m_atrous[1], w, h)) return false;
 
     m_traceW = w;
     m_traceH = h;
+    m_giResultTex = m_history[m_historyIndex].tex;
+    // El historial recien creado no corresponde a la camara anterior.
+    m_hasPrevCamera = false;
     log::debug("[PaimonRTX] objetivos de trazado {}x{} (escala {:.2f})", w, h, scale);
     return true;
 }
@@ -317,6 +350,8 @@ void RTXRenderer::releaseAll() {
     dropTarget(m_traceRT);
     dropTarget(m_history[0]);
     dropTarget(m_history[1]);
+    dropTarget(m_atrous[0]);
+    dropTarget(m_atrous[1]);
     for (int i = 0; i < kBloomLevels; ++i) {
         dropTarget(m_bloomDown[i]);
         dropTarget(m_bloomUp[i]);
@@ -332,6 +367,8 @@ void RTXRenderer::releaseAll() {
     m_traceW = 0;
     m_traceH = 0;
     m_bloomResultTex = 0;
+    m_giResultTex = 0;
+    m_hasPrevCamera = false;
 }
 
 void RTXRenderer::onGLContextReload() {
@@ -348,12 +385,14 @@ void RTXRenderer::onGLContextReload() {
         m_blackTex = 0;
     }
     if (m_trace.id) glDeleteProgram(m_trace.id);
-    if (m_denoiseProg.id) glDeleteProgram(m_denoiseProg.id);
+    if (m_temporalProg.id) glDeleteProgram(m_temporalProg.id);
+    if (m_atrousProg.id) glDeleteProgram(m_atrousProg.id);
     if (m_bloom.id) glDeleteProgram(m_bloom.id);
     if (m_composite.id) glDeleteProgram(m_composite.id);
 
     m_trace = TraceProgram{};
-    m_denoiseProg = DenoiseProgram{};
+    m_temporalProg = TemporalProgram{};
+    m_atrousProg = AtrousProgram{};
     m_bloom = BloomProgram{};
     m_composite = CompositeProgram{};
 
@@ -413,6 +452,7 @@ void RTXRenderer::runTrace(RTXConfig const& cfg) {
     glUniform1f(m_trace.rayCount, static_cast<float>(cfg.rayCount));
     glUniform1f(m_trace.raySteps, static_cast<float>(cfg.raySteps));
     glUniform1f(m_trace.rayDistance, cfg.rayDistance);
+    glUniform1f(m_trace.stepGrowth, cfg.stepGrowth);
     glUniform1f(m_trace.lightThreshold, cfg.lightThreshold);
     glUniform1f(m_trace.lightRange, cfg.lightRange);
     glUniform1f(m_trace.bounceFalloff, cfg.bounceFalloff);
@@ -428,17 +468,83 @@ void RTXRenderer::runTrace(RTXConfig const& cfg) {
     ccGLBindTexture2DN(0, m_traceSrc.tex);
     drawInto(m_traceRT);
 
+    runFilter(cfg);
+}
+
+void RTXRenderer::runFilter(RTXConfig const& cfg) {
+    float const texelX = 1.f / static_cast<float>(m_traceW);
+    float const texelY = 1.f / static_cast<float>(m_traceH);
+
+    // La capa de objetos del juego solo traslada y escala, asi que su
+    // transformada al mundo describe entera la correspondencia entre el
+    // fotograma anterior y este. En los menus no hay capa y la reproyeccion
+    // queda en identidad.
+    float nowX = 0.f, nowY = 0.f, prevX = 0.f, prevY = 0.f, ratio = 1.f;
+    auto* game = GJBaseGameLayer::get();
+    auto* layer = game ? game->m_objectLayer : nullptr;
+    if (layer) {
+        auto const win = CCDirector::get()->getWinSize();
+        auto const xf = layer->nodeToWorldTransform();
+        float const scale = std::abs(xf.a) > 0.0001f ? xf.a : 1.f;
+
+        nowX = xf.tx / win.width;
+        nowY = xf.ty / win.height;
+        if (m_hasPrevCamera) {
+            prevX = m_prevCamX / win.width;
+            prevY = m_prevCamY / win.height;
+            ratio = m_prevCamScale / scale;
+        } else {
+            prevX = nowX;
+            prevY = nowY;
+        }
+
+        m_prevCamX = xf.tx;
+        m_prevCamY = xf.ty;
+        m_prevCamScale = scale;
+        m_hasPrevCamera = true;
+    } else {
+        m_hasPrevCamera = false;
+    }
+
     int const dst = 1 - m_historyIndex;
-    ccGLUseProgram(m_denoiseProg.id);
-    glUniform2f(m_denoiseProg.texel, texelX, texelY);
-    glUniform1f(m_denoiseProg.denoise, cfg.denoise);
-    glUniform1f(m_denoiseProg.temporal, cfg.temporal);
-    glUniform1f(m_denoiseProg.clampOn, cfg.ghostClamp ? 1.f : 0.f);
+    ccGLUseProgram(m_temporalProg.id);
+    glUniform2f(m_temporalProg.texel, texelX, texelY);
+    glUniform1f(m_temporalProg.temporal, cfg.temporal);
+    glUniform1f(m_temporalProg.clampSigma, cfg.ghostClamp ? cfg.clampSigma : 0.f);
+    glUniform2f(m_temporalProg.reprojNow, nowX, nowY);
+    glUniform2f(m_temporalProg.reprojPrev, prevX, prevY);
+    glUniform1f(m_temporalProg.reprojScale, ratio);
     ccGLBindTexture2DN(0, m_traceRT.tex);
     ccGLBindTexture2DN(1, m_history[m_historyIndex].tex);
-    ccGLBindTexture2DN(2, m_traceSrc.tex);
     drawInto(m_history[dst]);
     m_historyIndex = dst;
+
+    int const passes = std::clamp(cfg.atrousPasses, 0, 5);
+    if (passes == 0) {
+        m_giResultTex = m_history[m_historyIndex].tex;
+        return;
+    }
+
+    // El corte va sobre la diferencia de luminancia con el pixel central, asi
+    // que phi alto deja de mezclar en cuanto hay borde (nitido y ruidoso) y phi
+    // bajo mezcla a traves de todo (limpio y plano).
+    float const phi = 48.f - std::clamp(cfg.denoise, 0.f, 4.f) * 11.f;
+
+    ccGLUseProgram(m_atrousProg.id);
+    glUniform2f(m_atrousProg.texel, texelX, texelY);
+    glUniform1f(m_atrousProg.phi, phi);
+    ccGLBindTexture2DN(1, m_traceSrc.tex);
+
+    GLuint src = m_history[m_historyIndex].tex;
+    int out = 0;
+    for (int i = 0; i < passes; ++i) {
+        glUniform1f(m_atrousProg.stride, static_cast<float>(1 << i));
+        ccGLBindTexture2DN(0, src);
+        drawInto(m_atrous[out]);
+        src = m_atrous[out].tex;
+        out = 1 - out;
+    }
+    m_giResultTex = src;
 }
 
 void RTXRenderer::runBloom(RTXConfig const& cfg) {
@@ -512,7 +618,7 @@ void RTXRenderer::runComposite(RTXConfig const& cfg, GLint const* viewport, GLui
     glUniform1f(m_composite.sharpen, cfg.sharpen);
 
     ccGLBindTexture2DN(0, m_sceneTex);
-    ccGLBindTexture2DN(1, m_history[m_historyIndex].tex);
+    ccGLBindTexture2DN(1, m_giResultTex ? m_giResultTex : m_blackTex);
     ccGLBindTexture2DN(2, m_bloomResultTex ? m_bloomResultTex : m_blackTex);
     ccGLBindTexture2DN(3, (cfg.godRayStrength > 0.001f && m_rays.tex) ? m_rays.tex : m_blackTex);
 
