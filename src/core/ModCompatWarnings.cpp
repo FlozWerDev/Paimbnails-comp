@@ -8,9 +8,9 @@ void PaimonLogModCompatWarnings() {
     using paimon::compat::ModCompat;
 
     if (ModCompat::isCDCLevelThumbnailsLoaded()) {
-        log::warn(
-            "[Paimbnails] Mod 'cdc.level_thumbnails' esta activo: desactivalo para evitar "
-            "miniaturas duplicadas o crashes (ver mod.json / popup de inicio)."
+        log::info(
+            "[Paimbnails] Level Thumbnails detectado: los dos mods pueden convivir, "
+            "cada uno pone su miniatura donde le corresponde."
         );
     }
 

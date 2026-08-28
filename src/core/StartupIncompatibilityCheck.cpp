@@ -2,6 +2,8 @@
 #include <Geode/ui/PopupManager.hpp>
 #include "../utils/Localization.hpp"
 
+#include <array>
+
 using namespace geode::prelude;
 
 namespace {
@@ -11,13 +13,10 @@ namespace {
         char const* reasonKey;
     };
 
-    constexpr StartupIncompatibleMod kStartupIncompatibleMods[] = {
-        {
-            "cdc.level_thumbnails",
-            "Level Thumbnails",
-            "startup.incompat.reason.level_thumbnails"
-        },
-    };
+    // Vacia desde v1.1.2: Level Thumbnails era la unica entrada y ya convive con
+    // Paimbnails. std::array en vez de un array C porque este no puede ser de
+    // tamano cero; el mecanismo se queda montado para el siguiente que haga falta.
+    constexpr std::array<StartupIncompatibleMod, 0> kStartupIncompatibleMods{};
 
     bool s_startupIncompatibilityPopupShown = false;
 
