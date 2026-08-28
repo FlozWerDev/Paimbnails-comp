@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../src/features/gif-import/services/GifImportPipeline.hpp"
+#include "../src/features/gif-import/services/ColorSpace.cpp"
 #include "../src/features/gif-import/services/GifVectorMath.cpp"
 #include "../src/features/gif-import/services/GifArtVectorizer.cpp"
 #include "../src/features/gif-import/services/GifPaintVectorizer.cpp"
@@ -61,14 +62,26 @@ Options exactOptions(int dimension) {
     return options;
 }
 
+// La marca de agua parte objetos en dos a proposito y le suma vueltas enteras al
+// giro de otros. Estas pruebas miran la geometria, no la marca, asi que antes de
+// contar se vuelven a juntar los trozos: el mismo empaquetado que usa el propio
+// modo pintura deshace justo esas parejas.
+std::vector<Primitive> unmarked(ImportPlan const& plan) {
+    auto objects = plan.staticObjects;
+    for (auto& object : objects) {
+        object.rotation = std::fmod(object.rotation, 360.f);
+    }
+    prunePaintObjects(objects, std::max(plan.width, 1), std::max(plan.height, 1));
+    return objects;
+}
+
 bool solidAreaBecomesOneRect() {
     auto source = animation(8, 8, 1, 230, 40, 60);
     auto result = buildPlan(source, exactOptions(8));
-    bool const pass = result && result.plan.visualObjects == 1 &&
-        result.plan.staticObjects.size() == 1 &&
-        result.plan.staticObjects.front().width == 8 &&
-        result.plan.staticObjects.front().height == 8;
-    std::cout << "solid: rects=" << (result ? result.plan.visualObjects : 0) << '\n';
+    auto const objects = result ? unmarked(result.plan) : std::vector<Primitive>{};
+    bool const pass = result && objects.size() == 1 &&
+        objects.front().width == 8 && objects.front().height == 8;
+    std::cout << "solid: rects=" << objects.size() << '\n';
     return pass;
 }
 
@@ -88,9 +101,10 @@ bool borderBackgroundIsRemoved() {
     options.background = BackgroundMode::AutoBorder;
     options.backgroundTolerance = 8;
     auto result = buildPlan(source, options);
-    bool const pass = result && result.plan.visualObjects == 1 &&
-        result.plan.staticObjects.front().x == 3 && result.plan.staticObjects.front().y == 3 &&
-        result.plan.staticObjects.front().width == 2 && result.plan.staticObjects.front().height == 2;
+    auto const objects = result ? unmarked(result.plan) : std::vector<Primitive>{};
+    bool const pass = result && objects.size() == 1 &&
+        objects.front().x == 3 && objects.front().y == 3 &&
+        objects.front().width == 2 && objects.front().height == 2;
     std::cout << "background: " << (result ? "removed" : result.error) << '\n';
     return pass;
 }
@@ -106,10 +120,18 @@ bool temporalStrategyKeepsStaticArt() {
     setPixel(source, 1, 3, 0, 20, 80, 240);
 
     auto result = buildPlan(source, exactOptions(4));
+    auto const objects = result ? unmarked(result.plan) : std::vector<Primitive>{};
+    std::size_t visuals = objects.size();
+    for (auto const& track : result.plan.tracks) {
+        auto pieces = track.objects;
+        for (auto& object : pieces) object.rotation = std::fmod(object.rotation, 360.f);
+        prunePaintObjects(pieces, result.plan.width, result.plan.height);
+        visuals += pieces.size();
+    }
     bool const pass = result && result.plan.strategy == "temporal" &&
-        result.plan.staticObjects.size() == 1 && result.plan.visualObjects == 3;
+        objects.size() == 1 && visuals == 3;
     std::cout << "temporal: strategy=" << (result ? result.plan.strategy : result.error)
-              << " visuals=" << (result ? result.plan.visualObjects : 0) << '\n';
+              << " visuals=" << visuals << '\n';
     return pass;
 }
 
@@ -545,14 +567,17 @@ bool paintModeRotatesTheSilhouette() {
     return pass;
 }
 
-std::size_t hiddenPaintObjects(ImportPlan const& plan) {
+std::size_t hiddenPaintObjects(
+    ImportPlan const& plan,
+    std::vector<Primitive> const& objects
+) {
     constexpr int scale = 8;
     int const width = plan.width * scale;
     int const height = plan.height * scale;
     std::vector<int> owners(static_cast<std::size_t>(width) * height, -1);
-    std::vector<std::uint8_t> drawn(plan.staticObjects.size(), 0);
-    for (std::size_t objectIndex = 0; objectIndex < plan.staticObjects.size(); ++objectIndex) {
-        auto const& object = plan.staticObjects[objectIndex];
+    std::vector<std::uint8_t> drawn(objects.size(), 0);
+    for (std::size_t objectIndex = 0; objectIndex < objects.size(); ++objectIndex) {
+        auto const& object = objects[objectIndex];
         for (int y = 0; y < height; ++y) {
             for (int x = 0; x < width; ++x) {
                 if (!contains(object, (x + 0.5f) / scale, (y + 0.5f) / scale)) continue;
@@ -563,7 +588,7 @@ std::size_t hiddenPaintObjects(ImportPlan const& plan) {
         }
     }
 
-    std::vector<std::uint8_t> visible(plan.staticObjects.size(), 0);
+    std::vector<std::uint8_t> visible(objects.size(), 0);
     for (int owner : owners) {
         if (owner >= 0) visible[static_cast<std::size_t>(owner)] = 1;
     }
@@ -577,14 +602,15 @@ std::size_t hiddenPaintObjects(ImportPlan const& plan) {
 bool paintModeAvoidsInvisibleRepairs() {
     auto result = buildPlan(paintScene(), paintOptions(40));
     if (!result) return false;
+    auto const objects = unmarked(result.plan);
     std::size_t tiny = 0;
-    for (auto const& object : result.plan.staticObjects) {
+    for (auto const& object : objects) {
         if (object.kind == PrimitiveKind::Circle &&
             std::min(object.width, object.height) < 1.25f) {
             ++tiny;
         }
     }
-    std::size_t const hidden = hiddenPaintObjects(result.plan);
+    std::size_t const hidden = hiddenPaintObjects(result.plan, objects);
     std::cout << "paint-repairs: tiny=" << tiny << " hidden=" << hidden << '\n';
     return tiny == 0 && hidden == 0;
 }
@@ -597,12 +623,11 @@ bool paintModeKeepsSolidRectsWhole() {
         }
     }
     auto result = buildPlan(source, paintOptions(20));
-    bool const pass = result && result.plan.visualObjects == 1 &&
-        result.plan.staticObjects.front().kind == PrimitiveKind::Block &&
-        result.plan.staticObjects.front().width == 12.f &&
-        result.plan.staticObjects.front().height == 12.f;
-    std::cout << "paint-solid-rect: objects="
-              << (result ? result.plan.visualObjects : 0) << '\n';
+    auto const objects = result ? unmarked(result.plan) : std::vector<Primitive>{};
+    bool const pass = result && objects.size() == 1 &&
+        objects.front().kind == PrimitiveKind::Block &&
+        objects.front().width == 12.f && objects.front().height == 12.f;
+    std::cout << "paint-solid-rect: objects=" << objects.size() << '\n';
     return pass;
 }
 
@@ -636,9 +661,10 @@ bool paintModeMergesDiagonalDetails() {
             (static_cast<std::size_t>(y * 8 + 4) * 12 * 8 + x * 8 + 4) * 4;
         covered = covered && preview[sample + 3] != 0;
     }
-    std::cout << "paint-details: objects=" << result.plan.visualObjects
+    auto const objects = unmarked(result.plan);
+    std::cout << "paint-details: objects=" << objects.size()
               << " covered=" << covered << '\n';
-    return covered && result.plan.visualObjects == 3;
+    return covered && objects.size() == 3;
 }
 
 // El hueco vacio se pasa igual que lo hace el pipeline: sobre lienzo transparente
@@ -861,8 +887,9 @@ bool paintModeLeavesNoSpikes() {
         return false;
     }
     int spikes = 0;
+    auto const objects = unmarked(result.plan);
     std::vector<std::uint8_t> used(result.plan.palette.size(), 0);
-    for (auto const& object : result.plan.staticObjects) {
+    for (auto const& object : objects) {
         used[object.color] = 1;
         float const angle = std::fmod(std::abs(object.rotation), 90.f);
         if (angle > 5.f && angle < 85.f && object.width <= 1.6f && object.height <= 1.6f) {
@@ -871,9 +898,9 @@ bool paintModeLeavesNoSpikes() {
     }
     auto const tints = std::count(used.begin(), used.end(), 1);
     std::cout << "paint-spikes: spikes=" << spikes << " tints=" << tints
-              << " objects=" << result.plan.visualObjects
+              << " objects=" << objects.size()
               << " review=" << result.plan.similarity << "%\n";
-    return spikes == 0 && tints <= 4 && result.plan.visualObjects <= 110 &&
+    return spikes == 0 && tints <= 4 && objects.size() <= 110 &&
         result.plan.similarity >= 95.f;
 }
 

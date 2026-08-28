@@ -1,4 +1,5 @@
 ﻿#include "GifImportPipeline.hpp"
+#include "ColorSpace.hpp"
 #include "GifArtVectorizer.hpp"
 #include "GifPaintVectorizer.hpp"
 #include "ImageWatermark.hpp"
@@ -299,18 +300,48 @@ Pixel sampleArea(
     };
 }
 
+// Cuantos pixeles del origen se miran como mucho por frame. Analizar a la
+// resolucion de verdad es lo que evita que un detalle chico se pierda en la media
+// de su celda antes de que nadie lo haya mirado, pero en una imagen enorme no
+// hace falta verlos todos: se recorre en rejilla. Aun con el paso mas grande se
+// mira dos ordenes de magnitud mas de lo que se veia mirando la imagen reducida.
+constexpr std::size_t kMaxAnalysisSamples = 4u << 20;
+
+int analysisStride(int width, int height) {
+    auto const pixels = static_cast<std::size_t>(width) * height;
+    if (pixels <= kMaxAnalysisSamples) return 1;
+    return static_cast<int>(std::ceil(
+        std::sqrt(static_cast<double>(pixels) / kMaxAnalysisSamples)));
+}
+
+std::vector<std::vector<std::uint8_t>> backgroundMasks(
+    SourceAnimation const& source,
+    std::vector<SelectedFrame> const& selected,
+    Options const& options
+) {
+    std::vector<std::vector<std::uint8_t>> masks;
+    masks.reserve(selected.size());
+    for (auto const& selectedFrame : selected) {
+        masks.push_back(backgroundMask(
+            *selectedFrame.frame, source.width, source.height, options));
+    }
+    return masks;
+}
+
 std::vector<ReducedFrame> reduceFrames(
     SourceAnimation const& source,
     std::vector<SelectedFrame> const& selected,
+    std::vector<std::vector<std::uint8_t>> const& masks,
     int width,
     int height,
     Options const& options
 ) {
     std::vector<ReducedFrame> output;
     output.reserve(selected.size());
-    for (auto const& selectedFrame : selected) {
+    for (std::size_t index = 0; index < selected.size(); ++index) {
+        auto const& selectedFrame = selected[index];
         auto const& frame = *selectedFrame.frame;
-        auto removed = backgroundMask(frame, source.width, source.height, options);
+        auto const& removed = masks[index];
         ReducedFrame reduced;
         reduced.delayMs = selectedFrame.delayMs;
         reduced.pixels.resize(static_cast<std::size_t>(width) * height);
@@ -524,21 +555,222 @@ std::vector<Color> medianCut(Histogram const& histogram, int maxColors) {
     return palette;
 }
 
-int nearestColor(float r, float g, float b, std::vector<Color> const& palette) {
+// El median cut deja cada entrada como la media de su caja, que no es ningun
+// color de la imagen: cae en la rampa del antialias entre dos manchas planas y
+// pinta media silueta de un tono que no existe. Cada entrada se lleva al color
+// mas repetido de los que le tocan, que es el de la mancha plana. Despues se
+// fusionan las entradas que a la distancia a la que se ve el nivel son el mismo
+// color: cada entrada que sobra es una familia entera de objetos que no hace falta.
+std::vector<Color> refinePalette(Histogram const& histogram, std::vector<Color> palette) {
+    if (palette.size() < 2) return palette;
+
+    struct Center {
+        OkLab lab;
+        double weight = 0.0;
+        double peak = 0.0;
+        OkLab peakLab;
+    };
+    std::vector<Center> centers(palette.size());
+    for (std::size_t i = 0; i < palette.size(); ++i) {
+        centers[i].lab = rgbToOkLab(palette[i]);
+    }
+
+    for (auto const& bin : histogram) {
+        if (bin.weight == 0) continue;
+        Color const color{
+            static_cast<std::uint8_t>(bin.r / bin.weight),
+            static_cast<std::uint8_t>(bin.g / bin.weight),
+            static_cast<std::uint8_t>(bin.b / bin.weight)
+        };
+        OkLab const lab = rgbToOkLab(color);
+        std::size_t best = 0;
+        float bestDistance = std::numeric_limits<float>::max();
+        for (std::size_t i = 0; i < centers.size(); ++i) {
+            float const distance = oklabDistance(lab, centers[i].lab);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = i;
+            }
+        }
+        auto& center = centers[best];
+        double const weight = static_cast<double>(bin.weight);
+        center.weight += weight;
+        if (weight > center.peak) {
+            center.peak = weight;
+            center.peakLab = lab;
+        }
+    }
+
+    for (auto& center : centers) {
+        if (center.peak > 0.0) center.lab = center.peakLab;
+    }
+
+    // Centros sin nada asignado y pares indistinguibles se funden en uno.
+    bool merged = true;
+    while (merged) {
+        merged = false;
+        std::size_t first = 0;
+        std::size_t second = 1;
+        float closest = std::numeric_limits<float>::max();
+        for (std::size_t i = 0; i < centers.size(); ++i) {
+            if (centers[i].weight <= 0.0) continue;
+            for (std::size_t j = i + 1; j < centers.size(); ++j) {
+                if (centers[j].weight <= 0.0) continue;
+                float const distance = oklabDistance(centers[i].lab, centers[j].lab);
+                if (distance < closest) {
+                    closest = distance;
+                    first = i;
+                    second = j;
+                }
+            }
+        }
+        if (closest < kPaletteMinDistance) {
+            double const total = centers[first].weight + centers[second].weight;
+            double const ratio = centers[second].weight / total;
+            centers[first].lab = {
+                static_cast<float>(centers[first].lab.L * (1.0 - ratio) +
+                    centers[second].lab.L * ratio),
+                static_cast<float>(centers[first].lab.a * (1.0 - ratio) +
+                    centers[second].lab.a * ratio),
+                static_cast<float>(centers[first].lab.b * (1.0 - ratio) +
+                    centers[second].lab.b * ratio)
+            };
+            centers[first].weight = total;
+            centers[second].weight = 0.0;
+            merged = true;
+        }
+    }
+
+    std::vector<Color> refined;
+    refined.reserve(centers.size());
+    for (auto const& center : centers) {
+        if (center.weight <= 0.0) continue;
+        refined.push_back(oklabToRgb(center.lab));
+    }
+    return refined.empty() ? palette : refined;
+}
+
+int nearestColor(float r, float g, float b, std::vector<OkLab> const& paletteLabs) {
+    OkLab const query = rgbToOkLab({
+        static_cast<std::uint8_t>(std::clamp(std::lround(r), 0L, 255L)),
+        static_cast<std::uint8_t>(std::clamp(std::lround(g), 0L, 255L)),
+        static_cast<std::uint8_t>(std::clamp(std::lround(b), 0L, 255L))
+    });
     int best = 0;
     float bestDistance = std::numeric_limits<float>::max();
-    for (int i = 0; i < static_cast<int>(palette.size()); ++i) {
-        auto const& color = palette[static_cast<std::size_t>(i)];
-        float const dr = r - color.r;
-        float const dg = g - color.g;
-        float const db = b - color.b;
-        float const distance = dr * dr + dg * dg + db * db;
+    for (int i = 0; i < static_cast<int>(paletteLabs.size()); ++i) {
+        float const distance = oklabDistance(query, paletteLabs[static_cast<std::size_t>(i)]);
         if (distance < bestDistance) {
             bestDistance = distance;
             best = i;
         }
     }
     return best;
+}
+
+// Un indice de paleta por cada caja de 5 bits por canal. Se paga una vez y
+// convierte el cuantizado de cada pixel del origen en una consulta de tabla, que
+// es lo que hace viable mirarlos todos.
+std::vector<std::int16_t> paletteLookup(std::vector<Color> const& palette) {
+    std::vector<OkLab> labs;
+    labs.reserve(palette.size());
+    for (auto const& color : palette) labs.push_back(rgbToOkLab(color));
+
+    std::vector<std::int16_t> lookup(32768, 0);
+    for (int key = 0; key < 32768; ++key) {
+        OkLab const query = rgbToOkLab({
+            static_cast<std::uint8_t>(((key >> 10) & 31) << 3 | 4),
+            static_cast<std::uint8_t>(((key >> 5) & 31) << 3 | 4),
+            static_cast<std::uint8_t>((key & 31) << 3 | 4)
+        });
+        int best = 0;
+        float bestDistance = std::numeric_limits<float>::max();
+        for (int i = 0; i < static_cast<int>(labs.size()); ++i) {
+            float const distance = oklabDistance(query, labs[static_cast<std::size_t>(i)]);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = i;
+            }
+        }
+        lookup[static_cast<std::size_t>(key)] = static_cast<std::int16_t>(best);
+    }
+    return lookup;
+}
+
+// La celda se queda con el color que mas manda en su trozo de imagen original, no
+// con la media. La media de un borde entre dos manchas planas es un tercer tono
+// que no esta en el dibujo, y ese tono inventado se comia una entrada de la paleta
+// y ademas dejaba una hebra de una celda de ancho a lo largo de cada silueta. El
+// voto conserva el borde limpio y deja pasar un detalle chico si de verdad domina
+// su celda. El alfa se sigue promediando, asi que lo que era transparente lo sigue
+// siendo igual que antes.
+std::vector<GridFrame> quantizeFromSource(
+    SourceAnimation const& source,
+    std::vector<SelectedFrame> const& selected,
+    std::vector<std::vector<std::uint8_t>> const& masks,
+    std::vector<Color> const& palette,
+    int width,
+    int height,
+    Options const& options
+) {
+    auto const lookup = paletteLookup(palette);
+    int const stride = analysisStride(source.width, source.height);
+
+    std::vector<GridFrame> output;
+    output.reserve(selected.size());
+    std::vector<std::uint32_t> votes(palette.size(), 0);
+    for (std::size_t index = 0; index < selected.size(); ++index) {
+        auto const& frame = *selected[index].frame;
+        auto const& removed = masks[index];
+        GridFrame grid;
+        grid.delayMs = selected[index].delayMs;
+        grid.cells.assign(static_cast<std::size_t>(width) * height, -1);
+        for (int y = 0; y < height; ++y) {
+            int const y0 = y * source.height / height;
+            int const y1 = std::max(y0 + 1, ((y + 1) * source.height + height - 1) / height);
+            for (int x = 0; x < width; ++x) {
+                int const x0 = x * source.width / width;
+                int const x1 = std::max(x0 + 1, ((x + 1) * source.width + width - 1) / width);
+                std::fill(votes.begin(), votes.end(), 0);
+                std::uint64_t sumA = 0;
+                int samples = 0;
+                for (int sy = y0; sy < std::min(y1, source.height); sy += stride) {
+                    for (int sx = x0; sx < std::min(x1, source.width); sx += stride) {
+                        std::size_t const position =
+                            static_cast<std::size_t>(sy) * source.width + sx;
+                        ++samples;
+                        if (removed[position]) continue;
+                        auto const pixel = sourcePixel(frame, position);
+                        sumA += pixel.a;
+                        if (pixel.a < options.alphaThreshold) continue;
+                        int const key = (pixel.r >> 3) << 10 | (pixel.g >> 3) << 5 |
+                            (pixel.b >> 3);
+                        // Un pixel translucido manda menos que uno opaco.
+                        votes[static_cast<std::size_t>(
+                            lookup[static_cast<std::size_t>(key)])] += pixel.a;
+                    }
+                }
+                if (samples == 0) continue;
+                if (sumA / static_cast<std::uint64_t>(samples) <
+                    static_cast<std::uint64_t>(options.alphaThreshold)) {
+                    continue;
+                }
+                auto const winner = std::max_element(votes.begin(), votes.end());
+                if (*winner == 0) continue;
+                grid.cells[static_cast<std::size_t>(y) * width + x] =
+                    static_cast<std::int32_t>(std::distance(votes.begin(), winner));
+            }
+        }
+        if (!output.empty() && output.back().cells == grid.cells) {
+            long long const delay =
+                static_cast<long long>(output.back().delayMs) + grid.delayMs;
+            output.back().delayMs = static_cast<int>(
+                std::min<long long>(delay, std::numeric_limits<int>::max()));
+        } else {
+            output.push_back(std::move(grid));
+        }
+    }
+    return output;
 }
 
 std::vector<GridFrame> quantize(
@@ -548,6 +780,10 @@ std::vector<GridFrame> quantize(
     int height,
     bool dither
 ) {
+    std::vector<OkLab> paletteLabs;
+    paletteLabs.reserve(palette.size());
+    for (auto const& color : palette) paletteLabs.push_back(rgbToOkLab(color));
+
     std::vector<GridFrame> output;
     output.reserve(reduced.size());
     for (auto const& frame : reduced) {
@@ -578,7 +814,7 @@ std::vector<GridFrame> quantize(
                     g = std::clamp(g + errors[index][1], 0.f, 255.f);
                     b = std::clamp(b + errors[index][2], 0.f, 255.f);
                 }
-                int const colorIndex = nearestColor(r, g, b, palette);
+                int const colorIndex = nearestColor(r, g, b, paletteLabs);
                 grid.cells[index] = static_cast<std::int32_t>(colorIndex);
                 if (!dither) continue;
                 auto const& chosen = palette[static_cast<std::size_t>(colorIndex)];
@@ -601,39 +837,205 @@ std::vector<GridFrame> quantize(
     return output;
 }
 
-// El histograma de la imagen reducida. En modo Pintura cada celda pesa ademas
-// por lo plana que es su vecindad, para que la paleta se la lleven los colores
-// del dibujo y no la orla del antialias.
+// El histograma sale de los pixeles del origen, no de la imagen ya reducida: a 48
+// celdas de lado esta veia dos mil muestras de un millon, y con tan pocas un color
+// que ocupa poco pero importa (un brillo, un iris) no llegaba a la paleta. En modo
+// Pintura cada muestra pesa ademas por lo plana que es su vecindad, para que la
+// paleta se la lleven los colores del dibujo y no la orla del antialias.
 std::vector<Color> buildPalette(
-    std::vector<ReducedFrame> const& frames,
+    SourceAnimation const& source,
+    std::vector<SelectedFrame> const& selected,
+    std::vector<std::vector<std::uint8_t>> const& masks,
+    Options const& options,
     int maxColors,
-    int width,
-    int height,
+    int gridWidth,
+    int gridHeight,
     bool flat
 ) {
+    int const stride = analysisStride(source.width, source.height);
+    // Lo plano se mide a la escala de la celda de salida, no a la del pixel de
+    // origen. A resolucion de origen la rampa del antialias tiene muchos pixeles
+    // de ancho y cada uno se parece a su vecino, asi que salia tan plana como una
+    // mancha de verdad y se llevaba media paleta. Preguntando de celda en celda,
+    // que es la escala a la que va a existir el dibujo, la rampa vuelve a ser lo
+    // que es: el sitio donde el color cambia.
+    int const flatX = std::max(1, source.width / std::max(gridWidth, 1));
+    int const flatY = std::max(1, source.height / std::max(gridHeight, 1));
+    int const flatWidth = (source.width + flatX - 1) / flatX;
+    int const flatHeight = (source.height + flatY - 1) / flatY;
+
     auto histogram = emptyHistogram();
-    for (auto const& frame : frames) {
-        auto const delay = static_cast<std::uint64_t>(std::clamp(frame.delayMs, 10, 1000));
-        auto sample = [&](int x, int y, Color& out) {
-            auto const& pixel = frame.pixels[static_cast<std::size_t>(y) * width + x];
-            if (pixel.a == 0) return false;
+    for (std::size_t index = 0; index < selected.size(); ++index) {
+        auto const& frame = *selected[index].frame;
+        auto const& removed = masks[index];
+        auto const delay = static_cast<std::uint64_t>(
+            std::clamp(selected[index].delayMs, 10, 1000));
+        auto coarse = [&](int x, int y, Color& out) {
+            std::size_t const position = static_cast<std::size_t>(
+                std::min(y * flatY, source.height - 1)) * source.width +
+                std::min(x * flatX, source.width - 1);
+            if (removed[position]) return false;
+            auto const pixel = sourcePixel(frame, position);
+            if (pixel.a < options.alphaThreshold) return false;
             out = {pixel.r, pixel.g, pixel.b};
             return true;
         };
-        for (int y = 0; y < height; ++y) {
-            for (int x = 0; x < width; ++x) {
-                Color color;
-                if (!sample(x, y, color)) continue;
-                addSample(histogram, color, delay * (flat
-                    ? flatnessWeight(sample, x, y, width, height) : 1));
+
+        std::vector<std::uint64_t> weights;
+        if (flat) {
+            weights.resize(static_cast<std::size_t>(flatWidth) * flatHeight);
+            for (int y = 0; y < flatHeight; ++y) {
+                for (int x = 0; x < flatWidth; ++x) {
+                    weights[static_cast<std::size_t>(y) * flatWidth + x] =
+                        flatnessWeight(coarse, x, y, flatWidth, flatHeight);
+                }
+            }
+        }
+
+        for (int y = 0; y < source.height; y += stride) {
+            for (int x = 0; x < source.width; x += stride) {
+                std::size_t const position =
+                    static_cast<std::size_t>(y) * source.width + x;
+                if (removed[position]) continue;
+                auto const pixel = sourcePixel(frame, position);
+                if (pixel.a < options.alphaThreshold) continue;
+                std::uint64_t weight = delay;
+                if (flat) {
+                    weight *= std::max<std::uint64_t>(1, weights[
+                        static_cast<std::size_t>(y / flatY) * flatWidth + x / flatX]);
+                }
+                addSample(histogram, {pixel.r, pixel.g, pixel.b}, weight);
             }
         }
     }
-    return medianCut(histogram, maxColors);
+    return refinePalette(histogram, medianCut(histogram, maxColors));
 }
 
 constexpr int kSpeckleColorDistance = 50;
 constexpr int kSmallPaletteSpeckleDistance = 65;
+
+// Lo que puede costar fundir una mancha chica con la de al lado. De lejos el ojo
+// promedia, asi que lo que una mancha equivocada mete en la media es su distancia
+// por su area: eso es lo que se compara con el presupuesto. Una celda suelta
+// admite un salto grande y una mancha de doce casi ninguno, que es justo lo que
+// hace falta: las celdas sueltas son el ruido del JPEG y la rampa del antialias,
+// y las manchas de cuatro o cinco celdas son los ojos y los brillos. Pesando por
+// la raiz del area salian los mismos objetos pero se comia las caras.
+constexpr float kSpeckBudget = 0.25f;
+// Por encima de esto la mancha ya es parte del dibujo y no se toca. El tope va
+// por area y no por forma a proposito: una linea de una celda de ancho pero larga
+// se pasa del area y sobrevive entera, que es lo que hace falta para que los
+// trazos finos no se los lleve esta pasada.
+constexpr int kSpeckArea = 12;
+
+// A la distancia a la que se mira un nivel, una mancha de pocas celdas no es un
+// detalle sino un punto de color. Cada una cuesta un objeto entero y ademas parte
+// en dos la mancha del vecino, que tiene que rodearla, asi que salen mas caras de
+// lo que ocupan. Se funden con la vecina con la que mas borde comparten mientras
+// el cambio no llegue a notarse.
+void mergeFaintSpecks(
+    std::vector<GridFrame>& frames,
+    std::vector<Color> const& palette,
+    int width,
+    int height
+) {
+    if (palette.empty()) return;
+    std::vector<OkLab> labs;
+    labs.reserve(palette.size());
+    for (auto const& color : palette) labs.push_back(rgbToOkLab(color));
+
+    std::size_t const cells = static_cast<std::size_t>(width) * height;
+    constexpr std::array<std::pair<int, int>, 4> neighbors{
+        std::pair{-1, 0}, std::pair{1, 0}, std::pair{0, -1}, std::pair{0, 1}
+    };
+    for (auto& frame : frames) {
+        // El antialias no deja una mota sino una rampa de varias, una encima de
+        // otra: cada pasada se come la de fuera y descubre la siguiente.
+        for (int pass = 0; pass < 8; ++pass) {
+            std::vector<std::uint8_t> visited(cells, 0);
+            bool changed = false;
+            for (int start = 0; start < width * height; ++start) {
+                int const color = frame.cells[static_cast<std::size_t>(start)];
+                if (visited[static_cast<std::size_t>(start)]) continue;
+
+                std::vector<int> component{start};
+                visited[static_cast<std::size_t>(start)] = 1;
+                for (std::size_t head = 0; head < component.size(); ++head) {
+                    int const x = component[head] % width;
+                    int const y = component[head] / width;
+                    for (auto const [dx, dy] : neighbors) {
+                        int const xx = x + dx;
+                        int const yy = y + dy;
+                        if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
+                        int const neighbor = yy * width + xx;
+                        if (visited[static_cast<std::size_t>(neighbor)]) continue;
+                        if (frame.cells[static_cast<std::size_t>(neighbor)] != color) continue;
+                        visited[static_cast<std::size_t>(neighbor)] = 1;
+                        component.push_back(neighbor);
+                    }
+                }
+                // La mancha se recorre entera aunque ya se sepa que se pasa de
+                // tamano: cortando el recorrido a la mitad, el resto se quedaba sin
+                // visitar y volvia a entrar como si fuera otra mancha chica, y una
+                // mancha grande acababa fundiendose a trozos.
+                if (static_cast<int>(component.size()) > kSpeckArea) continue;
+
+                // Un agujero transparente encerrado dentro de una mancha no es el
+                // fondo: es lo que deja el antialias o el JPEG donde el alfa se
+                // quedo corto. Se cierra con el color que lo rodea. Solo si esta
+                // encerrado del todo, que si toca el borde del lienzo o el hueco
+                // de fuera entonces si es fondo.
+                if (color < 0) {
+                    bool enclosed = true;
+                    for (int position : component) {
+                        int const x = position % width;
+                        int const y = position / width;
+                        if (x == 0 || y == 0 || x + 1 == width || y + 1 == height) {
+                            enclosed = false;
+                            break;
+                        }
+                    }
+                    if (!enclosed) continue;
+                }
+
+                std::vector<int> border(palette.size(), 0);
+                for (int position : component) {
+                    int const x = position % width;
+                    int const y = position / width;
+                    for (auto const [dx, dy] : neighbors) {
+                        int const xx = x + dx;
+                        int const yy = y + dy;
+                        if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
+                        int const other = frame.cells[
+                            static_cast<std::size_t>(yy) * width + xx];
+                        if (other >= 0 && other != color) {
+                            ++border[static_cast<std::size_t>(other)];
+                        }
+                    }
+                }
+                auto const winner = std::max_element(border.begin(), border.end());
+                if (*winner == 0) continue;
+                auto const replacement = static_cast<std::int32_t>(
+                    std::distance(border.begin(), winner));
+                // El agujero encerrado no se mide contra ningun color: no hay
+                // distancia entre el hueco y un tono, y dejarlo abierto siempre es
+                // peor que cerrarlo.
+                if (color >= 0) {
+                    float const cost = oklabDistance(
+                        labs[static_cast<std::size_t>(color)],
+                        labs[static_cast<std::size_t>(replacement)]) *
+                        static_cast<float>(component.size());
+                    if (cost > kSpeckBudget) continue;
+                }
+                for (int position : component) {
+                    frame.cells[static_cast<std::size_t>(position)] = replacement;
+                }
+                changed = true;
+            }
+            if (!changed) break;
+        }
+    }
+}
 
 // Una celda suelta de un color no dibuja nada: a la escala a la que se ve el
 // nivel es un punto, pero cuesta un objeto entero y ademas rompe en dos la mancha
@@ -1465,18 +1867,24 @@ BuildResult buildAt(
 
     auto selected = selectFrames(source, frameLimit);
     report(progress, BuildStage::Preparing, 0.08f);
-    auto reduced = reduceFrames(source, selected, width, height, options);
+    auto const masks = backgroundMasks(source, selected, options);
+    auto reduced = reduceFrames(source, selected, masks, width, height, options);
     report(progress, BuildStage::Resizing, 0.28f);
     auto palette = buildPalette(
-        reduced, options.maxColors, width, height,
+        source, selected, masks, options, options.maxColors, width, height,
         usesPaintGeometry(options.mode));
     if (palette.empty()) return {{}, "El GIF quedo completamente transparente con estos ajustes."};
     report(progress, BuildStage::Palette, 0.4f);
-    auto frames = quantize(reduced, palette, width, height, options.dither);
+    // El difuminado reparte el error de una celda entre sus vecinas, asi que
+    // necesita la imagen ya reducida; sin el, cada celda se decide mirando su
+    // trozo del original entero.
+    auto frames = options.dither
+        ? quantize(reduced, palette, width, height, true)
+        : quantizeFromSource(
+              source, selected, masks, palette, width, height, options);
     if (frames.empty()) return {{}, "No quedaron frames validos despues de procesar el GIF."};
     report(progress, BuildStage::Geometry, 0.5f);
-    // Geometry uses the untouched grid; displayed fidelity uses the source pixels.
-    auto const referenceFrames = frames;
+    mergeFaintSpecks(frames, palette, width, height);
     if (usesPaintGeometry(options.mode)) {
         // Una mota es lo que no llega a la cuatromilesima parte del dibujo. Con el
         // umbral mas alto se ahorraban objetos, pero en un dibujo hecho a pixel el
@@ -1488,6 +1896,13 @@ BuildResult buildAt(
             compactPaintSpeckles(frames, reduced, palette, width, height);
         }
     }
+    // La revision de la geometria se mide contra la rejilla que se le manda
+    // pintar, ya limpia de motas, no contra la recien cuantizada: es lo unico que
+    // la geometria puede reproducir. Midiendola contra la de antes, la limpieza se
+    // penalizaba a si misma y la busqueda de resolucion respondia bajando la
+    // rejilla, que es justo lo contrario de lo que hace falta. Lo que vigila que
+    // la limpieza no se pase es `similarity`, que va contra los pixeles de origen.
+    auto const referenceFrames = frames;
     GeometryContext context;
     context.mode = options.mode;
     context.obstacles.assign(palette.size(), {});
@@ -1572,7 +1987,7 @@ BuildResult buildAt(
         plan.detailSimilarity = plan.similarity;
         if (plan.mode == ImportMode::Render && plan.frames.size() == selected.size()) {
             auto detailed = reduceFrames(
-                source, selected, width * 2, height * 2, options);
+                source, selected, masks, width * 2, height * 2, options);
             plan.detailSimilarity = sourcePlanSimilarity(plan, detailed, 2);
         }
     }

@@ -34,6 +34,8 @@ constexpr float kCoveredSpill = 0.35f;
 // Cuantas veces su grosor tiene que medir un trazo de largo para que valga la pena
 // trazarlo como tal.
 constexpr float kChainSlenderness = 3.f;
+// Cuanto puede asomar una tira de la cadena fuera de la mancha antes de tirarla.
+constexpr float kChainSpill = 0.06f;
 constexpr float kRepairDiameter = 1.f;
 constexpr float kRoundCapDiameter = 1.8f;
 constexpr int kRepairReach = 3;
@@ -317,6 +319,38 @@ bool shapeStaysInside(
         }
     }
     return true;
+}
+
+// Que parte de la figura cae fuera de lo permitido. Para una tira, exigir cero es
+// pasarse: el bisel y el remate de una tira buena se salen un pico y no se ve,
+// pero tirarla manda la mancha al contorno, que se pasa mucho mas.
+float shapeSpill(
+    Primitive const& shape,
+    std::vector<std::uint8_t> const& permitted,
+    int width,
+    int height
+) {
+    auto const box = shapeBox(shape, width, height);
+    int covered = 0;
+    int spilled = 0;
+    for (int y = box[1]; y <= box[3]; ++y) {
+        for (int x = box[0]; x <= box[2]; ++x) {
+            bool const allowed = permitted[static_cast<std::size_t>(y) * width + x] != 0;
+            for (int sampleY = 0; sampleY < kFitSamples; ++sampleY) {
+                for (int sampleX = 0; sampleX < kFitSamples; ++sampleX) {
+                    if (!insideShape(
+                            shape,
+                            static_cast<float>(x) + (sampleX + 0.5f) / kFitSamples,
+                            static_cast<float>(y) + (sampleY + 0.5f) / kFitSamples)) {
+                        continue;
+                    }
+                    ++covered;
+                    spilled += !allowed;
+                }
+            }
+        }
+    }
+    return covered > 0 ? static_cast<float>(spilled) / covered : 0.f;
 }
 
 // Un objeto redondo solo puede ir donde nada se pinte encima: GD lo dibuja en
@@ -650,6 +684,21 @@ void appendBand(
         if (!hasBlocked) return false;
         return blocked[static_cast<std::size_t>(cellY) * sourceWidth + cellX] != 0;
     };
+    // Pasarse solo es gratis si lo que hay fuera queda tapado a lo largo de toda
+    // la tira. Mirando solo el punto medio, un tramo largo se pasaba entero por lo
+    // que valia para una celda, y por el resto del recorrido asomaba medio ancho
+    // sobre el color de al lado. Ahi salia casi todo lo que el plan pintaba mal.
+    auto coveredAlong = [&](Point const& from, Point const& to, float inwardX, float inwardY) {
+        int const steps = std::max(
+            2, static_cast<int>(std::ceil(pointDistance(from, to))) + 1);
+        for (int step = 0; step <= steps; ++step) {
+            float const ratio = static_cast<float>(step) / steps;
+            float const x = from.x + (to.x - from.x) * ratio - inwardX * 0.5f;
+            float const y = from.y + (to.y - from.y) * ratio - inwardY * 0.5f;
+            if (!coveredOutside(x, y)) return false;
+        }
+        return true;
+    };
 
     for (std::size_t i = 0; i < segments; ++i) {
         auto const& segment = measured[i];
@@ -688,7 +737,7 @@ void appendBand(
         // Pasarse nunca puede llegar a medio grosor: en una linea fina eso dejaria
         // la tira entera fuera de la mancha.
         float const overshoot = std::min(
-            coveredOutside(midX - inwardX * 0.5f, midY - inwardY * 0.5f)
+            coveredAlong(first, second, inwardX, inwardY)
                 ? kOvershoot : kFreeOvershoot,
             thickness * 0.35f);
         float const offset = thickness * 0.5f - overshoot;
@@ -719,7 +768,8 @@ bool appendChain(
     float radius,
     int color,
     int layer,
-    std::vector<std::uint8_t> const& blocked
+    std::vector<std::uint8_t> const& blocked,
+    std::vector<std::uint8_t> const& permitted
 ) {
     auto const skeleton = thin(component, sourceWidth);
     auto const paths = skeletonPaths(skeleton);
@@ -944,6 +994,19 @@ bool appendChain(
             });
         }
     }
+    if (strokes.empty()) return false;
+    // Aqui es donde se comprueba lo de arriba. El grosor sale del adelgazado y
+    // esta acotado por abajo, asi que donde el trazo se estrecha la tira se pasa
+    // de ancho y asoma sobre el color de al lado; sin mirarlo, la cadena era de
+    // donde salia casi todo lo que el plan pintaba de un color que no tocaba.
+    // Se cae la tira que se sale, no la cadena entera: lo que deje sin tapar lo
+    // recoge la pasada de parches, que empaqueta rectangulos rectos y esos no
+    // asoman. Tirar la cadena entera mandaba la mancha al contorno, que se pasa
+    // igual y encima gasta mas objetos.
+    strokes.erase(std::remove_if(strokes.begin(), strokes.end(),
+        [&](Primitive const& stroke) {
+            return shapeSpill(stroke, permitted, sourceWidth, sourceHeight) > kChainSpill;
+        }), strokes.end());
     if (strokes.empty()) return false;
     output.insert(output.end(), strokes.begin(), strokes.end());
     return true;
@@ -2303,6 +2366,14 @@ std::vector<Primitive> vectorizePaint(
             spare[position] |= blocked[position];
         }
     }
+    // Por donde una figura de este color puede asomar sin que se note: sus propias
+    // celdas, las que otra capa tapa despues y el hueco que ningun frame pinta.
+    std::vector<std::uint8_t> permitted = spare;
+    if (empty.size() == cells) {
+        for (std::size_t position = 0; position < cells; ++position) {
+            permitted[position] |= empty[position];
+        }
+    }
     if (positions.size() >= 8) {
         auto const region = buildRegion(positions, width);
         if (appendCircle(
@@ -2383,7 +2454,7 @@ std::vector<Primitive> vectorizePaint(
             chained = radius <= kThinRadius &&
                 appendChain(
                     shapes, region, component, width, height, radius, color, base + 1,
-                    blocked);
+                    blocked, permitted);
             if (!chained) {
                 float const band = std::clamp(radius * 1.4f, 1.4f, kBandWidth);
                 std::vector<Contour> refined;
@@ -2403,6 +2474,15 @@ std::vector<Primitive> vectorizePaint(
                         outline, region, contour, band, color, base + 1,
                         width, height, blocked);
                 }
+                // El contorno se simplifica y se redondea, asi que sus tiras no
+                // siguen la silueta celda a celda: donde el recorte se sale, la
+                // tira pinta este color sobre el de al lado y esa mordida no la
+                // arregla nadie despues, porque va por encima. La que se pase se
+                // cae y el hueco lo recoge el empaquetado, que no asoma.
+                outline.erase(std::remove_if(outline.begin(), outline.end(),
+                    [&](Primitive const& stroke) {
+                        return !shapeStaysInside(stroke, permitted, width, height);
+                    }), outline.end());
                 inside = insideContours(region, refined);
                 // El contorno suavizado se sale de la silueta en las curvas, y el
                 // relleno lo sigue: donde se sale acaba pintando encima del color
@@ -2435,14 +2515,22 @@ std::vector<Primitive> vectorizePaint(
 
         collectPlain(
             coverageMask(region, shapes, false), inside, true, chained ? 1.1f : 1.6f);
-        collectPlain(coverageMask(region, shapes, true), {}, true, 1.01f);
+        // Relleno de seguridad por debajo, para las celdas de dentro que las
+        // figuras no tapan enteras. Con la cadena sobra: sus tiras van validadas
+        // para no salirse y ya cubren la mancha, asi que lo unico que dejaba era
+        // un cuadrado por celda debajo de un trazo del mismo color. Lo que quede
+        // suelto lo recoge igual la pasada de parches de mas abajo.
+        if (!chained) collectPlain(coverageMask(region, shapes, true), {}, true, 1.01f);
         appendBlocks(shapes, plain, width, height, color, base, spare);
-        auto missing = selectCells(
-            region, width, coverageMask(region, shapes, false), inside, true, 0.f);
         // Ni una celda suelta se puede dejar sin tapar: ahora el color de debajo
         // se estira por encima de las celdas que este tapa, asi que un hueco aqui
         // no deja transparencia sino el color de al lado. Salen baratas porque al
-        // final se empaquetan todas juntas.
+        // final se empaquetan todas juntas. Va sin la mascara del contorno a
+        // proposito: el contorno suavizado deja fuera alguna celda del borde, y
+        // cuando la tira que la tapaba se cae por asomarse, limitando por ahi no
+        // la recogia nadie y quedaba un agujero.
+        auto missing = selectCells(
+            region, width, coverageMask(region, shapes, false), {}, true, 0.f);
         repairs.insert(repairs.end(), missing.begin(), missing.end());
         output.insert(output.end(), shapes.begin(), shapes.end());
     }
