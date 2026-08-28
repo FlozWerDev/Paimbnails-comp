@@ -2061,6 +2061,62 @@ void appendRepairs(
     }
 }
 
+// La criba de utilidad mira cada objeto contra lo que hay pintado en su momento,
+// pero despues los rectangulos se fusionan y crecen, y un objeto que si aportaba
+// puede quedarse sin aportar nada. Esta pasada se hace la pregunta directa: si
+// borro este objeto, cambia algun pixel? Se pinta una vez guardando los dos de
+// arriba en cada muestra; el objeto sobra cuando en todas las muestras donde
+// manda hay debajo otro del mismo color esperando. Es exacta, asi que lo que
+// quita no se ve.
+void dropRedundantObjects(std::vector<Primitive>& objects, int width, int height) {
+    std::size_t const samples =
+        static_cast<std::size_t>(width) * height * kPruneScale * kPruneScale;
+
+    bool dropped = true;
+    while (dropped && objects.size() > 1) {
+        dropped = false;
+        std::vector<Primitive const*> ordered;
+        ordered.reserve(objects.size());
+        for (auto const& object : objects) ordered.push_back(&object);
+        std::stable_sort(ordered.begin(), ordered.end(), [](auto* left, auto* right) {
+            return left->layer < right->layer;
+        });
+
+        std::vector<std::int32_t> top(samples, -1);
+        std::vector<std::int32_t> below(samples, -1);
+        for (std::size_t slot = 0; slot < ordered.size(); ++slot) {
+            anySample(*ordered[slot], width, height, [&](std::size_t sample) {
+                below[sample] = top[sample];
+                top[sample] = static_cast<std::int32_t>(slot);
+                return false;
+            });
+        }
+
+        std::vector<std::uint8_t> needed(ordered.size(), 0);
+        for (std::size_t sample = 0; sample < samples; ++sample) {
+            auto const owner = top[sample];
+            if (owner < 0) continue;
+            auto const under = below[sample];
+            if (under >= 0 &&
+                ordered[static_cast<std::size_t>(under)]->color ==
+                    ordered[static_cast<std::size_t>(owner)]->color) {
+                continue;
+            }
+            needed[static_cast<std::size_t>(owner)] = 1;
+        }
+
+        std::vector<std::uint8_t> keep(objects.size(), 0);
+        for (std::size_t slot = 0; slot < ordered.size(); ++slot) {
+            if (!needed[slot]) {
+                dropped = true;
+                continue;
+            }
+            keep[static_cast<std::size_t>(ordered[slot] - objects.data())] = 1;
+        }
+        if (dropped) compactKept(objects, keep);
+    }
+}
+
 } // namespace
 
 std::vector<Primitive> paintSeamRepairs(
@@ -2224,6 +2280,7 @@ void prunePaintObjects(std::vector<Primitive>& objects, int width, int height) {
     compactKept(objects, keep);
     mergePaintBlocks(objects);
     mergePaintRects(objects);
+    dropRedundantObjects(objects, width, height);
 }
 
 void prunePaintObjectsByVisibility(

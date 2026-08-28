@@ -1941,6 +1941,9 @@ BuildResult buildAt(
             prunePaintObjects(chosen.staticObjects, width, height);
             repairPaintSeams(
                 chosen.staticObjects, frames.front().cells, context.ranks, width, height);
+            // La secuencia acababa en parches, asi que los ultimos no pasaban por
+            // ninguna criba y algunos no cambiaban nada del dibujo.
+            prunePaintObjects(chosen.staticObjects, width, height);
         }
     } else {
         auto temporal = temporalCandidate(frames, width, height, options.loop, context);
