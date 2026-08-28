@@ -67,6 +67,7 @@ private:
         GLint rayCount         = -1;
         GLint raySteps         = -1;
         GLint rayDistance      = -1;
+        GLint stepGrowth       = -1;
         GLint lightThreshold   = -1;
         GLint lightRange       = -1;
         GLint bounceFalloff    = -1;
