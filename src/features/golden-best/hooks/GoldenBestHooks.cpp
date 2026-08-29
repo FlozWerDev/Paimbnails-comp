@@ -11,20 +11,11 @@ namespace {
 
 constexpr char const* kModuleId = "paimbnails.goldenbest.gameplay";
 
+// Frames between label searches while none has been found yet.
+constexpr int kLabelSearchInterval = 30;
+
 bool moduleEnabled() {
     return paimon::modules::isEnabled(kModuleId);
-}
-
-bool showInPractice() {
-    return Mod::get()->getSettingValue<bool>("golden-best-practice-mode");
-}
-
-bool showInTestMode() {
-    return Mod::get()->getSettingValue<bool>("golden-best-test-mode");
-}
-
-bool showInPlatformer() {
-    return Mod::get()->getSettingValue<bool>("golden-best-platformer-mode");
 }
 
 } // namespace
@@ -34,9 +25,13 @@ class $modify(PaimonGoldenBestPlayLayer, PlayLayer) {
         CCLabelBMFont* m_label = nullptr;
         float m_oldScale = 1.0F;
         float m_oldAnchorY = -1.0F;
+        int   m_labelSearchCooldown = 0;
         bool m_initialized = false;
         bool m_goldApplied = false;
         bool m_customColor = false;
+        bool m_showInPractice = false;
+        bool m_showInTestMode = false;
+        bool m_showInPlatformer = false;
         ccColor3B m_color;
     };
 
@@ -74,18 +69,17 @@ class $modify(PaimonGoldenBestPlayLayer, PlayLayer) {
         return true;
     }
 
-    void updateProgressbar() {
-        PlayLayer::updateProgressbar();
+    // Levels with a hidden progress bar never produce a percentage label, so the
+    // child scan would otherwise run on every frame for the whole attempt.
+    bool ensureInitialized() {
+        if (m_fields->m_initialized) return true;
+        if (--m_fields->m_labelSearchCooldown > 0) return false;
+        m_fields->m_labelSearchCooldown = kLabelSearchInterval;
 
-        if (!m_fields->m_initialized) {
-            m_fields->m_customColor = Mod::get()->getSettingValue<bool>("golden-best-enable-colors");
-            m_fields->m_color = Mod::get()->getSettingValue<ccColor3B>("golden-best-custom-color");
-        }
-        if (!m_fields->m_initialized && m_percentageLabel) {
+        if (m_percentageLabel) {
             m_fields->m_label = m_percentageLabel;
             m_fields->m_oldScale = m_percentageLabel->getScale();
-            m_fields->m_initialized = true;
-        } else if (!m_fields->m_initialized) {
+        } else {
             for (size_t i = 0; i < this->getChildrenCount(); i++) {
                 auto obj = this->getChildren()->objectAtIndex(i);
                 auto* label = typeinfo_cast<CCLabelBMFont*>(obj);
@@ -94,23 +88,37 @@ class $modify(PaimonGoldenBestPlayLayer, PlayLayer) {
                 if (len > 0 && std::strcmp(text + len - 1, "%") == 0) {
                     m_fields->m_label = label;
                     m_fields->m_oldScale = label->getScale();
-                    m_fields->m_initialized = true;
                     break;
                 }
             }
         }
-        if (!m_fields->m_initialized) return;
+        if (!m_fields->m_label) return false;
+
+        auto* mod = Mod::get();
+        m_fields->m_customColor = mod->getSettingValue<bool>("golden-best-enable-colors");
+        m_fields->m_color = mod->getSettingValue<ccColor3B>("golden-best-custom-color");
+        m_fields->m_showInPractice = mod->getSettingValue<bool>("golden-best-practice-mode");
+        m_fields->m_showInTestMode = mod->getSettingValue<bool>("golden-best-test-mode");
+        m_fields->m_showInPlatformer = mod->getSettingValue<bool>("golden-best-platformer-mode");
+        m_fields->m_initialized = true;
+        return true;
+    }
+
+    void updateProgressbar() {
+        PlayLayer::updateProgressbar();
 
         if (!moduleEnabled()) {
             applyGold(false);
             return;
         }
+        if (!ensureInitialized()) return;
 
         if (m_fields->m_oldAnchorY == -1.0F) {
             m_fields->m_oldAnchorY = m_fields->m_label->getAnchorPoint().y;
         }
         if (!m_level->isPlatformer()) {
-            if ((!showInPractice() && m_isPracticeMode) || (!showInTestMode() && m_isTestMode)) {
+            if ((!m_fields->m_showInPractice && m_isPracticeMode) ||
+                (!m_fields->m_showInTestMode && m_isTestMode)) {
                 applyGold(false);
                 return;
             }
@@ -120,13 +128,15 @@ class $modify(PaimonGoldenBestPlayLayer, PlayLayer) {
 
     void updateTimeLabel(int p0, int p1, bool p2) {
         PlayLayer::updateTimeLabel(p0, p1, p2);
-        if (!m_fields->m_label || !moduleEnabled() || !m_level->isPlatformer() || !showInPlatformer()) {
+        if (!m_fields->m_initialized || !moduleEnabled() ||
+            !m_level->isPlatformer() || !m_fields->m_showInPlatformer) {
             return;
         }
         if (m_fields->m_oldAnchorY == -1.0F) {
             m_fields->m_oldAnchorY = m_fields->m_label->getAnchorPoint().y;
         }
-        if ((!showInPractice() && m_isPracticeMode) || (!showInTestMode() && m_isTestMode)) {
+        if ((!m_fields->m_showInPractice && m_isPracticeMode) ||
+            (!m_fields->m_showInTestMode && m_isTestMode)) {
             applyGold(false);
             return;
         }
