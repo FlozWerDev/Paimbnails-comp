@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../PhysicsConfig.hpp"
+#include "../PhysicsNative.hpp"
 #include "PhysicsObjectShapes.hpp"
 
 #include <Geode/Geode.hpp>
@@ -40,6 +41,7 @@ struct ObjectMaterial {
 struct CapturedBody {
     Motion motion = Motion::Static;
     BodyMaterial material;
+    NativeBodySettings native;
     int exactGroup = 0;
     std::vector<geode::WeakRef<GameObject>> objects;
     std::vector<ObjectMaterial> materials;
@@ -74,6 +76,7 @@ struct ShapeCounts {
 
 struct ResolvedBody {
     BodySpec spec;
+    NativeBodySettings native;
     int preferredGroup = 0;
     std::vector<GameObject*> objects;
     std::vector<BodyVisual> visuals;
@@ -98,6 +101,7 @@ public:
     ) const;
     geode::Result<Motion> toggleMotion(std::size_t index);
     BodyMaterial* material(std::size_t index);
+    NativeBodySettings* nativeSettings(std::size_t index);
     ObjectMaterial* objectMaterial(std::size_t index, std::size_t object);
 
     void beginCapture(CaptureRole role);

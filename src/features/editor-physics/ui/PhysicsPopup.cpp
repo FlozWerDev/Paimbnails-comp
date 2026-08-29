@@ -22,6 +22,7 @@
 #include <functional>
 #include <limits>
 #include <ranges>
+#include <utility>
 
 using namespace geode::prelude;
 
@@ -184,7 +185,7 @@ bool PhysicsPopup::init() {
     m_otherBodiesLabel = smallLabel(m_mainLayer, {111.f, 249.f}, {255, 190, 95});
 
     auto* hint = CCLabelBMFont::create(
-        "A cae y responde; B puede ser fijo o dinamico. Los extras colisionan igual.",
+        "Configura cada cuerpo con engranaje: triggers en vivo o keyframes horneados.",
         "bigFont.fnt"
     );
     hint->setScale(0.235f);
@@ -333,7 +334,7 @@ bool PhysicsPopup::init() {
     textButton(menu, "Previsualizar", 154.f, 39.f, 110, "GJ_button_04.png", [self] {
         if (auto popup = self.lock()) popup->preview();
     });
-    textButton(menu, "Hornear", 269.f, 39.f, 90, "GJ_button_01.png", [self] {
+    textButton(menu, "Compilar GD", 269.f, 39.f, 100, "GJ_button_01.png", [self] {
         if (auto popup = self.lock()) popup->bake();
     });
     textButton(menu, "Quitar ultimo", 399.f, 39.f, 115, "GJ_button_06.png", [self] {
@@ -405,7 +406,7 @@ void PhysicsPopup::toggleBMotion() {
     refreshBodies();
     setStatus(
         result.unwrap() == Motion::Dynamic
-            ? "B ahora es reactivo: recibe impactos sin gravedad propia."
+            ? "B ahora es dinamico; su salida se elige desde el engranaje."
             : "B ahora funciona como colisionador fijo.",
         {170, 225, 185}
     );
@@ -430,10 +431,29 @@ void PhysicsPopup::preview() {
     if (!runSimulation()) return;
     m_playing = true;
     m_elapsed = 0.f;
-    std::size_t dynamics = std::ranges::count_if(m_resolved, [](auto const& body) {
-        return body.spec.motion == Motion::Dynamic;
+    std::size_t bakedDynamics = std::ranges::count_if(m_resolved, [](auto const& body) {
+        return body.spec.motion == Motion::Dynamic &&
+            body.native.backend == PhysicsBackend::Baked;
     });
-    std::size_t const estimate = dynamics * (m_trace.frames.size() + 1);
+    std::size_t reactiveDynamics = std::ranges::count_if(m_resolved, [](auto const& body) {
+        return body.spec.motion == Motion::Dynamic &&
+            body.native.backend == PhysicsBackend::Reactive;
+    });
+    std::size_t const bakedEstimate = bakedDynamics * (m_trace.frames.size() + 1);
+    std::vector<NativeBodyInput> nativeInputs;
+    nativeInputs.reserve(m_resolved.size());
+    for (auto const& body : m_resolved) {
+        NativeBodyInput input;
+        input.spec = body.spec;
+        input.settings = body.native;
+        input.objectCount = body.objects.size();
+        for (auto const& visual : body.visuals) input.objectOffsets.push_back(visual.offset);
+        nativeInputs.push_back(std::move(input));
+    }
+    auto const nativeEstimate = reactiveDynamics > 0
+        ? estimateNativeRequirements(nativeInputs, m_config.gravity, m_config.airDrag)
+            .estimatedObjects
+        : 0;
     ShapeCounts shapes;
     for (auto const& body : m_resolved) {
         shapes.boxes += body.shapes.boxes;
@@ -444,9 +464,10 @@ void PhysicsPopup::preview() {
     setStatus(
         fmt::format(
             "{} cuerpos | {} bloques + {} rampas + {} redondos + {} siluetas | {} impactos | "
-            "impulso pico {:.1f} | {} frames | hasta {} objetos",
+            "impulso pico {:.1f} | {} frames | hasta {} objetos GD ({} baked + ~{} nativos)",
             m_resolved.size(), shapes.boxes, shapes.ramps, shapes.rounds, shapes.hulls,
-            m_trace.impacts, m_trace.peakImpulse, m_trace.frames.size(), estimate
+            m_trace.impacts, m_trace.peakImpulse, m_trace.frames.size(),
+            bakedEstimate + nativeEstimate, bakedEstimate, nativeEstimate
         ),
         {170, 225, 185}
     );
@@ -454,7 +475,7 @@ void PhysicsPopup::preview() {
 
 void PhysicsPopup::bake() {
     if (!runSimulation()) return;
-    auto result = emitToEditor(editorUI(), m_resolved, m_trace);
+    auto result = emitToEditor(editorUI(), m_resolved, m_trace, m_config);
     if (result.isErr()) {
         setStatus(result.unwrapErr(), {255, 120, 120});
         return;
@@ -462,12 +483,14 @@ void PhysicsPopup::bake() {
     auto const report = result.unwrap();
     setStatus(
         fmt::format(
-            "Horneado: {} keyframes + {} trigger(s), {} grupos.",
-            report.keyframes, report.triggers, report.groups
+            "Compilado GD: {} keyframes + {} triggers ({} fisica, {} colision) + "
+            "{} bloques, {} grupos.",
+            report.keyframes, report.triggers, report.physicsTriggers,
+            report.collisionTriggers, report.collisionBlocks, report.groups
         ),
         {135, 255, 150}
     );
-    PaimonNotify::show("Fisicas horneadas con keyframes.", NotificationIcon::Success);
+    PaimonNotify::show("Fisicas compiladas a objetos nativos de GD.", NotificationIcon::Success);
 }
 
 void PhysicsPopup::removeLast() {
@@ -550,9 +573,12 @@ void PhysicsPopup::refreshBodies() {
 
     auto const& a = bodies.front();
     m_bodyALabel->setString(fmt::format(
-        "A: {} objeto{} | {}",
+        "A: {} objeto{} | {} | {}",
         liveObjectCount(a), liveObjectCount(a) == 1 ? "" : "s",
-        a.exactGroup > 0 ? fmt::format("grupo {}", a.exactGroup) : "grupo automatico"
+        a.exactGroup > 0 ? fmt::format("grupo {}", a.exactGroup) : "grupo automatico",
+        a.motion == Motion::Static
+            ? std::string("fijo")
+            : fmt::format("{}:{}", backendName(a.native.backend), presetName(a.native.preset))
     ).c_str());
 
     std::size_t dynamicCount = 0;
@@ -569,7 +595,7 @@ void PhysicsPopup::refreshBodies() {
     ).c_str());
     if (m_bodyModeSprite) {
         m_bodyModeSprite->setString(
-            bodies.size() > 1 && bodies[1].motion == Motion::Dynamic ? "B: reactivo" : "B: fijo"
+            bodies.size() > 1 && bodies[1].motion == Motion::Dynamic ? "B: dinamico" : "B: fijo"
         );
     }
 }

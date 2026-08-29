@@ -18,12 +18,18 @@ struct EmitReport {
     std::size_t groups = 0;
     std::size_t assignedObjects = 0;
     std::size_t impacts = 0;
+    std::size_t reactiveBodies = 0;
+    std::size_t collisionBlocks = 0;
+    std::size_t collisionTriggers = 0;
+    std::size_t physicsTriggers = 0;
+    std::size_t fragments = 0;
 };
 
 geode::Result<EmitReport> emitToEditor(
     EditorUI* ui,
     std::vector<ResolvedBody> const& bodies,
-    SimulationTrace const& trace
+    SimulationTrace const& trace,
+    LabConfig const& config
 );
 
 geode::Result<std::size_t> removeLastEmission(EditorUI* ui);

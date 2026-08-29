@@ -13,7 +13,7 @@ namespace paimon::editorphysics {
 
 namespace {
 
-constexpr float kPopupWidth = 380.f;
+constexpr float kPopupWidth = 500.f;
 constexpr float kPopupHeight = 320.f;
 constexpr float kFirstRowY = 248.f;
 constexpr float kRowStep = 21.f;
@@ -135,6 +135,88 @@ bool PhysicsBodyPopup::init() {
         }
     }
 
+    auto* nativeTitle = CCLabelBMFont::create("Salida nativa GD", "goldFont.fnt");
+    nativeTitle->setScale(0.42f);
+    nativeTitle->setPosition({435.f, 250.f});
+    m_mainLayer->addChild(nativeTitle);
+
+    auto addNativeLabel = [&](char const* text, float y) {
+        auto* label = CCLabelBMFont::create(text, "bigFont.fnt");
+        label->setScale(0.27f);
+        label->setColor({155, 170, 200});
+        label->setPosition({435.f, y});
+        m_mainLayer->addChild(label);
+    };
+    addNativeLabel("Compilador", 229.f);
+    addNativeLabel("Preset", 190.f);
+    addNativeLabel("Fuerza", 151.f);
+    addNativeLabel("Sensor", 112.f);
+    addNativeLabel("Jugador", 73.f);
+
+    m_backendSprite = ButtonSprite::create(
+        "triggers", 104, true, "bigFont.fnt", "GJ_button_01.png", 22.f, 0.5f
+    );
+    m_backendSprite->setScale(0.54f);
+    auto* backendButton = CCMenuItemExt::createSpriteExtra(
+        m_backendSprite, [self](CCMenuItemSpriteExtra*) {
+            if (auto popup = self.lock()) popup->cycleBackend();
+        }
+    );
+    backendButton->setPosition({435.f, 211.f});
+    menu->addChild(backendButton);
+
+    m_presetSprite = ButtonSprite::create(
+        "empujable", 104, true, "bigFont.fnt", "GJ_button_04.png", 22.f, 0.5f
+    );
+    m_presetSprite->setScale(0.54f);
+    auto* presetButton = CCMenuItemExt::createSpriteExtra(
+        m_presetSprite, [self](CCMenuItemSpriteExtra*) {
+            if (auto popup = self.lock()) popup->cycleNativePreset(1);
+        }
+    );
+    presetButton->setPosition({435.f, 172.f});
+    menu->addChild(presetButton);
+
+    auto addNativeStepper = [&](int field, float y, CCLabelBMFont*& value) {
+        value = CCLabelBMFont::create("-", "bigFont.fnt");
+        value->setScale(0.29f);
+        value->setColor({255, 220, 110});
+        value->setPosition({435.f, y});
+        m_mainLayer->addChild(value);
+        for (int direction : {-1, 1}) {
+            auto* sprite = ButtonSprite::create(
+                direction < 0 ? "-" : "+", "bigFont.fnt", "GJ_button_04.png", 0.8f
+            );
+            sprite->setScale(0.34f);
+            auto* button = CCMenuItemExt::createSpriteExtra(
+                sprite, [self, field, direction](CCMenuItemSpriteExtra*) {
+                    if (auto popup = self.lock()) popup->adjustNative(field, direction);
+                }
+            );
+            button->setPosition({direction < 0 ? 390.f : 480.f, y});
+            menu->addChild(button);
+        }
+    };
+    addNativeStepper(0, 133.f, m_strengthLabel);
+    addNativeStepper(1, 94.f, m_sensorLabel);
+
+    auto addPlayerButton = [&](int player, float x, ButtonSprite*& target) {
+        target = ButtonSprite::create(
+            player == 1 ? "P1" : "P2", 48, true, "bigFont.fnt",
+            "GJ_button_04.png", 22.f, 0.5f
+        );
+        target->setScale(0.52f);
+        auto* button = CCMenuItemExt::createSpriteExtra(
+            target, [self, player](CCMenuItemSpriteExtra*) {
+                if (auto popup = self.lock()) popup->toggleNativePlayer(player);
+            }
+        );
+        button->setPosition({x, 54.f});
+        menu->addChild(button);
+    };
+    addPlayerButton(1, 410.f, m_player1Sprite);
+    addPlayerButton(2, 460.f, m_player2Sprite);
+
     auto* resetSprite = ButtonSprite::create(
         "Volver al lab", 120, true, "bigFont.fnt", "GJ_button_06.png", 24.f, 0.55f
     );
@@ -144,10 +226,11 @@ bool PhysicsBodyPopup::init() {
             if (auto popup = self.lock()) popup->resetOverrides();
         }
     );
-    resetButton->setPosition({kPopupWidth * 0.5f, 22.f});
+    resetButton->setPosition({190.f, 22.f});
     menu->addChild(resetButton);
 
     refreshValues();
+    refreshNativeValues();
     return true;
 }
 
@@ -213,6 +296,48 @@ void PhysicsBodyPopup::adjust(int field, int direction) {
     if (m_onChange) m_onChange();
 }
 
+void PhysicsBodyPopup::cycleBackend() {
+    auto* settings = PhysicsWorkspace::get().nativeSettings(m_body);
+    if (!settings) return;
+    settings->backend = settings->backend == PhysicsBackend::Reactive
+        ? PhysicsBackend::Baked : PhysicsBackend::Reactive;
+    refreshNativeValues();
+    if (m_onChange) m_onChange();
+}
+
+void PhysicsBodyPopup::cycleNativePreset(int direction) {
+    auto* settings = PhysicsWorkspace::get().nativeSettings(m_body);
+    if (!settings) return;
+    settings->preset = cyclePreset(settings->preset, direction);
+    refreshNativeValues();
+    if (m_onChange) m_onChange();
+}
+
+void PhysicsBodyPopup::adjustNative(int field, int direction) {
+    auto* settings = PhysicsWorkspace::get().nativeSettings(m_body);
+    if (!settings) return;
+    if (field == 0) {
+        settings->strength = std::clamp(settings->strength + direction * 0.25f, 0.25f, 3.f);
+    } else if (field == 1) {
+        settings->sensorPadding = std::clamp(
+            settings->sensorPadding + direction * 1.f, 2.f, 30.f
+        );
+    } else {
+        return;
+    }
+    refreshNativeValues();
+    if (m_onChange) m_onChange();
+}
+
+void PhysicsBodyPopup::toggleNativePlayer(int player) {
+    auto* settings = PhysicsWorkspace::get().nativeSettings(m_body);
+    if (!settings) return;
+    if (player == 1) settings->targetPlayer1 = !settings->targetPlayer1;
+    else settings->targetPlayer2 = !settings->targetPlayer2;
+    refreshNativeValues();
+    if (m_onChange) m_onChange();
+}
+
 void PhysicsBodyPopup::resetOverrides() {
     auto& workspace = PhysicsWorkspace::get();
     auto* material = workspace.material(m_body);
@@ -252,6 +377,25 @@ void PhysicsBodyPopup::refreshValues() {
     };
     for (std::size_t i = 0; i < values.size(); ++i) {
         if (m_valueLabels[i]) m_valueLabels[i]->setString(values[i].c_str());
+    }
+}
+
+void PhysicsBodyPopup::refreshNativeValues() {
+    auto* settings = PhysicsWorkspace::get().nativeSettings(m_body);
+    if (!settings) return;
+    if (m_backendSprite) m_backendSprite->setString(backendName(settings->backend));
+    if (m_presetSprite) m_presetSprite->setString(presetName(settings->preset));
+    if (m_strengthLabel) {
+        m_strengthLabel->setString(fmt::format("x{:.2f}", settings->strength).c_str());
+    }
+    if (m_sensorLabel) {
+        m_sensorLabel->setString(fmt::format("{:.0f} u", settings->sensorPadding).c_str());
+    }
+    if (m_player1Sprite) {
+        m_player1Sprite->setString(settings->targetPlayer1 ? "P1 on" : "P1 off");
+    }
+    if (m_player2Sprite) {
+        m_player2Sprite->setString(settings->targetPlayer2 ? "P2 on" : "P2 off");
     }
 }
 

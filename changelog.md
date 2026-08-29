@@ -22,6 +22,14 @@
 
 ---
 
+## ![](frame:GJ_hammerIcon_001.png?height=18) <cy>Editor</c>
+
+- <cl>Simulador de Fisicas</c>: nuevo compilador <cg>100% nativo de GD</c>. Cada cuerpo dinamico puede salir como keyframes horneados o como un grafo en tiempo real de <cg>Advanced Follow, Edit Advanced Follow, Collision Blocks, Collision, Spawn y Rotate</c>; el nivel reproduce el resultado sin necesitar un runtime de fisicas del mod.
+- <cl>Simulador de Fisicas</c>: panel por cuerpo para cambiar entre <cg>fijo/dinamico</c>, triggers/keyframes, fuerza, tamano de sensores, P1/P2 y presets <cg>Empujable, Rebotador, Pesado, Flotante, Iman, Pendulo y Explosion</c>. Explosion separa cada objeto en su propio subgrupo y Control ID.
+- <cl>Simulador de Fisicas</c>: reserva segura de Group/Block/Control IDs, validacion del grafo antes de tocar el nivel y rollback completo si GD no reconoce un trigger o un objeto llega a su limite de grupos. Recompilar la misma seleccion reemplaza su sistema anterior.
+
+---
+
 ## ![](frame:chestIcon_001.png?height=18) <cy>Compatibilidad</c>
 
 - <cl>Level Thumbnails</c>: ya es <cg>compatible</c>. Se quita el cartel de inicio que pedia desactivarlo y se pueden tener los dos mods puestos a la vez.

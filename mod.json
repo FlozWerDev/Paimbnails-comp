@@ -1356,13 +1356,13 @@
     },
     "editor-physics-title": {
       "name": "Physics Lab",
-      "description": "Simulate object groups and bake the result into native Geometry Dash triggers.",
+      "description": "Configure object bodies and compile them into native Geometry Dash physics triggers or keyframes.",
       "type": "title"
     },
     "editor-physics-enable": {
       "type": "bool",
       "name": "Enable Physics Lab",
-      "description": "Adds a physics simulator to the editor. Selected objects become compound bodies with gravity, mass, bounce, friction and multi-body collisions; the final path is emitted as vanilla Move, Rotate and Spawn triggers.",
+      "description": "Adds a separate physics authoring panel to the editor. Each selected body can be fixed or dynamic and compile to vanilla keyframes or real-time Advanced Follow, Collision, Spawn and Rotate trigger graphs with native presets.",
       "default": true
     },
     "editor-physics-keybind": {

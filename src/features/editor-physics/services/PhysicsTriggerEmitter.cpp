@@ -1,18 +1,26 @@
 #include "PhysicsTriggerEmitter.hpp"
 
+#include "../PhysicsNative.hpp"
+#include "../NativeTriggerCatalog.hpp"
+
 #include "../../../core/modules/ModuleRegistry.hpp"
 #include "../../collab-editor/CollabManager.hpp"
 
+#include <Geode/binding/AdvancedFollowEditObject.hpp>
+#include <Geode/binding/AdvancedFollowTriggerObject.hpp>
 #include <Geode/binding/EditorUI.hpp>
 #include <Geode/binding/EffectGameObject.hpp>
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/KeyframeAnimTriggerObject.hpp>
 #include <Geode/binding/KeyframeGameObject.hpp>
 #include <Geode/binding/LevelEditorLayer.hpp>
+#include <Geode/binding/SpawnTriggerGameObject.hpp>
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <unordered_set>
@@ -24,8 +32,8 @@ namespace paimon::editorphysics {
 
 namespace {
 
-constexpr int kKeyframeObject = 3032;
-constexpr int kKeyframeTrigger = 3033;
+constexpr int kKeyframeObject = nativeids::KeyframePoint;
+constexpr int kKeyframeTrigger = nativeids::KeyframeAnimation;
 constexpr std::size_t kMaxOutputObjects = 8000;
 constexpr float kRadiansToDegrees = 57.295779513082320876f;
 
@@ -34,15 +42,25 @@ struct AssignedGroup {
     int group = 0;
 };
 
+struct ParentChange {
+    WeakRef<GameObject> object;
+    int group = 0;
+    bool previous = false;
+};
+
 struct LastEmission {
     WeakRef<LevelEditorLayer> editor;
     std::vector<WeakRef<GameObject>> objects;
+    // Every captured object identifies the authored system. Controlled keeps
+    // only the objects that were dynamic in this particular compilation.
     std::vector<WeakRef<GameObject>> sources;
+    std::vector<WeakRef<GameObject>> controlled;
     std::vector<AssignedGroup> assignments;
+    std::vector<ParentChange> parents;
     std::vector<int> animations;
 };
 
-LastEmission g_last;
+std::vector<LastEmission> g_history;
 
 bool hasGroup(GameObject* object, int group) {
     if (!object || group <= 0) return false;
@@ -65,11 +83,43 @@ std::vector<int> freeGroups(LevelEditorLayer* editor, std::size_t count) {
     return groups;
 }
 
+std::vector<int> freeBlocks(LevelEditorLayer* editor, std::size_t count) {
+    std::vector<int> blocks;
+    blocks.reserve(count);
+    gd::unordered_set<int> excluded;
+    for (std::size_t i = 0; i < count; ++i) {
+        int const block = editor->getNextFreeBlockID(excluded);
+        if (block <= 0 || block > 9999) break;
+        blocks.push_back(block);
+        excluded.insert(block);
+    }
+    return blocks;
+}
+
+std::vector<int> freeControls(LevelEditorLayer* editor, std::size_t count) {
+    std::unordered_set<int> used;
+    if (editor) {
+        if (auto* objects = editor->getAllObjects()) {
+            for (auto* item : CCArrayExt<CCObject*>(objects)) {
+                auto* effect = typeinfo_cast<EffectGameObject*>(item);
+                if (effect && effect->m_controlID > 0) used.insert(effect->m_controlID);
+            }
+        }
+    }
+    std::vector<int> controls;
+    controls.reserve(count);
+    for (int candidate = 1; candidate <= 9999 && controls.size() < count; ++candidate) {
+        if (used.insert(candidate).second) controls.push_back(candidate);
+    }
+    return controls;
+}
+
 bool assignGroup(
     LevelEditorLayer* editor,
     std::vector<GameObject*> const& objects,
     int group,
-    std::vector<AssignedGroup>& assigned
+    std::vector<AssignedGroup>& assigned,
+    bool recreate = true
 ) {
     for (auto* object : objects) {
         if (hasGroup(object, group)) continue;
@@ -77,7 +127,7 @@ bool assignGroup(
         if (!hasGroup(object, group)) return false;
         assigned.push_back({object, group});
     }
-    editor->recreateGroups();
+    if (recreate) editor->recreateGroups();
     return true;
 }
 
@@ -88,6 +138,30 @@ void rollbackAssignments(LevelEditorLayer* editor, std::vector<AssignedGroup> co
         }
     }
     if (editor) editor->recreateGroups();
+}
+
+void rollbackParents(
+    LevelEditorLayer* editor,
+    std::vector<ParentChange> const& parents
+) {
+    for (auto it = parents.rbegin(); it != parents.rend(); ++it) {
+        if (!it->previous && editor && it->group > 0) {
+            editor->removeGroupParent(it->group);
+        }
+        if (auto object = it->object.lock()) object->m_hasGroupParent = it->previous;
+    }
+}
+
+void makeGroupParent(
+    LevelEditorLayer* editor,
+    GameObject* object,
+    int group,
+    std::vector<ParentChange>& parents
+) {
+    if (!object || object->m_hasGroupParent) return;
+    parents.push_back({object, group, false});
+    if (editor && group > 0) editor->setGroupParent(object, group);
+    else object->m_hasGroupParent = true;
 }
 
 CCArray* assignmentArray(std::vector<AssignedGroup> const& assigned) {
@@ -101,6 +175,11 @@ CCArray* assignmentArray(std::vector<AssignedGroup> const& assigned) {
     return array;
 }
 
+CCArray* changedSourcesArray(
+    std::vector<AssignedGroup> const& assigned,
+    std::vector<ParentChange> const& parents
+);
+
 void removeEmission(LastEmission const& emission, LevelEditorLayer* editor, bool notifyCollab) {
     if (!editor) return;
     auto& collab = paimon::collab::CollabManager::get();
@@ -110,18 +189,179 @@ void removeEmission(LastEmission const& emission, LevelEditorLayer* editor, bool
         if (notifyCollab && collab.connected()) collab.sendDeletedObject(object.data());
         editor->removeObject(object.data(), true);
     }
+    rollbackParents(editor, emission.parents);
     rollbackAssignments(editor, emission.assignments);
+    editor->recreateGroups();
     for (int animation : emission.animations) editor->updateKeyframeOrder(animation);
     if (notifyCollab && collab.connected()) {
-        collab.sendUpdatedObjects(assignmentArray(emission.assignments));
+        collab.sendUpdatedObjects(changedSourcesArray(emission.assignments, emission.parents));
     }
     editor->dirtifyTriggers();
+}
+
+CCArray* changedSourcesArray(
+    std::vector<AssignedGroup> const& assigned,
+    std::vector<ParentChange> const& parents
+) {
+    auto* array = assignmentArray(assigned);
+    std::unordered_set<GameObject*> seen;
+    for (auto* item : CCArrayExt<CCObject*>(array)) {
+        if (auto* object = typeinfo_cast<GameObject*>(item)) seen.insert(object);
+    }
+    for (auto const& entry : parents) {
+        if (auto object = entry.object.lock(); object && seen.insert(object.data()).second) {
+            array->addObject(object.data());
+        }
+    }
+    return array;
+}
+
+NativeBodyInput nativeInput(ResolvedBody const& body) {
+    NativeBodyInput input;
+    input.spec = body.spec;
+    input.settings = body.native;
+    input.objectCount = body.objects.size();
+    input.objectOffsets.reserve(body.visuals.size());
+    for (auto const& visual : body.visuals) input.objectOffsets.push_back(visual.offset);
+    return input;
+}
+
+int objectIDFor(NativeNodeKind kind) {
+    switch (kind) {
+        case NativeNodeKind::AdvancedFollow: return nativeids::AdvancedFollow;
+        case NativeNodeKind::AdvancedFollowEdit: return nativeids::AdvancedFollowEdit;
+        case NativeNodeKind::CollisionBlock: return nativeids::CollisionBlock;
+        case NativeNodeKind::CollisionTrigger: return nativeids::Collision;
+        case NativeNodeKind::Spawn: return nativeids::Spawn;
+        case NativeNodeKind::Rotate: return nativeids::Rotate;
+    }
+    return 0;
+}
+
+bool configureNativeNode(GameObject* raw, NativeNode const& node) {
+    if (!raw) return false;
+    raw->setPosition({node.position.x, node.position.y});
+    for (int group : node.groups) raw->addToGroup(group);
+
+    auto* effect = typeinfo_cast<EffectGameObject*>(raw);
+    if (effect) {
+        effect->m_isTouchTriggered = false;
+        effect->m_isSpawnTriggered = node.spawnTriggered;
+        effect->m_isMultiTriggered = node.multiTriggered;
+        effect->m_controlID = node.controlID;
+    }
+
+    switch (node.kind) {
+        case NativeNodeKind::AdvancedFollow: {
+            auto* follow = typeinfo_cast<AdvancedFollowTriggerObject*>(raw);
+            if (!follow) return false;
+            follow->m_targetGroupID = node.targetGroup;
+            follow->m_centerGroupID = node.centerGroup;
+            follow->m_controlID = node.controlID;
+            follow->m_targetPlayer1 = node.followPlayer1;
+            follow->m_targetPlayer2 = node.followPlayer2;
+            follow->m_followCPP = node.followCenter;
+            follow->m_startSpeed = node.startSpeed;
+            follow->m_startSpeedVariance = 0.f;
+            follow->m_startSpeedReference = 0;
+            follow->m_startDirection = node.startDirection;
+            follow->m_startDirectionVariance = 0.f;
+            follow->m_startDirectionReference = 0;
+            follow->m_maxSpeed = node.maxSpeed;
+            follow->m_maxSpeedVariance = 0.f;
+            follow->m_maxRange = node.maxRange;
+            follow->m_maxRangeVariance = 0.f;
+            follow->m_acceleration = node.acceleration;
+            follow->m_accelerationVariance = 0.f;
+            follow->m_friction = node.friction;
+            follow->m_frictionVariance = 0.f;
+            follow->m_nearAcceleration = 0.f;
+            follow->m_nearAccelerationVariance = 0.f;
+            follow->m_nearDistance = 0.f;
+            follow->m_nearDistanceVariance = 0.f;
+            follow->m_nearFriction = 0.f;
+            follow->m_nearFrictionVariance = 0.f;
+            follow->m_steerForce = node.acceleration;
+            follow->m_steerForceVariance = 0.f;
+            follow->m_delay = 0.f;
+            follow->m_delayVariance = 0.f;
+            follow->m_ignoreDisabled = true;
+            follow->m_rotateDirection = node.rotateToDirection;
+            follow->m_followMode = node.followMode;
+            follow->m_startMode = node.startMode;
+            follow->m_priority = 0;
+            return true;
+        }
+        case NativeNodeKind::AdvancedFollowEdit: {
+            auto* edit = typeinfo_cast<AdvancedFollowEditObject*>(raw);
+            if (!edit) return false;
+            edit->m_targetGroupID = node.targetGroup;
+            edit->m_controlID = node.controlID;
+            edit->m_targetControlID = node.controlID > 0;
+            edit->m_modX = node.modX;
+            edit->m_modXVariance = 0.f;
+            edit->m_modY = node.modY;
+            edit->m_modYVariance = 0.f;
+            edit->m_startSpeed = node.startSpeed;
+            edit->m_startSpeedVariance = 0.f;
+            edit->m_startDirection = node.startDirection;
+            edit->m_startDirectionVariance = 0.f;
+            edit->m_startSpeedReference = 0;
+            edit->m_startDirectionReference = 0;
+            edit->m_followMode = node.followMode;
+            edit->m_startMode = node.startMode;
+            edit->m_redirectDirection = node.redirectDirection;
+            edit->m_xOnly = false;
+            edit->m_yOnly = false;
+            return true;
+        }
+        case NativeNodeKind::CollisionBlock: {
+            if (!effect) return false;
+            effect->m_itemID = node.blockID;
+            effect->m_isDynamicBlock = node.dynamicBlock;
+            raw->setScaleX(std::max(0.01f, node.size.x / 30.f));
+            raw->setScaleY(std::max(0.01f, node.size.y / 30.f));
+            return true;
+        }
+        case NativeNodeKind::CollisionTrigger: {
+            if (!effect) return false;
+            effect->m_itemID = node.blockA;
+            effect->m_itemID2 = node.blockB;
+            effect->m_targetGroupID = node.targetGroup;
+            effect->m_activateGroup = node.activateGroup;
+            effect->m_triggerOnExit = node.triggerOnExit;
+            effect->m_targetPlayer1 = node.collisionPeer == CollisionPeer::Player1;
+            effect->m_targetPlayer2 = node.collisionPeer == CollisionPeer::Player2;
+            return true;
+        }
+        case NativeNodeKind::Spawn: {
+            auto* spawn = typeinfo_cast<SpawnTriggerGameObject*>(raw);
+            if (!spawn) return false;
+            spawn->m_targetGroupID = node.targetGroup;
+            spawn->m_spawnDelay = node.delay;
+            spawn->m_delayRange = 0.f;
+            spawn->m_spawnOrdered = false;
+            return true;
+        }
+        case NativeNodeKind::Rotate: {
+            if (!effect) return false;
+            effect->m_targetGroupID = node.targetGroup;
+            effect->m_centerGroupID = 0;
+            effect->m_duration = node.duration;
+            effect->m_rotationDegrees = node.rotationDegrees;
+            effect->m_times360 = node.times360;
+            effect->m_lockObjectRotation = false;
+            effect->m_easingType = EasingType::None;
+            effect->m_easingRate = 2.f;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool sameSources(LastEmission const& emission, std::vector<ResolvedBody> const& bodies) {
     std::unordered_set<GameObject*> current;
     for (auto const& body : bodies) {
-        if (body.spec.motion != Motion::Dynamic) continue;
         current.insert(body.objects.begin(), body.objects.end());
     }
     if (current.size() != emission.sources.size()) return false;
@@ -132,21 +372,64 @@ bool sameSources(LastEmission const& emission, std::vector<ResolvedBody> const& 
     return current.empty();
 }
 
+bool controlsCurrentSource(
+    LastEmission const& emission,
+    std::vector<ResolvedBody> const& bodies
+) {
+    std::unordered_set<GameObject*> current;
+    for (auto const& body : bodies) {
+        current.insert(body.objects.begin(), body.objects.end());
+    }
+    return std::ranges::any_of(emission.controlled, [&](WeakRef<GameObject> const& source) {
+        auto object = source.lock();
+        return object && current.contains(object.data());
+    });
+}
+
+std::optional<std::size_t> latestEmissionIndex(LevelEditorLayer* editor) {
+    for (std::size_t index = g_history.size(); index > 0; --index) {
+        auto current = g_history[index - 1].editor.lock();
+        if (current && current.data() == editor) return index - 1;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::size_t> matchingEmissionIndex(
+    LevelEditorLayer* editor,
+    std::vector<ResolvedBody> const& bodies
+) {
+    // Prefer an exact workspace match. If bodies were added or their motion
+    // roles changed, reusing an object controlled by an older graph still
+    // means that graph must be replaced to avoid two systems moving it.
+    for (std::size_t index = g_history.size(); index > 0; --index) {
+        auto current = g_history[index - 1].editor.lock();
+        if (current && current.data() == editor && sameSources(g_history[index - 1], bodies)) {
+            return index - 1;
+        }
+    }
+    for (std::size_t index = g_history.size(); index > 0; --index) {
+        auto current = g_history[index - 1].editor.lock();
+        if (current && current.data() == editor &&
+            controlsCurrentSource(g_history[index - 1], bodies)) {
+            return index - 1;
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 Result<EmitReport> emitToEditor(
     EditorUI* ui,
     std::vector<ResolvedBody> const& bodies,
-    SimulationTrace const& trace
+    SimulationTrace const& trace,
+    LabConfig const& config
 ) {
     if (!paimon::modules::isEnabled("paimbnails.physics.editor")) {
         return Err("El Simulador de Fisicas esta desactivado.");
     }
     if (!ui || !ui->m_editorLayer) return Err("El editor ya no esta disponible.");
-    if (bodies.empty() || trace.frames.size() < 2) return Err("La simulacion no tiene trayectoria.");
-    for (auto const& frame : trace.frames) {
-        if (frame.poses.size() != bodies.size()) return Err("La trayectoria no coincide con los cuerpos.");
-    }
+    if (bodies.empty()) return Err("No hay cuerpos para compilar.");
 
     auto& collab = paimon::collab::CollabManager::get();
     if (collab.connected() && !collab.canEditObjects()) {
@@ -154,58 +437,107 @@ Result<EmitReport> emitToEditor(
     }
 
     auto* editor = ui->m_editorLayer;
+    std::erase_if(g_history, [](LastEmission const& emission) {
+        return !emission.editor.lock();
+    });
     std::vector<std::size_t> dynamicBodies;
+    std::vector<std::size_t> bakedBodies;
+    std::vector<std::size_t> reactiveBodies;
     for (std::size_t i = 0; i < bodies.size(); ++i) {
-        if (bodies[i].spec.motion == Motion::Dynamic) dynamicBodies.push_back(i);
+        if (bodies[i].spec.motion != Motion::Dynamic) continue;
+        dynamicBodies.push_back(i);
+        if (bodies[i].native.backend == PhysicsBackend::Reactive) reactiveBodies.push_back(i);
+        else bakedBodies.push_back(i);
     }
-    if (dynamicBodies.empty()) return Err("No hay cuerpos dinamicos para hornear.");
-    auto previousEditor = g_last.editor.lock();
-    bool const replacingLast = previousEditor && previousEditor.data() == editor &&
-        sameSources(g_last, bodies);
+    if (dynamicBodies.empty()) return Err("No hay cuerpos dinamicos para compilar.");
+    for (auto index : reactiveBodies) {
+        if (bodies[index].native.preset == NativePreset::Explosion &&
+            bodies[index].objects.size() > 128) {
+            return Err("El preset Explosion admite hasta 128 fragmentos por cuerpo.");
+        }
+    }
+    if (!bakedBodies.empty()) {
+        if (trace.frames.size() < 2) return Err("La simulacion no tiene trayectoria para keyframes.");
+        for (auto const& frame : trace.frames) {
+            if (frame.poses.size() != bodies.size()) {
+                return Err("La trayectoria no coincide con los cuerpos.");
+            }
+        }
+    }
+    std::vector<bool> needsTargetGroup(bodies.size(), false);
+    for (auto index : bakedBodies) needsTargetGroup[index] = true;
+    for (auto index : reactiveBodies) {
+        needsTargetGroup[index] = bodies[index].native.preset != NativePreset::Explosion;
+    }
+    auto const previousIndex = matchingEmissionIndex(editor, bodies);
+    LastEmission const* previous = previousIndex ? &g_history[*previousIndex] : nullptr;
+    bool const replacingLast = previous != nullptr;
 
     std::vector<int> preferredGroups(bodies.size(), 0);
     for (auto index : dynamicBodies) {
+        if (!needsTargetGroup[index]) continue;
         preferredGroups[index] = bodies[index].preferredGroup;
         if (!replacingLast || preferredGroups[index] <= 0) continue;
         bool const assignedByLast = std::ranges::any_of(
-            g_last.assignments,
+            previous->assignments,
             [&](AssignedGroup const& entry) { return entry.group == preferredGroups[index]; }
         );
         if (assignedByLast) preferredGroups[index] = 0;
     }
 
-    std::size_t const samples = trace.frames.size();
-    std::size_t const maximumObjects = dynamicBodies.size() * (samples + 1);
-    if (maximumObjects > kMaxOutputObjects) {
-        return Err("La calidad y duracion producirian mas de 8000 objetos. Reduce una de las dos.");
-    }
+    std::vector<NativeBodyInput> nativeInputs;
+    nativeInputs.reserve(bodies.size());
+    for (auto const& body : bodies) nativeInputs.push_back(nativeInput(body));
+    auto const nativeRequirements = estimateNativeRequirements(
+        nativeInputs, config.gravity, config.airDrag
+    );
 
+    std::size_t const samples = trace.frames.size();
     std::size_t newTargets = 0;
-    for (auto index : dynamicBodies) newTargets += preferredGroups[index] <= 0;
-    std::size_t const requiredGroups = newTargets + dynamicBodies.size();
+    for (auto index : dynamicBodies) {
+        newTargets += needsTargetGroup[index] && preferredGroups[index] <= 0;
+    }
+    std::size_t const reactiveRootGroups = std::ranges::count_if(
+        reactiveBodies,
+        [&](std::size_t index) { return needsTargetGroup[index]; }
+    );
+    std::size_t const nativeExtraGroups = reactiveBodies.empty()
+        ? 0 : nativeRequirements.groups - reactiveRootGroups;
+    std::size_t const requiredGroups = newTargets + bakedBodies.size() + nativeExtraGroups;
     auto groups = freeGroups(editor, requiredGroups);
     if (groups.size() != requiredGroups) {
-        return Err("No hay suficientes grupos libres para hornear la simulacion.");
+        return Err("No hay suficientes Group IDs libres para compilar las fisicas.");
+    }
+    auto blocks = freeBlocks(editor, reactiveBodies.empty() ? 0 : nativeRequirements.blocks);
+    if (blocks.size() != (reactiveBodies.empty() ? 0 : nativeRequirements.blocks)) {
+        return Err("No hay suficientes Block IDs libres para los sensores nativos.");
+    }
+    auto controls = freeControls(editor, reactiveBodies.empty() ? 0 : nativeRequirements.controls);
+    if (controls.size() != (reactiveBodies.empty() ? 0 : nativeRequirements.controls)) {
+        return Err("No hay suficientes Control IDs libres para Advanced Follow.");
     }
 
     std::size_t groupCursor = 0;
+    std::size_t blockCursor = 0;
+    std::size_t controlCursor = 0;
+    auto nextGroup = [&]() -> int {
+        return groupCursor < groups.size() ? groups[groupCursor++] : 0;
+    };
+    auto nextBlock = [&]() -> int {
+        return blockCursor < blocks.size() ? blocks[blockCursor++] : 0;
+    };
+    auto nextControl = [&]() -> int {
+        return controlCursor < controls.size() ? controls[controlCursor++] : 0;
+    };
     std::vector<int> targetGroups(bodies.size(), 0);
     std::vector<int> animGroups(bodies.size(), 0);
     for (auto index : dynamicBodies) {
+        if (!needsTargetGroup[index]) continue;
         targetGroups[index] = preferredGroups[index] > 0
             ? preferredGroups[index]
-            : groups[groupCursor++];
+            : nextGroup();
     }
-    for (auto index : dynamicBodies) animGroups[index] = groups[groupCursor++];
-
-    std::vector<AssignedGroup> assigned;
-    for (auto index : dynamicBodies) {
-        if (preferredGroups[index] > 0) continue;
-        if (!assignGroup(editor, bodies[index].objects, targetGroups[index], assigned)) {
-            rollbackAssignments(editor, assigned);
-            return Err("Un cuerpo ya usa el maximo de 10 grupos; no se hizo ningun cambio.");
-        }
-    }
+    for (auto index : bakedBodies) animGroups[index] = nextGroup();
 
     float minX = std::numeric_limits<float>::max();
     float minY = std::numeric_limits<float>::max();
@@ -213,18 +545,113 @@ Result<EmitReport> emitToEditor(
         minX = std::min(minX, body.spec.position.x);
         minY = std::min(minY, body.spec.position.y);
     }
-    float const triggerX = minX - 90.f;
+    float const triggerX = minX - 180.f;
     float const triggerY = minY - 60.f;
+
+    NativeLayout nativeLayout;
+    nativeLayout.bodies.resize(bodies.size());
+    nativeLayout.triggerOrigin = {triggerX, triggerY - 60.f};
+    if (!reactiveBodies.empty()) nativeLayout.manifestGroup = nextGroup();
+    if (!reactiveBodies.empty() && nativeRequirements.needsStaticWorld) {
+        nativeLayout.staticWorldBlockID = nextBlock();
+    }
+    for (auto index : reactiveBodies) {
+        auto& ids = nativeLayout.bodies[index];
+        ids.rootGroup = targetGroups[index];
+        auto const profile = nativeProfile(
+            bodies[index].native, bodies[index].spec, config.gravity, config.airDrag
+        );
+        if (profile.fragmentObjects) {
+            std::size_t const fragments = std::max<std::size_t>(1, bodies[index].objects.size());
+            for (std::size_t fragment = 0; fragment < fragments; ++fragment) {
+                ids.fragmentGroups.push_back(nextGroup());
+                ids.fragmentControlIDs.push_back(nextControl());
+            }
+        } else {
+            ids.controlID = nextControl();
+        }
+        bool const playerSensors = profile.collideWithPlayer &&
+            (bodies[index].native.targetPlayer1 || bodies[index].native.targetPlayer2);
+        bool const worldSensors = profile.collideWithWorld &&
+            nativeLayout.staticWorldBlockID > 0;
+        if (playerSensors || worldSensors) {
+            for (std::size_t side = 0; side < 4; ++side) {
+                ids.sensorBlockIDs[side] = nextBlock();
+            }
+        }
+        if (playerSensors) {
+            for (std::size_t side = 0; side < 4; ++side) {
+                ids.playerActionGroups[side] = nextGroup();
+            }
+        }
+        if (worldSensors) {
+            for (std::size_t side = 0; side < 4; ++side) {
+                ids.worldActionGroups[side] = nextGroup();
+            }
+        }
+        if (profile.gravityImpulse > 0.f) ids.gravityGroup = nextGroup();
+        if (profile.useAnchor) {
+            ids.anchorGroup = nextGroup();
+            ids.sensorBlockIDs[0] = nextBlock();
+        }
+    }
+    if (groupCursor != groups.size() || blockCursor != blocks.size() ||
+        controlCursor != controls.size()) {
+        return Err("El planificador de IDs nativos produjo una reserva inconsistente.");
+    }
+
+    auto nativeGraph = reactiveBodies.empty()
+        ? TriggerGraph{}
+        : buildNativeTriggerGraph(
+            nativeInputs, nativeLayout, config.gravity, config.airDrag
+        );
+    if (!reactiveBodies.empty()) {
+        auto const validation = validateNativeTriggerGraph(nativeGraph, nativeInputs);
+        if (!validation.ok()) return Err(validation.errors.front());
+        for (auto const& warning : validation.warnings) log::warn("[PhysicsStudio] {}", warning);
+    }
+
+    std::size_t const bakedObjects = bakedBodies.size() * (samples + 1);
+    std::size_t const maximumObjects = bakedObjects + nativeGraph.nodes.size();
+    if (maximumObjects > kMaxOutputObjects) {
+        return Err("La compilacion produciria mas de 8000 objetos. Reduce calidad, duracion o cuerpos.");
+    }
+
+    std::vector<AssignedGroup> assigned;
+    for (auto index : dynamicBodies) {
+        if (!needsTargetGroup[index] || preferredGroups[index] > 0) continue;
+        if (!assignGroup(editor, bodies[index].objects, targetGroups[index], assigned, false)) {
+            rollbackAssignments(editor, assigned);
+            return Err("Un cuerpo ya usa el maximo de 10 grupos; no se hizo ningun cambio.");
+        }
+    }
+    for (auto const& binding : nativeGraph.bindings) {
+        if (binding.body >= bodies.size()) continue;
+        std::vector<GameObject*> objects;
+        if (binding.object == kNativeAllObjects) {
+            objects = bodies[binding.body].objects;
+        } else if (binding.object < bodies[binding.body].objects.size()) {
+            objects.push_back(bodies[binding.body].objects[binding.object]);
+        }
+        if (!assignGroup(editor, objects, binding.group, assigned, false)) {
+            rollbackAssignments(editor, assigned);
+            return Err("Un fragmento ya usa 10 grupos; no se hizo ningun cambio.");
+        }
+    }
+    editor->recreateGroups();
+
     // The solver samples on a fixed grid, so every keyframe carries the same slice of
     // the timeline. Uniform slices keep the bake independent of whether GD reads a
     // keyframe's duration as the segment reaching it or the one leaving it.
-    float const step = trace.frames.back().time / static_cast<float>(samples - 1);
+    float const step = bakedBodies.empty()
+        ? 0.f : trace.frames.back().time / static_cast<float>(samples - 1);
     std::vector<int> animations;
-    animations.reserve(dynamicBodies.size());
+    animations.reserve(bakedBodies.size());
     EmitReport report;
     report.impacts = trace.impacts;
     report.assignedObjects = assigned.size();
     report.groups = requiredGroups;
+    report.reactiveBodies = reactiveBodies.size();
 
     // Every object goes through the editor's own create path. Rebuilding a
     // keyframe from the save string of a loose probe reached
@@ -240,7 +667,7 @@ Result<EmitReport> emitToEditor(
     };
 
     std::size_t triggerSlot = 0;
-    for (auto index : dynamicBodies) {
+    for (auto index : bakedBodies) {
         auto* animation = editor->createNewKeyframeAnim();
         if (!animation) return abort("GD no pudo reservar una animacion de keyframes.");
         int const animationID = animation->getTag();
@@ -323,6 +750,48 @@ Result<EmitReport> emitToEditor(
         ++report.triggers;
     }
 
+    bool loggedNative = false;
+    for (auto const& node : nativeGraph.nodes) {
+        int const objectID = objectIDFor(node.kind);
+        if (objectID <= 0) return abort("El grafo contiene un tipo nativo desconocido.");
+        auto* object = editor->createObject(
+            objectID, {node.position.x, node.position.y}, true
+        );
+        if (!object || !configureNativeNode(object, node)) {
+            if (object) editor->removeObject(object, true);
+            return abort(fmt::format(
+                "GD 2.2081 no reconocio el objeto nativo ID {}. No se guardo una salida parcial.",
+                objectID
+            ));
+        }
+        for (int group : node.groups) {
+            if (!hasGroup(object, group)) {
+                editor->removeObject(object, true);
+                return abort("Un trigger generado no pudo recibir todos sus subgrupos.");
+            }
+        }
+        created->addObject(object);
+        ++report.objects;
+        if (node.kind == NativeNodeKind::CollisionBlock) ++report.collisionBlocks;
+        else {
+            ++report.triggers;
+            if (node.kind == NativeNodeKind::CollisionTrigger) ++report.collisionTriggers;
+            if (node.kind == NativeNodeKind::AdvancedFollow ||
+                node.kind == NativeNodeKind::AdvancedFollowEdit) {
+                ++report.physicsTriggers;
+            }
+        }
+        if (!loggedNative) {
+            log::info("[PhysicsStudio] native: {}", std::string(object->getSaveString(editor)));
+            loggedNative = true;
+        }
+    }
+    for (auto index : reactiveBodies) {
+        if (bodies[index].native.preset == NativePreset::Explosion) {
+            report.fragments += bodies[index].objects.size();
+        }
+    }
+
     LastEmission next;
     next.editor = editor;
     next.assignments = assigned;
@@ -331,14 +800,34 @@ Result<EmitReport> emitToEditor(
     for (auto* item : CCArrayExt<CCObject*>(created)) {
         if (auto* object = typeinfo_cast<GameObject*>(item)) next.objects.emplace_back(object);
     }
+    for (auto const& body : bodies) {
+        for (auto* object : body.objects) next.sources.emplace_back(object);
+    }
     for (auto index : dynamicBodies) {
-        for (auto* object : bodies[index].objects) next.sources.emplace_back(object);
+        for (auto* object : bodies[index].objects) next.controlled.emplace_back(object);
     }
 
     if (replacingLast) {
-        removeEmission(g_last, editor, true);
+        removeEmission(g_history[*previousIndex], editor, true);
+        g_history.erase(g_history.begin() + static_cast<std::ptrdiff_t>(*previousIndex));
     }
-    g_last = std::move(next);
+    for (auto const& binding : nativeGraph.bindings) {
+        if (!binding.makeGroupParent || binding.body >= bodies.size()) continue;
+        GameObject* parent = nullptr;
+        if (binding.object == kNativeAllObjects) {
+            auto const& objects = bodies[binding.body].objects;
+            auto const existing = std::ranges::find_if(objects, [](GameObject* object) {
+                return object && object->m_hasGroupParent;
+            });
+            if (existing != objects.end()) parent = *existing;
+            else if (!objects.empty()) parent = objects.front();
+        } else if (binding.object < bodies[binding.body].objects.size()) {
+            parent = bodies[binding.body].objects[binding.object];
+        }
+        makeGroupParent(editor, parent, binding.group, next.parents);
+    }
+    g_history.push_back(std::move(next));
+    auto const& stored = g_history.back();
 
     editor->updateObjectColors(created);
     editor->recreateGroups();
@@ -349,7 +838,7 @@ Result<EmitReport> emitToEditor(
     ui->selectObjects(created, false);
 
     if (collab.connected()) {
-        collab.sendUpdatedObjects(assignmentArray(assigned));
+        collab.sendUpdatedObjects(changedSourcesArray(stored.assignments, stored.parents));
         collab.sendCreatedObjects(created);
     }
     return Ok(report);
@@ -360,20 +849,21 @@ Result<std::size_t> removeLastEmission(EditorUI* ui) {
         return Err("El Simulador de Fisicas esta desactivado.");
     }
     if (!ui || !ui->m_editorLayer) return Err("El editor ya no esta disponible.");
-    auto editor = g_last.editor.lock();
-    if (!editor || editor.data() != ui->m_editorLayer || g_last.objects.empty()) {
+    auto const index = latestEmissionIndex(ui->m_editorLayer);
+    if (!index || g_history[*index].objects.empty()) {
         return Err("No hay una salida reciente en este editor.");
     }
+    auto const& emission = g_history[*index];
     auto& collab = paimon::collab::CollabManager::get();
     if (collab.connected() && !collab.canEditObjects()) {
         return Err("La sesion Collab esta en modo solo lectura.");
     }
     std::size_t count = 0;
-    for (auto const& object : g_last.objects) {
+    for (auto const& object : emission.objects) {
         if (object.lock()) ++count;
     }
-    removeEmission(g_last, ui->m_editorLayer, true);
-    g_last = {};
+    removeEmission(emission, ui->m_editorLayer, true);
+    g_history.erase(g_history.begin() + static_cast<std::ptrdiff_t>(*index));
     return Ok(count);
 }
 

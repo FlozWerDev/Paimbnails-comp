@@ -177,14 +177,15 @@ Result<std::vector<ResolvedBody>> PhysicsWorkspace::resolve(
     std::vector<ResolvedBody> resolved;
     resolved.reserve(m_bodies.size());
     bool hasDynamic = false;
-    bool hasStatic = false;
     for (auto const& captured : m_bodies) {
         ResolvedBody body;
         auto const& material = captured.material;
         body.spec.motion = captured.motion;
+        body.native = captured.native;
         // A body with its own launch is launched whatever its gravity does; the
         // lab velocity still only reaches the ones gravity is pulling on.
-        bool const driven = captured.motion == Motion::Dynamic && material.gravityScale > 0.f;
+        bool const driven = captured.motion == Motion::Dynamic &&
+            std::abs(material.gravityScale) > 0.0001f;
         body.spec.velocity = material.customLaunch
             ? material.launch
             : driven ? Vec2{config.velocityX, config.velocityY} : Vec2{};
@@ -277,13 +278,9 @@ Result<std::vector<ResolvedBody>> PhysicsWorkspace::resolve(
         body.preferredGroup = exactGroup(ui->m_editorLayer, body.objects);
         resolved.push_back(std::move(body));
         hasDynamic |= captured.motion == Motion::Dynamic;
-        hasStatic |= captured.motion == Motion::Static;
     }
 
     if (!hasDynamic) return Err("La simulacion necesita al menos un cuerpo dinamico.");
-    if (!hasStatic && resolved.size() == 1) {
-        return Err("Captura un cuerpo B fijo o agrega otro cuerpo para que A pueda colisionar.");
-    }
     return Ok(std::move(resolved));
 }
 
@@ -300,6 +297,10 @@ Result<Motion> PhysicsWorkspace::toggleMotion(std::size_t index) {
 
 BodyMaterial* PhysicsWorkspace::material(std::size_t index) {
     return index < m_bodies.size() ? &m_bodies[index].material : nullptr;
+}
+
+NativeBodySettings* PhysicsWorkspace::nativeSettings(std::size_t index) {
+    return index < m_bodies.size() ? &m_bodies[index].native : nullptr;
 }
 
 ObjectMaterial* PhysicsWorkspace::objectMaterial(std::size_t index, std::size_t object) {
