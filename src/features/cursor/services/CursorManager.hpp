@@ -188,6 +188,7 @@ private:
     bool m_fxHeld = false;
     cocos2d::CCPoint m_touchPoint{};
     bool m_sceneVisible = false;
+    int  m_sceneVisibleCooldown = 0;
     int  m_clickModuleCooldown = 0;
     bool m_clickModuleOn = false;
     int  m_transitionModuleCooldown = 0;

@@ -1448,7 +1448,12 @@ void CursorManager::syncSystemCursorVisibility(bool hideSystemCursor) {
 }
 
 void CursorManager::update(float dt) {
-    m_sceneVisible = shouldShowOnCurrentScene();
+    // Narrowing the layer list drops this into a recursive walk of the whole
+    // node tree, so sample it a few times a second instead of every frame.
+    if (--m_sceneVisibleCooldown <= 0) {
+        m_sceneVisibleCooldown = 6;
+        m_sceneVisible = shouldShowOnCurrentScene();
+    }
     updateClickOverlay(dt);
 
     if (!m_config.enabled || !m_cursorNode) return;
