@@ -53,10 +53,6 @@ void applyLanguageSetting(std::string const& langStr) {
 // atomic: MenuLayer::init can re-enter when the scene reloads
 std::atomic<bool> g_languageListenerRegistered{false};
 
-template <typename T>
-void paimonOnSettingChanged(T const&) {
-    paimon::settings::internal::g_settingsVersion.fetch_add(1, std::memory_order_relaxed);
-}
 }
 
 namespace paimon {
@@ -165,10 +161,13 @@ void bootstrap() {
             s_cursorSyncGuard.store(false, std::memory_order_release);
         });
 
-        geode::listenForSettingChanges<bool>("levelcell-hover-effects", &paimonOnSettingChanged<bool>);
-        geode::listenForSettingChanges<bool>("compact-list-mode", &paimonOnSettingChanged<bool>);
-        geode::listenForSettingChanges<double>("level-thumb-width", &paimonOnSettingChanged<double>);
-        geode::listenForSettingChanges<std::string>("levelinfo-background-style", &paimonOnSettingChanged<std::string>);
+        // Module toggles backed by mod.json settings are read through the
+        // version-stamped cache in ModuleRegistry, and Geode's own settings
+        // panel writes them without going through modules::setEnabled.
+        geode::listenForAllSettingChanges(
+            +[](std::string_view, std::shared_ptr<geode::SettingV3>) {
+                paimon::settings::internal::invalidateSettingsCache();
+            });
     }
 
     log::info("[PaimonThumbnails][Init] Applying startup init");

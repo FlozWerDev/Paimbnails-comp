@@ -2,6 +2,7 @@
 #include "../Settings.hpp"
 #include <Geode/loader/Mod.hpp>
 #include <algorithm>
+#include <atomic>
 #include <unordered_map>
 
 using namespace geode::prelude;
@@ -27,6 +28,23 @@ std::unordered_map<std::string_view, Module const*> const& byId() {
         return out;
     }();
     return map;
+}
+
+// isEnabled by id runs inside per-frame hooks (particles, GameObject::setVisible,
+// player frame updates) and every miss costs two matjson lookups through the
+// loader, once for the module and once per parent. Slots are indexed by position
+// in all() and dropped whenever the settings version moves. Relaxed atomics: two
+// racing readers just compute the same value twice, which beats locking here.
+enum : uint8_t { kCacheUnknown = 0, kCacheOff = 1, kCacheOn = 2 };
+
+std::vector<std::atomic<uint8_t>>& enabledSlots() {
+    static std::vector<std::atomic<uint8_t>> slots(all().size());
+    return slots;
+}
+
+std::atomic<uint64_t>& cachedVersion() {
+    static std::atomic<uint64_t> version{UINT64_MAX};
+    return version;
 }
 
 std::string lower(std::string_view text) {
@@ -95,7 +113,29 @@ bool isEnabled(Module const& mod) {
 
 bool isEnabled(std::string_view id) {
     auto* mod = find(id);
-    return mod && isEnabled(*mod);
+    if (!mod) return false;
+
+    // Custom modules read a manager's config straight from memory, and those
+    // move without touching the settings version. No parent is Custom, so the
+    // cached chain below stays exact.
+    if (mod->backing == Backing::Custom) return isEnabled(*mod);
+
+    uint64_t const version = settings::internal::g_settingsVersion.load(std::memory_order_relaxed);
+    auto& slots = enabledSlots();
+    if (cachedVersion().load(std::memory_order_relaxed) != version) {
+        cachedVersion().store(version, std::memory_order_relaxed);
+        for (auto& slot : slots) slot.store(kCacheUnknown, std::memory_order_relaxed);
+    }
+
+    // find() hands back a pointer into all(), so the offset is the slot index.
+    auto const index = static_cast<size_t>(mod - all().data());
+    if (auto cached = slots[index].load(std::memory_order_relaxed); cached != kCacheUnknown) {
+        return cached == kCacheOn;
+    }
+
+    bool const enabled = isEnabled(*mod);
+    slots[index].store(enabled ? kCacheOn : kCacheOff, std::memory_order_relaxed);
+    return enabled;
 }
 
 void setEnabled(Module const& mod, bool enabled) {

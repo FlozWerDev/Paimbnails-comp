@@ -3,6 +3,7 @@
 #include "MenuMusicPlayer.hpp"
 
 #include "../../../core/RuntimeLifecycle.hpp"
+#include "../../../core/Settings.hpp"
 #include "../../../core/modules/ModuleRegistry.hpp"
 
 #include <Geode/Geode.hpp>
@@ -286,6 +287,10 @@ void MenuMusicEffects::saveConfig(MusicEffectsConfig config) {
     mod->setSavedValue(kKeySpatialAngle, config.spatialAngle);
     mod->setSavedValue(kKeySpatialRoom, config.spatialRoom);
     mod->setSavedValue(kKeySpatialMotionSpeed, config.spatialMotionSpeed);
+
+    // paimbnails.spatialaudio.menu reads this key, and ModuleRegistry caches
+    // module state until the settings version moves.
+    paimon::settings::internal::invalidateSettingsCache();
 
     m_cfg = config;
     m_loaded = true;
