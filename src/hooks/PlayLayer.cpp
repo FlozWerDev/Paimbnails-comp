@@ -249,7 +249,9 @@ namespace {
         void update(float dt) {
             // Use the PauseLayer itself; other mods may bypass pauseGame().
             auto* playLayer = PlayLayer::get();
-            auto* pauseLayer = getPauseLayer();
+            // Outside gameplay the scan can only ever lose, and it walks the
+            // scene's children with a typeinfo_cast each.
+            auto* pauseLayer = playLayer ? getPauseLayer() : nullptr;
             bool pauseLayerPresent = (playLayer && pauseLayer);
 
             if (pauseLayerPresent && !m_isPaused) {
