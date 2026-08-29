@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <initializer_list>
 #include <unordered_set>
 #include <utility>
@@ -25,6 +26,75 @@ Ref<PlayLayer> s_levelExitPlayLayer;
 enum class TransitionDirection {
     Enter,
     Exit,
+};
+
+class LevelEffectsTransitionScene;
+
+// This ticker intentionally does not belong to either scene. GD can pause the
+// transition scene while swapping between an editor and its play scene, which
+// also pauses the action / selector that normally completes the transition.
+// A scheduler target that is not parented to a scene remains alive and can
+// recover that otherwise permanent transition lock.
+class LevelTransitionWatchdog final : public CCNode {
+public:
+    static LevelTransitionWatchdog* get() {
+        static LevelTransitionWatchdog* instance = nullptr;
+        if (!instance) {
+            instance = new LevelTransitionWatchdog();
+            instance->init();
+            instance->retain();
+        }
+        return instance;
+    }
+
+    void arm(CCScene* transition, float duration) {
+        if (!transition) return;
+
+        m_transition = transition;
+        // Normal completion happens at duration. The extra second tolerates a
+        // slow scene construction frame without making a real lock noticeable.
+        auto timeout = std::max(1.5f, duration + 1.f);
+        m_deadline = std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<float>(timeout)
+            );
+
+        if (m_ticking) return;
+        auto* director = CCDirector::get();
+        auto* scheduler = director ? director->getScheduler() : nullptr;
+        if (!scheduler) {
+            m_transition = nullptr;
+            return;
+        }
+
+        m_ticking = true;
+        scheduler->scheduleSelector(
+            schedule_selector(LevelTransitionWatchdog::check), this, 0.f, false
+        );
+    }
+
+    void disarm(CCScene* transition) {
+        if (transition && m_transition.data() != transition) return;
+
+        m_transition = nullptr;
+        if (!m_ticking) return;
+        m_ticking = false;
+
+        if (auto* director = CCDirector::get()) {
+            if (auto* scheduler = director->getScheduler()) {
+                scheduler->unscheduleSelector(
+                    schedule_selector(LevelTransitionWatchdog::check), this
+                );
+            }
+        }
+    }
+
+    void check(float);
+
+private:
+    Ref<CCScene> m_transition;
+    std::chrono::steady_clock::time_point m_deadline{};
+    bool m_ticking = false;
 };
 
 struct StyleProfile {
@@ -285,8 +355,8 @@ public:
     void onEnter() override {
         CCScene::onEnter();
         auto* touchDispatcher = CCTouchDispatcher::get();
-        m_touchDispatchWasEnabled = touchDispatcher->isDispatchEvents();
         touchDispatcher->setDispatchEvents(false);
+        LevelTransitionWatchdog::get()->arm(this, m_fDuration);
 
         if (m_pOutScene) m_pOutScene->onExitTransitionDidStart();
         if (!m_pInScene) {
@@ -341,13 +411,16 @@ public:
     }
 
     void onExit() override {
+        LevelTransitionWatchdog::get()->disarm(this);
         m_actions.stop();
         restoreNodes();
         if (m_fakedIncomingRunning && m_pInScene) setRunningRecursive(m_pInScene, false);
         unscheduleUpdate();
         unschedule(schedule_selector(LevelEffectsTransitionScene::switchToIncoming));
         CCScene::onExit();
-        CCTouchDispatcher::get()->setDispatchEvents(m_touchDispatchWasEnabled);
+        // CCTransitionScene's contract is to leave input enabled on exit. Do
+        // not restore a stale `false` captured from an overlapping transition.
+        CCTouchDispatcher::get()->setDispatchEvents(true);
 
         if (m_switchingToIncoming && m_pInScene && !m_inSceneEntered) {
             m_pInScene->onEnter();
@@ -391,6 +464,24 @@ public:
     }
 
 private:
+    friend class LevelTransitionWatchdog;
+
+    void recoverFromWatchdog() {
+        if (m_sceneSwitchRequested) return;
+
+        log::warn(
+            "[LevelTransitions] Watchdog recovered a stuck {} transition",
+            m_direction == TransitionDirection::Enter ? "entry" : "exit"
+        );
+
+        // finishTransition restores every node and prepares the exact same
+        // destination as the normal path. Bypass only the selector that failed
+        // to run, then ask CCDirector to switch scenes immediately.
+        if (!m_finished) finishTransition();
+        unschedule(schedule_selector(LevelEffectsTransitionScene::switchToIncoming));
+        switchToIncoming(0.f);
+    }
+
     void capture(CCNode* node) {
         if (!node || !m_captured.insert(node).second) return;
 
@@ -469,6 +560,8 @@ private:
 
     void switchToIncoming(float) {
         unschedule(schedule_selector(LevelEffectsTransitionScene::switchToIncoming));
+        if (m_sceneSwitchRequested) return;
+        m_sceneSwitchRequested = true;
         m_switchingToIncoming = true;
         auto* director = CCDirector::get();
         m_bIsSendCleanupToScene = director->isSendCleanupToScene();
@@ -898,11 +991,33 @@ private:
     bool m_hasShaderBlend = false;
     bool m_finished = false;
     bool m_restored = false;
+    bool m_sceneSwitchRequested = false;
     bool m_switchingToIncoming = false;
-    bool m_touchDispatchWasEnabled = true;
     bool m_fakedIncomingRunning = false;
     bool m_inSceneEntered = false;
 };
+
+void LevelTransitionWatchdog::check(float) {
+    auto active = m_transition;
+    if (!active) {
+        disarm(nullptr);
+        return;
+    }
+
+    auto* director = CCDirector::get();
+    if (!director || director->getRunningScene() != active.data()) {
+        disarm(active.data());
+        return;
+    }
+    if (std::chrono::steady_clock::now() < m_deadline) return;
+
+    // Drop the watchdog's ownership before replacing the scene. The local Ref
+    // keeps the transition valid throughout recoverFromWatchdog().
+    disarm(active.data());
+    if (auto* transition = typeinfo_cast<LevelEffectsTransitionScene*>(active.data())) {
+        transition->recoverFromWatchdog();
+    }
+}
 
 void applyReducedMotion(LevelEntryEffectsConfig& config) {
     if (config.respectReducedMotion &&
