@@ -327,6 +327,9 @@ std::vector<Module> buildCatalog() {
         saved("paimbnails.pausezoom.gameplay", "Pause Zoom",
               "Zoom and hide the pause menu with keybinds.",
               "module-pause-zoom", "HUD", S::Gameplay, true),
+        custom("paimbnails.frameinterp.gameplay", "Frame Interpolation",
+               "Draws between physics ticks so movement stays smooth at any refresh rate.",
+               "Motion", S::Gameplay, false),
 
         setting("paimbnails.profileredesign.profile", "Profile Redesign",
                 "Modern layout for the profile page.",

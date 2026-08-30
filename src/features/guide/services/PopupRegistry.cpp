@@ -29,6 +29,7 @@
 #include "../../editor-filters/ui/MyLevelFilterPopup.hpp"
 #include "../../death-effects/ui/DeathEffectPopup.hpp"
 #include "../../gameplay-performance/ui/GameplayPerformancePopup.hpp"
+#include "../../frame-interp/ui/FrameInterpPopup.hpp"
 #include "../../icon-copy/ui/MyIconSetsPopup.hpp"
 #include "../../icon-gallery/ui/IconStoreLayer.hpp"
 #include "../../icon-maker/ui/IconEditorLayer.hpp"
@@ -140,6 +141,12 @@ std::function<void(PaimonGuideChatPopup*)> openDeathEffects() {
 std::function<void(PaimonGuideChatPopup*)> openGameplayPerformance() {
     return [](PaimonGuideChatPopup*) {
         if (auto* popup = paimon::gameplayperf::GameplayPerformancePopup::create()) popup->show();
+    };
+}
+
+std::function<void(PaimonGuideChatPopup*)> openFrameInterpolation() {
+    return [](PaimonGuideChatPopup*) {
+        if (auto* popup = paimon::frameinterp::FrameInterpPopup::create()) popup->show();
     };
 }
 
@@ -1834,6 +1841,39 @@ void PopupRegistry::registerAll() {
             "<cy>Modo Rendimiento!</c> Mejora los FPS con recortes de CPU, GPU y visuales. "
             "Se abre desde la pantalla de info del nivel o <cy>Ajustes del Mod</c>.";
         e.open = openGameplayPerformance();
+        m_entries.push_back(std::move(e));
+    }
+
+    {
+        PopupEntry e;
+        e.id = "frame-interpolation";
+        e.category = PopupCategory::None;
+        e.weight = 78;
+        e.displayNameByLang["english"] = "Frame Interpolation";
+        e.displayNameByLang["spanish"] = "Interpolacion de Fotogramas";
+        e.aliasesByLang["english"] = {
+            "frame interpolation", "interpolation", "smooth gameplay", "motion smoothing",
+            "stutter", "micro stutter", "smooth movement"
+        };
+        e.aliasesByLang["spanish"] = {
+            "interpolacion de fotogramas", "interpolacion", "juego mas fluido",
+            "suavizado de movimiento", "tirones", "micro tirones", "movimiento suave"
+        };
+        e.searchPhrasesByLang["english"] = {
+            "make the game look smoother", "remove micro stutter", "smooth out movement",
+            "gameplay looks choppy"
+        };
+        e.searchPhrasesByLang["spanish"] = {
+            "que el juego se vea mas fluido", "quitar micro tirones", "suavizar el movimiento",
+            "el juego va a tirones"
+        };
+        e.descriptionByLang["english"] =
+            "<cy>Frame Interpolation!</c> Draws the game between physics ticks so movement "
+            "stays smooth at any refresh rate. It lives in <cy>Extras</c>.";
+        e.descriptionByLang["spanish"] =
+            "<cy>Interpolacion de Fotogramas!</c> Dibuja el juego entre pasos de fisica para "
+            "que el movimiento sea fluido a cualquier tasa de refresco. Esta en <cy>Extras</c>.";
+        e.open = openFrameInterpolation();
         m_entries.push_back(std::move(e));
     }
 

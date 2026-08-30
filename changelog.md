@@ -1,6 +1,6 @@
 # <cy>v1.1.2</c>
 
-![](flozwer.paimbnails2/paim_Paimon.png?height=32) Llega <cl>Paimon RTX</c>: trazado de rayos en tiempo real sobre todo el juego. Ademas, <cl>Level Thumbnails</c> deja de ser incompatible y se puede tener puesto a la vez.
+![](flozwer.paimbnails2/paim_Paimon.png?height=32) Llega <cl>Paimon RTX</c>: trazado de rayos en tiempo real sobre todo el juego, y la <cl>Interpolacion de Fotogramas</c>, que dibuja entre pasos de fisica para quitar los micro-tirones. Ademas, <cl>Level Thumbnails</c> deja de ser incompatible y se puede tener puesto a la vez.
 
 ---
 
@@ -12,6 +12,15 @@
 - El historial temporal ahora se <cg>reproyecta con el movimiento real de la camara</c>, y se recorta contra media mas menos desviacion del vecindario en vez de contra su minimo y maximo. Eso permite subir la realimentacion del **35%** al **85-90%** sin que arrastre estelas, y es de donde sale la mayor parte de la limpieza.
 - <cr>Los presets estaban al reves</c>. <cg>Ultra</c> subia los rayos pero bajaba el filtrado, asi que salia mas ruidoso que <cg>Rendimiento</c>; 8 rayos siguen siendo muy pocos para integrar la luz por fuerza bruta. Ahora cada escalon sube muestras y filtrado a la vez, y los presets guardados se migran solos al abrir el juego.
 - Los pasos de cada rayo crecen en <cg>progresion geometrica</c>. Los primeros caen muy juntos (contacto nitido) y los ultimos se separan (alcance largo barato), asi que **14** pasos llegan mas lejos que los **26** uniformes de antes.
+
+---
+
+## ![](frame:GJ_sTrendingIcon_001.png?height=18) <cy>Interpolacion de Fotogramas</c>
+
+- Nueva funcion en <cg>Extras > Interpolacion</c>. GD simula a <cg>240 pasos por segundo</c> y dibuja cuando toca refrescar, asi que cada fotograma ensena un estado que lleva parado entre cero y un paso entero. Ese resto cambia de fotograma en fotograma y es lo que se ve como <cr>micro-tirones</c> a 144, 165 o 240 Hz. Ahora se guarda el estado de los dos ultimos pasos y se dibuja el punto intermedio que pide el reloj real, asi que el movimiento avanza lo mismo en cada fotograma.
+- Se interpolan la <cg>camara</c> (posicion, zoom y rotacion), el <cg>fondo, el plano medio y las dos capas de suelo</c>, los <cg>dos jugadores</c> y, si se activa, los <cg>objetos que mueven los triggers</c>. Cada grupo tiene su propio interruptor y los objetos llevan tope para que un nivel cargado no se descontrole.
+- Tres modos de <cg>latencia</c>: <cg>Suave</c> deja un paso de fisica de retraso (unos <cg>4 ms</c>) y no adivina nunca, <cg>Equilibrado</c> deja medio y <cg>Sin retardo</c> dibuja el presente exacto prolongando el ultimo paso. La <cg>fuerza</c> mezcla entre lo que dibujaria el juego y la interpolacion completa.
+- No toca la simulacion: los valores buenos se restauran en cuanto termina el dibujado, asi que <cg>fisica, replays y porcentajes salen identicos</c>. Los saltos (portales de teletransporte, checkpoints, el suelo dando la vuelta, zooms instantaneos) se detectan por velocidad y ese fotograma se dibuja sin interpolar para que no se arrastren.
 
 ---
 

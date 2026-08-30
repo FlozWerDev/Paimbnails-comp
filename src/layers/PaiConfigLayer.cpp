@@ -7,6 +7,7 @@
 #include "../features/cursor/ui/CursorConfigPopup.hpp"
 #include "../features/emotes/services/EmoteCache.hpp"
 #include "../features/emotes/services/EmoteService.hpp"
+#include "../features/frame-interp/ui/FrameInterpPopup.hpp"
 #include "../features/pet/ui/PetConfigPopup.hpp"
 #include "../features/profile-music/services/ProfileMusicManager.hpp"
 #include "../features/profiles/services/ProfileImageCache.hpp"
@@ -1662,6 +1663,11 @@ void PaiConfigLayer::buildExtrasTab() {
          "pai.config.extras.rtx_info.body",
          "Traced lighting, occlusion, reflections and color grading over the whole game.",
          [] { if (auto* p = paimon::rtx::RTXConfigLayer::create()) p->show(); }},
+        {"pai.config.extras.frame_interp", "Interpolation", "GJ_button_05.png",
+         "pai.config.extras.frame_interp_info.title", "Frame Interpolation",
+         "pai.config.extras.frame_interp_info.body",
+         "Draws the game between physics ticks so movement stays smooth.",
+         [] { if (auto* p = paimon::frameinterp::FrameInterpPopup::create()) p->show(); }},
         {"pai.config.extras.clear_cache", "Clear All Cache", "GJ_button_06.png",
          "pai.config.extras.clear_cache_info.title", "Clear Cache",
          "pai.config.extras.clear_cache_info.body", "<cr>Deletes ALL cached data.</c>",
@@ -1669,8 +1675,12 @@ void PaiConfigLayer::buildExtrasTab() {
     };
 
     float const startY = cardSize.height - 44.f;
+    // El paso se encoge cuando entran mas acciones para que la ultima no acabe
+    // fuera de la tarjeta.
+    float const spans = std::max<float>(1.f, static_cast<float>(actions.size()) - 1.f);
+    float const rowGap = std::min(34.f, (startY - 18.f) / spans);
     for (int i = 0; i < static_cast<int>(actions.size()); ++i) {
-        float const y = startY - i * 34.f;
+        float const y = startY - i * rowGap;
         if (auto* btn = gdFixedButton(tr(actions[i].key, actions[i].fallback).c_str(), actions[i].sprite,
                                       std::min(170.f, cardSize.width * 0.58f), 26.f, 0.5f,
                                       actions[i].action)) {

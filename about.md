@@ -18,6 +18,10 @@ Paimbnails transforms Geometry Dash into a <cl>fully visual experience</c>. Thum
 
 <co>**Real-time screen-space ray tracing**</c> over the whole game. Paimbnails reads the finished frame, derives a surface from it (relief from contrast, normals from its derivatives, emitters from brightness) and marches rays across it for <co>bounced light tinted by whatever reflects it</c>, <co>contact occlusion</c> and <co>screen-space reflections</c>. On top of that: multi-level <co>bloom</c>, <co>volumetric light shafts</c>, four <co>tonemapping curves</c> (ACES, Filmic, Uncharted 2, Reinhard), color grading and lens effects. Built to stay cheap: tracing runs at <co>20-100% of screen resolution</c> with <co>adaptive quality</c>, frame skipping, temporal accumulation and four presets. <co>51 controls</c> in <co>Extras > Paimon RTX</c>.
 
+## Frame Interpolation
+
+Geometry Dash simulates at <cj>240 fixed ticks per second</c> and draws whenever the display refreshes, so every frame shows a state that has been standing still for anywhere between zero and a full tick. That leftover changes frame to frame, and it is what you see as <cj>micro-stutter</c> at 144, 165 or 240 Hz. Paimbnails keeps the last two ticks and draws the in-between state the real clock asks for, so motion advances by the same amount every frame. <cj>Camera</c>, <cj>background and ground</c>, <cj>both players</c> and, optionally, <cj>trigger-driven objects</c> each get their own switch, with three <cj>latency modes</c> and a strength dial. The simulation is never touched: the authoritative values are restored the moment the frame is drawn, so physics, replays and percentages come out identical.
+
 ## Custom Transitions
 
 Over <cg>**30 screen transitions**</c>: fades, slides, flips, zooms, page curls, tile effects, radial wipes and more. Set a <cg>separate transition for entering levels</c> or create <cg>custom scripted sequences</c> combining fade, move, scale, and rotate.

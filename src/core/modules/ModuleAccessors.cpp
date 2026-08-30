@@ -8,6 +8,7 @@
 #include "../../features/cursor/services/CursorManager.hpp"
 #include "../../features/icon-gradients/services/GradientAnimationManager.hpp"
 #include "../../features/rtx/services/RTXManager.hpp"
+#include "../../features/frame-interp/services/FrameInterpolator.hpp"
 
 // Backing::Custom modules keep their state in a manager config instead of a
 // mod.json setting, so the registry needs a getter/setter pair for each.
@@ -69,6 +70,10 @@ void bindCustomAccessors() {
     registerAccessor("paimbnails.rtx.global",
         [] { return paimon::rtx::RTXManager::get().isEnabled(); },
         [](bool on) { paimon::rtx::RTXManager::get().setEnabled(on); });
+
+    registerAccessor("paimbnails.frameinterp.gameplay",
+        [] { return paimon::frameinterp::FrameInterpolator::get().isEnabled(); },
+        [](bool on) { paimon::frameinterp::FrameInterpolator::get().setEnabled(on); });
 
     registerAccessor("paimbnails.guide.menu",
         [] { return paimon::guide::PaimonGuideService::get().isEnabled(); },

@@ -33,6 +33,7 @@
 #include "../features/thumbnails/services/ThumbnailCache.hpp"
 #include "../features/beat-shaders/services/BeatShaderManager.hpp"
 #include "../features/rtx/services/RTXManager.hpp"
+#include "../features/frame-interp/services/FrameInterpolator.hpp"
 #include "../utils/ThreadTracker.hpp"
 #include <thread>
 #include <chrono>
@@ -80,6 +81,7 @@ void bootstrap() {
 
     paimon::beat_shaders::BeatShaderManager::get().init();
     paimon::rtx::RTXManager::get().init();
+    paimon::frameinterp::FrameInterpolator::get().init();
 
     paimon::blur::BlurDiskCache::get().init();
     paimon::gd::GDRobTopCache::get().init();
