@@ -11,6 +11,8 @@
 #include "../src/features/gif-import/services/ColorSpace.cpp"
 #include "../src/features/gif-import/services/GifVectorMath.cpp"
 #include "../src/features/gif-import/services/GifArtVectorizer.cpp"
+#include "../src/features/gif-import/services/GifGlowPass.cpp"
+#include "../src/features/gif-import/services/GifMotionPlanner.cpp"
 #include "../src/features/gif-import/services/GifPaintVectorizer.cpp"
 #include "../src/features/gif-import/services/ImageWatermark.cpp"
 #include "../src/features/gif-import/services/GifImportPipeline.cpp"
@@ -1177,6 +1179,79 @@ bool renderAnimationStaysIncrementalSized() {
 
 } // namespace
 
+SourceAnimation slidingSprite(int frames) {
+    auto source = animation(20, 10, frames, 0, 0, 0, 0);
+    for (int frame = 0; frame < frames; ++frame) {
+        for (int x = 0; x < 20; ++x) setPixel(source, frame, x, 9, 30, 200, 90);
+        for (int y = 2; y < 6; ++y) {
+            for (int x = 0; x < 4; ++x) {
+                setPixel(source, frame, 4 + frame * 2 + x, y, 230, 40, 60);
+            }
+        }
+    }
+    return source;
+}
+
+bool movingSpriteBecomesMoveTriggers() {
+    auto const source = slidingSprite(6);
+    auto options = exactOptions(20);
+    auto const moved = buildPlan(source, options);
+    options.motion = false;
+    auto const copied = buildPlan(source, options);
+
+    bool const pass = moved && copied && moved.plan.motionTracks.size() == 1 &&
+        moved.plan.moveTriggers == 6 &&
+        moved.plan.visualObjects < copied.plan.visualObjects;
+    std::cout << "motion: pistas=" << (moved ? moved.plan.motionTracks.size() : 0)
+              << " moves=" << (moved ? moved.plan.moveTriggers : 0)
+              << " formas=" << (moved ? moved.plan.visualObjects : 0)
+              << " sin-motion=" << (copied ? copied.plan.visualObjects : 0) << '\n';
+    return pass;
+}
+
+bool movedSpriteLandsOnEveryFrame() {
+    auto const source = slidingSprite(6);
+    auto const result = buildPlan(source, exactOptions(20));
+    if (!result || result.plan.motionTracks.empty()) {
+        std::cout << "motion-frames: sin pistas de movimiento\n";
+        return false;
+    }
+
+    int wrong = 0;
+    for (int frame = 0; frame < static_cast<int>(result.plan.frames.size()); ++frame) {
+        auto const pixels = renderPlanFrame(result.plan, frame, 1);
+        auto at = [&](int x, int y) {
+            return pixels[(static_cast<std::size_t>(y) * result.plan.width + x) * 4 + 3];
+        };
+        if (at(4 + frame * 2, 3) == 0) ++wrong;
+        if (at(7 + frame * 2, 3) == 0) ++wrong;
+        if (frame > 0 && at(3, 3) != 0) ++wrong;
+    }
+    std::cout << "motion-frames: fallos=" << wrong << '\n';
+    return wrong == 0;
+}
+
+bool glowAddsBlendedHalos() {
+    auto source = animation(12, 12, 1, 0, 0, 0, 0);
+    for (int y = 4; y < 8; ++y) {
+        for (int x = 4; x < 8; ++x) setPixel(source, 0, x, y, 60, 245, 255);
+    }
+    auto options = exactOptions(12);
+    auto const plain = buildPlan(source, options);
+    options.glow = GlowMode::Soft;
+    auto const glowing = buildPlan(source, options);
+
+    bool const pass = plain && glowing && glowing.plan.glowObjects > 0 &&
+        glowing.plan.palette.size() > plain.plan.palette.size() &&
+        glowing.plan.glowPaletteStart < glowing.plan.palette.size() &&
+        glowing.plan.glowOpacity < 1.f &&
+        glowing.plan.totalObjects <= static_cast<std::size_t>(options.objectBudget);
+    std::cout << "glow: objetos=" << (glowing ? glowing.plan.glowObjects : 0)
+              << " paleta=" << (glowing ? glowing.plan.palette.size() : 0)
+              << " opacidad=" << (glowing ? glowing.plan.glowOpacity : 0.f) << '\n';
+    return pass;
+}
+
 int main() {
     bool const solid = solidAreaBecomesOneRect();
     bool const watermark = imageWatermarkIsDistributedAndDetectable();
@@ -1194,6 +1269,9 @@ int main() {
     bool const curve = artModeSegmentsCurves();
     bool const colors = artModeProtectsOtherColors();
     bool const artAnimation = artAnimationKeepsTriggersBounded();
+    bool const motion = movingSpriteBecomesMoveTriggers();
+    bool const motionFrames = movedSpriteLandsOnEveryFrame();
+    bool const glow = glowAddsBlendedHalos();
     bool const paintCoverage = paintModePaintsEveryCell();
     bool const paintStrokes = paintModeRotatesTheSilhouette();
     bool const paintRepairs = paintModeAvoidsInvisibleRepairs();
@@ -1233,6 +1311,9 @@ int main() {
     if (!curve) std::cerr << "FAIL: art mode did not segment a curved outline\n";
     if (!colors) std::cerr << "FAIL: art mode covered another color\n";
     if (!artAnimation) std::cerr << "FAIL: art animation exceeded the trigger cap\n";
+    if (!motion) std::cerr << "FAIL: a sliding sprite was copied instead of moved\n";
+    if (!motionFrames) std::cerr << "FAIL: move triggers left the sprite off its frame\n";
+    if (!glow) std::cerr << "FAIL: glow did not add blended halo objects\n";
     if (!paintCoverage) std::cerr << "FAIL: paint mode left target cells unpainted\n";
     if (!paintStrokes) std::cerr << "FAIL: paint mode did not build rotated strokes\n";
     if (!paintRepairs) std::cerr << "FAIL: paint mode emitted tiny or invisible repairs\n";
@@ -1257,6 +1338,7 @@ int main() {
     if (!renderAnimation) std::cerr << "FAIL: render animation exceeded its object budget\n";
     return solid && watermark && blockSweeps && background && temporal && duplicates && schedule && noLoop && playback &&
         budget && circle && stroke && triangle && curve && colors && artAnimation &&
+        motion && motionFrames && glow &&
         paintCoverage && paintStrokes && paintRepairs && paintSolidRect && paintMergedRects &&
         paintDetails && paintRepairRuns &&
         paintJoins && paintSpeckles && paintGaps && paintPinholes && paintSeams &&

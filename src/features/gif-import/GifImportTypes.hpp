@@ -24,6 +24,12 @@ enum class ImportMode {
     Render,
 };
 
+enum class GlowMode {
+    Off,
+    Soft,
+    Strong,
+};
+
 inline bool usesPaintGeometry(ImportMode mode) {
     return mode == ImportMode::Paint || mode == ImportMode::Render;
 }
@@ -57,8 +63,10 @@ struct Options {
     BackgroundMode background = BackgroundMode::AutoBorder;
     SamplingMode sampling = SamplingMode::Smooth;
     ImportMode mode = ImportMode::Blocks;
+    GlowMode glow = GlowMode::Off;
     bool dither = false;
     bool loop = true;
+    bool motion = true;
 };
 
 inline std::size_t animationEventGroupCount(std::size_t frames, bool loop) {
@@ -97,7 +105,10 @@ enum class PrimitiveKind {
     Circle,
     Triangle,
     WideTriangle,
+    Glow,
 };
+
+inline constexpr std::size_t kPrimitiveKinds = 6;
 
 struct Primitive {
     float x = 0.f;
@@ -115,6 +126,21 @@ struct VisibilityTrack {
     std::vector<Primitive> objects;
 };
 
+// Donde esta la figura en un frame, en celdas y respecto a la pose de referencia.
+struct MotionKey {
+    int frame = 0;
+    int x = 0;
+    int y = 0;
+};
+
+// Una silueta que se repetia igual en varios frames movida de sitio. En vez de
+// pagar una copia entera por frame se dibuja una vez y la corren triggers Move.
+struct MotionTrack {
+    std::vector<std::uint64_t> mask;
+    std::vector<Primitive> objects;
+    std::vector<MotionKey> keys;
+};
+
 struct ImportPlan {
     int width = 0;
     int height = 0;
@@ -127,6 +153,10 @@ struct ImportPlan {
     std::vector<GridFrame> frames;
     std::vector<Primitive> staticObjects;
     std::vector<VisibilityTrack> tracks;
+    std::vector<MotionTrack> motionTracks;
+    // Desde aqui la paleta son canales de glow: mezclados y a media opacidad.
+    std::size_t glowPaletteStart = static_cast<std::size_t>(-1);
+    float glowOpacity = 1.f;
     std::size_t visualObjects = 0;
     std::size_t triggerObjects = 0;
     std::size_t totalObjects = 0;
@@ -134,6 +164,8 @@ struct ImportPlan {
     std::size_t strokeObjects = 0;
     std::size_t circleObjects = 0;
     std::size_t triangleObjects = 0;
+    std::size_t glowObjects = 0;
+    std::size_t moveTriggers = 0;
     float similarity = 100.f;
     float geometrySimilarity = 100.f;
     float detailSimilarity = 100.f;

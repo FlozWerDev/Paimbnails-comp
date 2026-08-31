@@ -1,5 +1,6 @@
 #include "GifObjectEmitter.hpp"
 #include "GifImportPipeline.hpp"
+#include "GifMotionPlanner.hpp"
 
 #include "../../../core/modules/ModuleRegistry.hpp"
 #include "../../../utils/PaimonNotification.hpp"
@@ -8,6 +9,7 @@
 
 #include <Geode/binding/ColorAction.hpp>
 #include <Geode/binding/EditorUI.hpp>
+#include <Geode/binding/EffectGameObject.hpp>
 #include <Geode/binding/GJEffectManager.hpp>
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/LevelEditorLayer.hpp>
@@ -18,6 +20,7 @@
 #include <atomic>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -37,6 +40,7 @@ constexpr int kTriangleObject = 693;
 constexpr int kWideTriangleObject = 694;
 constexpr int kAlphaTrigger = 1007;
 constexpr int kSpawnTrigger = 1268;
+constexpr int kMoveTrigger = 901;
 
 struct ObjectShape {
     int id = kSolidColorObject;
@@ -62,7 +66,7 @@ struct AsyncProgress {
     std::optional<BuildResult> result;
 };
 
-using ShapeTable = std::array<ObjectShape, 5>;
+using ShapeTable = std::array<ObjectShape, kPrimitiveKinds>;
 
 std::size_t shapeIndex(PrimitiveKind kind) {
     return static_cast<std::size_t>(kind);
@@ -75,12 +79,8 @@ ShapeTable defaultShapes() {
     shapes[shapeIndex(PrimitiveKind::Circle)] = {kCircleObject, 50.f, 50.f};
     shapes[shapeIndex(PrimitiveKind::Triangle)] = {kTriangleObject, 30.f, 30.f};
     shapes[shapeIndex(PrimitiveKind::WideTriangle)] = {kWideTriangleObject, 60.f, 30.f};
+    shapes[shapeIndex(PrimitiveKind::Glow)] = {kSolidColorObject, 30.f, 30.f};
     return shapes;
-}
-
-bool bitAt(VisibilityTrack const& track, int frame) {
-    return (track.mask[static_cast<std::size_t>(frame / 64)] &
-            (std::uint64_t{1} << (frame % 64))) != 0;
 }
 
 void appendGroups(std::string& save, int group) {
@@ -157,6 +157,25 @@ void appendSpawn(
     payload += ';';
 }
 
+void appendMove(
+    std::string& payload,
+    float x,
+    float y,
+    int target,
+    float offsetX,
+    float offsetY,
+    float duration,
+    int eventGroup
+) {
+    payload += fmt::format(
+        "1,{},2,{:.3f},3,{:.3f},10,{:.3f},28,{:.3f},29,{:.3f},30,0,51,{},87,1",
+        kMoveTrigger, x, y, duration, offsetX, offsetY, target
+    );
+    if (eventGroup > 0) payload += ",62,1";
+    appendGroups(payload, eventGroup);
+    payload += ';';
+}
+
 std::vector<int> freeColorChannels(GJEffectManager* effects, std::size_t count) {
     std::vector<int> channels;
     channels.reserve(count);
@@ -211,9 +230,30 @@ int sharedZLayer(ShapeTable const& shapes) {
     return 0;
 }
 
+// El save de GD guarda el Move en unidades suyas, no en pixeles. En vez de dar
+// por buena la constante se crea un trigger de prueba con un valor conocido y se
+// le pregunta al propio juego en cuanto lo tradujo.
+float moveUnitScale(LevelEditorLayer* editor) {
+    float scale = 3.f;
+    auto* created = editor->createObjectsFromString(
+        fmt::format("1,{},2,-10000,3,-10000,28,100,29,0;", kMoveTrigger), true, true);
+    if (!created) return scale;
+    for (auto* item : CCArrayExt<CCObject*>(created)) {
+        if (auto* trigger = typeinfo_cast<EffectGameObject*>(item)) {
+            float const offset = trigger->m_moveOffset.x;
+            if (offset > 1.f && offset < 100000.f) scale = offset / 100.f;
+        }
+        if (auto* object = typeinfo_cast<GameObject*>(item)) {
+            editor->removeObject(object, true);
+        }
+    }
+    return scale;
+}
+
 bool resolveShapes(LevelEditorLayer* editor, ImportMode mode, ShapeTable& shapes) {
     if (!measureShape(editor, shapes[shapeIndex(PrimitiveKind::Block)])) return false;
     shapes[shapeIndex(PrimitiveKind::Stroke)] = shapes[shapeIndex(PrimitiveKind::Block)];
+    shapes[shapeIndex(PrimitiveKind::Glow)] = shapes[shapeIndex(PrimitiveKind::Block)];
     if (mode == ImportMode::Blocks) return true;
 
     for (auto kind : {PrimitiveKind::Circle, PrimitiveKind::Triangle,
@@ -266,26 +306,31 @@ Result<PreparedImport> prepareImport(
         return Err("No hay suficientes canales de color libres (1-999).");
     }
 
-    bool const hasAnimation = plan.animated() && !plan.tracks.empty();
+    bool const hasAnimation =
+        plan.animated() && (!plan.tracks.empty() || !plan.motionTracks.empty());
     std::size_t const eventGroupCount = hasAnimation
         ? animationEventGroupCount(plan.frames.size(), options.loop)
         : 0;
-    std::size_t const groupCount = hasAnimation ? plan.tracks.size() + eventGroupCount : 0;
+    std::size_t const groupCount = hasAnimation
+        ? plan.tracks.size() + plan.motionTracks.size() + eventGroupCount
+        : 0;
     auto groups = freeGroups(editor, groupCount);
     if (groups.size() != groupCount) {
         return Err("No hay suficientes grupos libres para animar el GIF.");
     }
 
     std::vector<int> stateGroups;
+    std::vector<int> motionGroups;
     std::vector<int> eventGroups;
     if (hasAnimation) {
-        stateGroups.assign(
-            groups.begin(),
-            groups.begin() + static_cast<std::ptrdiff_t>(plan.tracks.size()));
-        eventGroups.assign(
-            groups.begin() + static_cast<std::ptrdiff_t>(plan.tracks.size()),
-            groups.end());
+        auto const states = static_cast<std::ptrdiff_t>(plan.tracks.size());
+        auto const motions = static_cast<std::ptrdiff_t>(plan.motionTracks.size());
+        stateGroups.assign(groups.begin(), groups.begin() + states);
+        motionGroups.assign(groups.begin() + states, groups.begin() + states + motions);
+        eventGroups.assign(groups.begin() + states + motions, groups.end());
     }
+
+    float const moveScale = plan.motionTracks.empty() ? 3.f : moveUnitScale(editor);
 
     bool const layered = usesPaintGeometry(plan.mode);
     int const zLayer = layered ? sharedZLayer(shapes) : 0;
@@ -303,6 +348,13 @@ Result<PreparedImport> prepareImport(
                 stateGroups[i], layered, zLayer);
         }
     }
+    for (std::size_t i = 0; i < plan.motionTracks.size(); ++i) {
+        for (auto const& object : plan.motionTracks[i].objects) {
+            appendPrimitive(
+                payload, object, shapes, channels, options.pixelSize, origin, plan.height,
+                motionGroups[i], layered, zLayer);
+        }
+    }
 
     if (hasAnimation) {
         float const triggerY = origin.y - 45.f;
@@ -318,36 +370,88 @@ Result<PreparedImport> prepareImport(
         };
 
         for (std::size_t i = 0; i < plan.tracks.size(); ++i) {
-            if (bitAt(plan.tracks[i], 0)) continue;
+            if (visibleAt(plan.tracks[i].mask, 0)) continue;
             auto const position = triggerPosition();
             appendAlpha(payload, 15.f, position.y, stateGroups[i], false, 0);
+        }
+        for (std::size_t i = 0; i < plan.motionTracks.size(); ++i) {
+            if (visibleAt(plan.motionTracks[i].mask, 0)) continue;
+            auto const position = triggerPosition();
+            appendAlpha(payload, 15.f, position.y, motionGroups[i], false, 0);
         }
 
         auto eventGroupForFrame = [&](std::size_t frame) {
             return options.loop ? eventGroups[frame] : eventGroups[frame - 1];
         };
 
+        // Mover la figura a la pose del frame siguiente durante lo que dura el
+        // actual la deja donde toca justo cuando ese frame entra, y de paso el
+        // salto entre poses se ve como un desplazamiento y no como un parpadeo.
+        auto appendMotionStep = [&](std::size_t frame, std::size_t next, int eventGroup) {
+            for (std::size_t i = 0; i < plan.motionTracks.size(); ++i) {
+                auto const& track = plan.motionTracks[i];
+                auto const* from = keyAt(track, static_cast<int>(frame));
+                auto const* to = keyAt(track, static_cast<int>(next));
+                int stepX = 0;
+                int stepY = 0;
+                if (from && to) {
+                    stepX = to->x - from->x;
+                    stepY = to->y - from->y;
+                } else if (from && options.loop) {
+                    stepX = -from->x;
+                    stepY = -from->y;
+                } else {
+                    continue;
+                }
+                if (stepX == 0 && stepY == 0) continue;
+                auto const position = triggerPosition();
+                float const duration = to && std::abs(stepX) + std::abs(stepY) <= 4
+                    ? std::max(plan.frames[frame].delayMs, 10) / 1000.f
+                    : 0.f;
+                appendMove(
+                    payload, position.x, position.y, motionGroups[i],
+                    stepX * options.pixelSize / moveScale,
+                    -stepY * options.pixelSize / moveScale,
+                    duration, eventGroup);
+            }
+        };
+
         appendSpawn(
             payload, startX, triggerY, eventGroupForFrame(1),
             std::max(plan.frames.front().delayMs, 10) / 1000.f, 0);
+        // Sin loop el frame cero no tiene grupo de evento propio: su movimiento
+        // sale suelto y arranca con el nivel, igual que los apagados iniciales.
+        if (!options.loop) appendMotionStep(0, 1, 0);
         std::size_t const firstTransition = options.loop ? 0 : 1;
         for (std::size_t frame = firstTransition; frame < plan.frames.size(); ++frame) {
             int const eventGroup = eventGroupForFrame(frame);
             std::size_t const previous = frame == 0 ? plan.frames.size() - 1 : frame - 1;
             for (std::size_t track = 0; track < plan.tracks.size(); ++track) {
                 bool const changed =
-                    bitAt(plan.tracks[track], static_cast<int>(frame)) !=
-                    bitAt(plan.tracks[track], static_cast<int>(previous));
+                    visibleAt(plan.tracks[track].mask, static_cast<int>(frame)) !=
+                    visibleAt(plan.tracks[track].mask, static_cast<int>(previous));
                 if (!changed) continue;
                 auto const position = triggerPosition();
                 appendAlpha(
                     payload, position.x, position.y, stateGroups[track],
-                    bitAt(plan.tracks[track], static_cast<int>(frame)), eventGroup);
+                    visibleAt(plan.tracks[track].mask, static_cast<int>(frame)), eventGroup);
+            }
+            for (std::size_t track = 0; track < plan.motionTracks.size(); ++track) {
+                bool const changed =
+                    visibleAt(plan.motionTracks[track].mask, static_cast<int>(frame)) !=
+                    visibleAt(plan.motionTracks[track].mask, static_cast<int>(previous));
+                if (!changed) continue;
+                auto const position = triggerPosition();
+                appendAlpha(
+                    payload, position.x, position.y, motionGroups[track],
+                    visibleAt(plan.motionTracks[track].mask, static_cast<int>(frame)),
+                    eventGroup);
             }
 
             bool const hasNext = frame + 1 < plan.frames.size();
             if (hasNext || options.loop) {
                 std::size_t const next = hasNext ? frame + 1 : 0;
+                appendMotionStep(frame, next, eventGroup);
                 auto const position = triggerPosition();
                 appendSpawn(
                     payload, position.x, position.y, eventGroupForFrame(next),
@@ -371,8 +475,10 @@ Result<> installPalette(
 ) {
     for (std::size_t i = 0; i < plan.palette.size(); ++i) {
         auto const& color = plan.palette[i];
+        bool const glow = i >= plan.glowPaletteStart;
+        float const opacity = glow ? plan.glowOpacity : 1.f;
         ccColor3B const gdColor{color.r, color.g, color.b};
-        auto* action = ColorAction::create(gdColor, false, 0);
+        auto* action = ColorAction::create(gdColor, glow, 0);
         if (!action) {
             removeColors(effects, std::vector<int>(
                 channels.begin(), channels.begin() + static_cast<std::ptrdiff_t>(i)));
@@ -382,8 +488,10 @@ Result<> installPalette(
         action->m_color = gdColor;
         action->m_fromColor = gdColor;
         action->m_toColor = gdColor;
-        action->m_fromOpacity = 1.f;
-        action->m_toOpacity = 1.f;
+        action->m_blending = glow;
+        action->m_currentOpacity = opacity;
+        action->m_fromOpacity = opacity;
+        action->m_toOpacity = opacity;
         effects->setColorAction(action, channels[i]);
     }
     return Ok();

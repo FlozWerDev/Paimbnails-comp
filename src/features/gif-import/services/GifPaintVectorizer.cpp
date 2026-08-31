@@ -40,6 +40,14 @@ constexpr float kRepairDiameter = 1.f;
 constexpr float kRoundCapDiameter = 1.8f;
 constexpr int kRepairReach = 3;
 constexpr int kPadding = 2;
+// Cuanto hueco puede tragarse la caja comun de dos rectangulos que se funden,
+// contado sobre lo que los dos ya ocupaban. Aunque el hueco sea invisible, una
+// caja demasiado estirada le quita sitio a las fusiones de la ronda siguiente.
+constexpr float kAbsorbSlack = 0.6f;
+// Rondas de fusion. Cada una vuelve a montar el dibujo entero para saber que hueco
+// es gratis, asi que no salen baratas; las primeras se llevan casi todo y las
+// ultimas rascan una fusion suelta por un rato de trabajo.
+constexpr int kAbsorbRounds = 4;
 // Con cuatro muestras por lado se ve cualquier asomo de mas de un cuarto de celda,
 // que es justo lo que se nota en pantalla.
 constexpr int kFitSamples = 4;
@@ -1864,13 +1872,23 @@ void mergePaintBlocks(std::vector<Primitive>& objects) {
     });
 }
 
-bool mergeRectPair(Primitive const& first, Primitive const& second, Primitive& result) {
-    if (first.color != second.color || first.layer != second.layer ||
-        (first.kind != PrimitiveKind::Block && first.kind != PrimitiveKind::Stroke) ||
-        (second.kind != PrimitiveKind::Block && second.kind != PrimitiveKind::Stroke)) {
-        return false;
-    }
+bool rectShape(Primitive const& object) {
+    return object.kind == PrimitiveKind::Block || object.kind == PrimitiveKind::Stroke;
+}
 
+bool rectPairShapes(Primitive const& first, Primitive const& second) {
+    return rectShape(first) && rectShape(second);
+}
+
+// Caja comun de dos rectangulos girados igual, con lo que mide de mas respecto a
+// lo que los dos ya ocupan. Quien llama decide si ese sobrante se puede pintar.
+bool unitedRect(
+    Primitive const& first,
+    Primitive const& second,
+    Primitive& result,
+    float& extra,
+    float& covered
+) {
     float difference = std::fmod(std::abs(first.rotation - second.rotation), 180.f);
     difference = std::min(difference, 180.f - difference);
     if (difference > 0.05f) return false;
@@ -1911,7 +1929,8 @@ bool mergeRectPair(Primitive const& first, Primitive const& second, Primitive& r
     float const unionArea = first.width * first.height + second.width * second.height -
         overlapWidth * overlapHeight;
     float const mergedArea = (maxMajor - minMajor) * (maxMinor - minMinor);
-    if (mergedArea - unionArea > std::max(0.01f, unionArea * 0.002f)) return false;
+    extra = mergedArea - unionArea;
+    covered = unionArea;
 
     float const centerMajor = (minMajor + maxMajor) * 0.5f;
     float const centerMinor = (minMinor + maxMinor) * 0.5f;
@@ -1924,9 +1943,20 @@ bool mergeRectPair(Primitive const& first, Primitive const& second, Primitive& r
         first.color,
         first.kind == PrimitiveKind::Block && second.kind == PrimitiveKind::Block
             ? PrimitiveKind::Block : PrimitiveKind::Stroke,
-        first.layer
+        std::max(first.layer, second.layer)
     };
     return true;
+}
+
+bool mergeRectPair(Primitive const& first, Primitive const& second, Primitive& result) {
+    if (first.color != second.color || first.layer != second.layer ||
+        !rectPairShapes(first, second)) {
+        return false;
+    }
+    float extra = 0.f;
+    float covered = 0.f;
+    if (!unitedRect(first, second, result, extra, covered)) return false;
+    return extra <= std::max(0.01f, covered * 0.002f);
 }
 
 void mergePaintRects(std::vector<Primitive>& objects) {
@@ -1943,6 +1973,139 @@ void mergePaintRects(std::vector<Primitive>& objects) {
                 break;
             }
         }
+    }
+}
+
+// Lo que `mergePaintRects` no puede juntar: la caja comun de dos rectangulos casi
+// siempre se come alguna celda de al lado, y ahi se planta. Pero esa celda sale
+// gratis cuando ya esta pintada de este mismo color o cuando una capa de mas
+// arriba la tapa despues, y eso no se ve mirando la pareja: hay que mirar el
+// dibujo montado. Se monta una vez por ronda y se aceptan las fusiones cuyas
+// cajas no se pisen entre si, para que lo que se midio siga valiendo al aplicarlas.
+//
+// `foreign` son objetos que no estan en la lista pero se dibujan encima en algun
+// frame: las pistas de una animacion cuando se funden los fijos, y al reves. La
+// caja crecida no puede meterse donde pinta uno de esos, porque lo taparia en el
+// frame en que se enciende y aqui no hay forma de verlo.
+void absorbPaintRects(
+    std::vector<Primitive>& objects,
+    int width,
+    int height,
+    std::vector<Primitive const*> const& foreign = {}
+) {
+    std::size_t const samples =
+        static_cast<std::size_t>(width) * height * kPruneScale * kPruneScale;
+
+    std::vector<std::uint8_t> occupied;
+    if (!foreign.empty()) {
+        occupied.assign(samples, 0);
+        for (auto const* object : foreign) {
+            anySample(*object, width, height, [&](std::size_t sample) {
+                occupied[sample] = 1;
+                return false;
+            });
+        }
+    }
+
+    bool absorbed = true;
+    for (int round = 0; absorbed && round < kAbsorbRounds && objects.size() > 1; ++round) {
+        absorbed = false;
+        std::stable_sort(objects.begin(), objects.end(),
+                         [](Primitive const& left, Primitive const& right) {
+                             return left.layer < right.layer;
+                         });
+
+        std::vector<std::int32_t> top(samples, -1);
+        for (std::size_t index = 0; index < objects.size(); ++index) {
+            anySample(objects[index], width, height, [&](std::size_t sample) {
+                top[sample] = static_cast<std::int32_t>(index);
+                return false;
+            });
+        }
+
+        // Solo se funden objetos del mismo color, asi que comparar todos contra
+        // todos es tirar el rato: se agrupan y cada color se mira por su cuenta.
+        std::map<std::uint16_t, std::vector<std::size_t>> byColor;
+        for (std::size_t index = 0; index < objects.size(); ++index) {
+            if (rectShape(objects[index])) byColor[objects[index].color].push_back(index);
+        }
+
+        std::vector<std::uint8_t> spent(objects.size(), 0);
+        std::vector<Primitive> merges;
+        std::vector<std::array<int, 4>> claimed;
+        for (auto const& [color, group] : byColor) {
+            for (std::size_t slot = 0; slot < group.size(); ++slot) {
+                std::size_t const first = group[slot];
+                if (spent[first]) continue;
+                for (std::size_t other = slot + 1; other < group.size(); ++other) {
+                    std::size_t const second = group[other];
+                    if (spent[second]) continue;
+
+                    Primitive candidate;
+                    float extra = 0.f;
+                    float covered = 0.f;
+                    if (!unitedRect(
+                            objects[first], objects[second], candidate, extra, covered)) {
+                        continue;
+                    }
+                    // Tragarse mucho hueco no es fusionar, es pintar de mas: aunque
+                    // el sobrante fuese invisible, una caja estirada le quita sitio
+                    // a las fusiones de la ronda siguiente.
+                    if (extra > covered * kAbsorbSlack) continue;
+
+                    // El sobrante solo vale si en ninguna muestra estropea el
+                    // dibujo: o manda ya este color, o manda uno de los dos que se
+                    // funden, o lo que manda va por encima de donde queda la union.
+                    bool safe = true;
+                    anySample(candidate, width, height, [&](std::size_t sample) {
+                        auto const owner = top[sample];
+                        if (owner < 0) {
+                            safe = false;
+                            return true;
+                        }
+                        auto const slot = static_cast<std::size_t>(owner);
+                        if (slot == first || slot == second) return false;
+                        if (!occupied.empty() && occupied[sample]) {
+                            safe = false;
+                            return true;
+                        }
+                        if (objects[slot].color == candidate.color) return false;
+                        if (objects[slot].layer > candidate.layer) return false;
+                        safe = false;
+                        return true;
+                    });
+                    if (!safe) continue;
+
+                    // Las fusiones de una ronda se midieron contra el mismo dibujo,
+                    // asi que solo valen juntas si no se tocan entre ellas.
+                    auto const box = shapeBox(candidate, width, height);
+                    bool overlaps = false;
+                    for (auto const& taken : claimed) {
+                        if (box[0] <= taken[2] && taken[0] <= box[2] &&
+                            box[1] <= taken[3] && taken[1] <= box[3]) {
+                            overlaps = true;
+                            break;
+                        }
+                    }
+                    if (overlaps) continue;
+
+                    merges.push_back(candidate);
+                    claimed.push_back(box);
+                    spent[first] = 1;
+                    spent[second] = 1;
+                    absorbed = true;
+                    break;
+                }
+            }
+        }
+        if (!absorbed) break;
+
+        std::vector<Primitive> kept = std::move(merges);
+        kept.reserve(kept.size() + objects.size());
+        for (std::size_t index = 0; index < objects.size(); ++index) {
+            if (!spent[index]) kept.push_back(objects[index]);
+        }
+        objects = std::move(kept);
     }
 }
 
@@ -2246,7 +2409,13 @@ std::vector<Primitive> paintSeamRepairs(
             }
             object.color = static_cast<std::uint16_t>(std::distance(
                 usage.begin(), std::max_element(usage.begin(), usage.end())));
-            object.layer = -1;
+            // Toda la capa de fondo en el -1 dejaba a dos bloques de distinto color
+            // empatados donde se pisan, y ahi manda el juego y no el plan. Cada
+            // color baja lo suyo, en el mismo orden que arriba y siempre por debajo
+            // del dibujo, que es lo que distingue al fondo del resto.
+            object.layer = static_cast<std::int16_t>(
+                -1 - (static_cast<int>(ranks.size()) - 1 -
+                      ranks[static_cast<std::size_t>(object.color)]));
         }
         repairs.insert(repairs.end(), underpaint.begin(), underpaint.end());
         working.insert(working.end(), underpaint.begin(), underpaint.end());
@@ -2280,6 +2449,7 @@ void prunePaintObjects(std::vector<Primitive>& objects, int width, int height) {
     compactKept(objects, keep);
     mergePaintBlocks(objects);
     mergePaintRects(objects);
+    absorbPaintRects(objects, width, height);
     dropRedundantObjects(objects, width, height);
 }
 
@@ -2333,6 +2503,16 @@ void prunePaintObjectsByVisibility(
         mergePaintBlocks(tracks[track].objects);
         mergePaintRects(tracks[track].objects);
     }
+
+    // Los fijos si pueden crecer, pero las pistas se dibujan encima en los frames
+    // en que se encienden: van como terreno prohibido para que la caja crecida no
+    // se meta donde luego aparece otra cosa.
+    std::vector<Primitive const*> animated;
+    for (auto const& track : tracks) {
+        for (auto const& object : track.objects) animated.push_back(&object);
+    }
+    absorbPaintRects(staticObjects, width, height, animated);
+    dropRedundantObjects(staticObjects, width, height);
     tracks.erase(std::remove_if(tracks.begin(), tracks.end(), [](auto const& track) {
         return track.objects.empty();
     }), tracks.end());

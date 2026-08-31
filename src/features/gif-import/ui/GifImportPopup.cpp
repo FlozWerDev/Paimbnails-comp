@@ -7,9 +7,11 @@
 #include "../../../utils/PaimonNotification.hpp"
 #include "../../../utils/SpriteHelper.hpp"
 #include "../../../utils/stb_image.h"
+#include "../../../utils/ThreadTracker.hpp"
 #include "../services/GifArtVectorizer.hpp"
 #include "../services/GifImportPipeline.hpp"
 #include "../services/GifObjectEmitter.hpp"
+#include "../services/GifVideoSource.hpp"
 
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/binding/EditorUI.hpp>
@@ -98,14 +100,14 @@ GifImportPopup* GifImportPopup::create() {
 bool GifImportPopup::init() {
     if (!Popup::init(kPopupWidth, kPopupHeight)) return false;
     setID("gif-import-popup"_spr);
-    setTitle("GIF o Imagen a Objetos");
+    setTitle("GIF, Video o Imagen a Objetos");
     loadOptions();
 
     auto* previewPanel = paimon::SpriteHelper::createDarkPanel(214.f, 178.f, 220, 6.f);
     previewPanel->setPosition({18.f, 82.f});
     m_mainLayer->addChild(previewPanel);
 
-    auto* previewHint = CCLabelBMFont::create("Elige un GIF o imagen", "bigFont.fnt");
+    auto* previewHint = CCLabelBMFont::create("Elige un GIF, video o imagen", "bigFont.fnt");
     previewHint->setID("preview-hint");
     previewHint->setScale(0.34f);
     previewHint->setColor({125, 135, 160});
@@ -196,7 +198,7 @@ bool GifImportPopup::init() {
         m_samplingSprite, [self](CCMenuItemSpriteExtra*) {
             if (auto* popup = self.lock().data()) popup->toggleSampling();
         });
-    samplingButton->setPosition({273.f, 62.f});
+    samplingButton->setPosition({265.f, 62.f});
     menu->addChild(samplingButton);
 
     m_ditherSprite = ButtonSprite::create("Dither: no", 80, true, "bigFont.fnt", "GJ_button_04.png", 24.f, 0.5f);
@@ -205,7 +207,7 @@ bool GifImportPopup::init() {
         m_ditherSprite, [self](CCMenuItemSpriteExtra*) {
             if (auto* popup = self.lock().data()) popup->toggleDither();
         });
-    ditherButton->setPosition({360.f, 62.f});
+    ditherButton->setPosition({330.f, 62.f});
     menu->addChild(ditherButton);
 
     m_loopSprite = ButtonSprite::create("Loop: si", 74, true, "bigFont.fnt", "GJ_button_04.png", 24.f, 0.5f);
@@ -214,8 +216,17 @@ bool GifImportPopup::init() {
         m_loopSprite, [self](CCMenuItemSpriteExtra*) {
             if (auto* popup = self.lock().data()) popup->toggleLoop();
         });
-    loopButton->setPosition({449.f, 62.f});
+    loopButton->setPosition({395.f, 62.f});
     menu->addChild(loopButton);
+
+    m_glowSprite = ButtonSprite::create("Glow: no", 74, true, "bigFont.fnt", "GJ_button_04.png", 24.f, 0.5f);
+    m_glowSprite->setScale(0.55f);
+    auto* glowButton = CCMenuItemExt::createSpriteExtra(
+        m_glowSprite, [self](CCMenuItemSpriteExtra*) {
+            if (auto* popup = self.lock().data()) popup->toggleGlow();
+        });
+    glowButton->setPosition({458.f, 62.f});
+    menu->addChild(glowButton);
 
     bool const hasRender = renderEnabled();
     auto* pickSprite = ButtonSprite::create("Elegir archivo", "goldFont.fnt", "GJ_button_01.png", 0.65f);
@@ -274,6 +285,9 @@ void GifImportPopup::loadOptions() {
         : savedMode == 1 ? ImportMode::Art : ImportMode::Blocks;
     m_options.dither = mod->getSavedValue<bool>("gif-import-dither", false);
     m_options.loop = mod->getSavedValue<bool>("gif-import-loop", true);
+    m_options.glow = static_cast<GlowMode>(std::clamp<int>(
+        static_cast<int>(mod->getSavedValue<int64_t>("gif-import-glow", 0)), 0, 2));
+    m_options.motion = mod->getSavedValue<bool>("gif-import-motion", true);
 }
 
 void GifImportPopup::saveOptions() const {
@@ -289,12 +303,14 @@ void GifImportPopup::saveOptions() const {
     mod->setSavedValue<int64_t>("gif-import-mode", static_cast<int64_t>(m_options.mode));
     mod->setSavedValue<bool>("gif-import-dither", m_options.dither);
     mod->setSavedValue<bool>("gif-import-loop", m_options.loop);
+    mod->setSavedValue<int64_t>("gif-import-glow", static_cast<int64_t>(m_options.glow));
+    mod->setSavedValue<bool>("gif-import-motion", m_options.motion);
 }
 
 void GifImportPopup::pickSource() {
     if (m_busyOverlay) return;
     WeakRef<GifImportPopup> self = this;
-    pt::pickImage([self](Result<std::optional<std::filesystem::path>> result) {
+    pt::pickMedia([self](Result<std::optional<std::filesystem::path>> result) {
         auto popup = self.lock();
         if (!popup || !popup->getParent()) return;
         if (result.isErr()) {
@@ -307,6 +323,12 @@ void GifImportPopup::pickSource() {
 }
 
 void GifImportPopup::loadSource(std::filesystem::path const& path) {
+    // El video no se lee entero a memoria: el decodificador trabaja sobre el
+    // archivo y un mp4 de un minuto se pasa del limite del resto de formatos.
+    if (isVideoFile(path)) {
+        loadVideo(path);
+        return;
+    }
     auto bytesResult = utils::file::readBinary(path);
     if (bytesResult.isErr()) {
         PaimonNotify::show("No se pudo leer el archivo.", NotificationIcon::Error);
@@ -404,6 +426,25 @@ void GifImportPopup::loadStill(
         std::lock_guard lock(state->mutex);
         state->result = std::move(loaded);
     }).detach();
+}
+
+void GifImportPopup::loadVideo(std::filesystem::path const& path) {
+    showBusy("Decodificando video");
+    m_sourceLoad = std::make_shared<SourceLoadState>();
+    auto state = m_sourceLoad;
+    int const frames = m_options.maxFrames;
+    bool const started = paimon::ThreadTracker::get().spawn([state, path, frames] {
+        geode::utils::thread::setName("Paimon GIF Video Decode");
+        LoadedSource loaded{path, nullptr, {}};
+        loaded.source = decodeVideo(path, frames, loaded.error);
+        if (!loaded.source) loaded.source = std::make_shared<SourceAnimation>();
+        std::lock_guard lock(state->mutex);
+        state->result = std::move(loaded);
+    });
+    if (started) return;
+    m_sourceLoad.reset();
+    hideBusy();
+    PaimonNotify::show("El juego se esta cerrando.", NotificationIcon::Warning);
 }
 
 void GifImportPopup::applySource(
@@ -505,6 +546,10 @@ void GifImportPopup::refreshControls() {
         ? "Dither: no"
         : (m_options.dither ? "Dither: si" : "Dither: no"));
     m_loopSprite->setString(m_options.loop ? "Loop: si" : "Loop: no");
+    m_glowSprite->setString(
+        m_options.glow == GlowMode::Strong ? "Glow: alto"
+        : m_options.glow == GlowMode::Soft ? "Glow: suave"
+        : "Glow: no");
 
     if (!m_plan || m_processing) return;
     m_statsLabel->setColor({135, 230, 170});
@@ -516,13 +561,19 @@ void GifImportPopup::refreshControls() {
     } else if (usesPaintGeometry(m_plan->mode)) {
         review = fmt::format(" | fidelidad {:.1f}%", m_plan->similarity);
     }
+    std::string extra;
+    if (m_plan->glowObjects > 0) extra += fmt::format(", {} glow", m_plan->glowObjects);
+    if (m_plan->moveTriggers > 0) {
+        extra += fmt::format(", {} moves en {} pistas",
+                             m_plan->moveTriggers, m_plan->motionTracks.size());
+    }
     m_statsLabel->setString(fmt::format(
         "{}x{} | {} frames | {} colores | {}{}\n"
-        "{} formas ({} blq, {} traz, {} circ, {} tri) + {} triggers = {}{}",
+        "{} formas ({} blq, {} traz, {} circ, {} tri{}) + {} triggers = {}{}",
         m_plan->width, m_plan->height, m_plan->frames.size(), m_plan->palette.size(),
         m_plan->strategy, review,
         m_plan->visualObjects, m_plan->blockObjects, m_plan->strokeObjects,
-        m_plan->circleObjects, m_plan->triangleObjects,
+        m_plan->circleObjects, m_plan->triangleObjects, extra,
         m_plan->triggerObjects, m_plan->totalObjects,
         m_plan->actualDimension < m_plan->requestedDimension ? " (ajustado)" : ""
     ).c_str());
@@ -630,7 +681,7 @@ void GifImportPopup::tick(float dt) {
 
 void GifImportPopup::runBackground() {
     if (!m_source) {
-        PaimonNotify::show("Primero elige un GIF o una imagen.", NotificationIcon::Warning);
+        PaimonNotify::show("Primero elige un GIF, un video o una imagen.", NotificationIcon::Warning);
         return;
     }
     auto* editor = LevelEditorLayer::get();
@@ -775,6 +826,13 @@ void GifImportPopup::toggleDither() {
 
 void GifImportPopup::toggleLoop() {
     m_options.loop = !m_options.loop;
+    requestProcess();
+}
+
+void GifImportPopup::toggleGlow() {
+    m_options.glow = m_options.glow == GlowMode::Off ? GlowMode::Soft
+        : m_options.glow == GlowMode::Soft ? GlowMode::Strong
+        : GlowMode::Off;
     requestProcess();
 }
 

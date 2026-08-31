@@ -1,4 +1,5 @@
 #include "GifArtVectorizer.hpp"
+#include "GifMotionPlanner.hpp"
 #include "GifVectorMath.hpp"
 
 #include <algorithm>
@@ -567,6 +568,7 @@ std::vector<std::uint8_t> renderPlanFrame(ImportPlan const& plan, int frame, int
     auto draw = [&](Primitive const& object) {
         if (object.color >= plan.palette.size()) return;
         auto const& color = plan.palette[object.color];
+        float const opacity = object.color >= plan.glowPaletteStart ? plan.glowOpacity : 1.f;
         float const angle = object.rotation * kPi / 180.f;
         float const extentX = std::abs(std::cos(angle)) * object.width * 0.5f +
             std::abs(std::sin(angle)) * object.height * 0.5f;
@@ -586,17 +588,35 @@ std::vector<std::uint8_t> renderPlanFrame(ImportPlan const& plan, int frame, int
                 float const sampleY = (y + 0.5f) / scale;
                 if (!contains(object, sampleX, sampleY)) continue;
                 std::size_t const index = (static_cast<std::size_t>(y) * outputWidth + x) * 4;
-                pixels[index] = color.r;
-                pixels[index + 1] = color.g;
-                pixels[index + 2] = color.b;
-                pixels[index + 3] = 255;
+                auto mix = [&](std::uint8_t channel, std::uint8_t over) {
+                    return static_cast<std::uint8_t>(over * opacity + channel * (1.f - opacity));
+                };
+                pixels[index] = mix(pixels[index], color.r);
+                pixels[index + 1] = mix(pixels[index + 1], color.g);
+                pixels[index + 2] = mix(pixels[index + 2], color.b);
+                pixels[index + 3] = std::max<std::uint8_t>(
+                    pixels[index + 3], static_cast<std::uint8_t>(255.f * opacity));
             }
         }
     };
 
+    std::vector<Primitive> moved;
+    for (auto const& track : plan.motionTracks) {
+        if (!visibleAt(track.mask, frame)) continue;
+        auto const* key = keyAt(track, frame);
+        if (!key) continue;
+        for (auto const& object : track.objects) {
+            auto shifted = object;
+            shifted.x += static_cast<float>(key->x);
+            shifted.y += static_cast<float>(key->y);
+            moved.push_back(shifted);
+        }
+    }
+
     std::vector<Primitive const*> visible;
-    visible.reserve(plan.staticObjects.size());
+    visible.reserve(plan.staticObjects.size() + moved.size());
     for (auto const& object : plan.staticObjects) visible.push_back(&object);
+    for (auto const& object : moved) visible.push_back(&object);
     for (auto const& track : plan.tracks) {
         if (track.mask.empty() ||
             (track.mask[static_cast<std::size_t>(frame / 64)] &

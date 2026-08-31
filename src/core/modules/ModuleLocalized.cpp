@@ -235,7 +235,7 @@ Map const& spanishDescs() {
         {"paimbnails.messagenotifs.social", "Alertas de nuevos mensajes y solicitudes de amistad."},
         {"paimbnails.thumbalerts.social", "Avisa de las miniaturas recien publicadas, sobre la propia miniatura."},
         {"paimbnails.colorpicker.editor", "Cuentagotas para elegir colores en cualquier parte del editor."},
-        {"paimbnails.gifimport.editor", "Importa GIF como objetos y triggers nativos optimizados."},
+        {"paimbnails.gifimport.editor", "Importa GIF, videos e imagenes como objetos y triggers nativos optimizados."},
         {"paimbnails.gifrender.editor", "Refina curvas en varias pasadas y construye objetos en segundo plano."},
         {"paimbnails.physics.editor", "Simula cuerpos compuestos y hornea su movimiento como triggers nativos."},
         {"paimbnails.collab.editor", "Edicion colaborativa en tiempo real."},

@@ -377,7 +377,7 @@ std::vector<Module> buildCatalog() {
                 "Eyedropper to pick colors anywhere in the editor.",
                 "editor-color-picker-enable", "Tools", S::Editor, true),
         setting("paimbnails.gifimport.editor", "GIF to Objects",
-                "Imports GIF animations as optimized native objects and triggers.",
+                "Imports GIFs, videos and images as optimized native objects and triggers.",
                 "gif-import-enable", "Tools", S::Editor, true),
         setting("paimbnails.gifrender.editor", "Render Import",
                 "Refines curves in repeated passes and builds objects in the background.",

@@ -1,6 +1,8 @@
 ﻿#include "GifImportPipeline.hpp"
 #include "ColorSpace.hpp"
 #include "GifArtVectorizer.hpp"
+#include "GifGlowPass.hpp"
+#include "GifMotionPlanner.hpp"
 #include "GifPaintVectorizer.hpp"
 #include "ImageWatermark.hpp"
 
@@ -67,12 +69,14 @@ struct SelectedFrame {
 struct Candidate {
     std::vector<Primitive> staticObjects;
     std::vector<VisibilityTrack> tracks;
+    std::vector<MotionTrack> motionTracks;
     std::size_t triggers = 0;
     std::string strategy;
 
     std::size_t visuals() const {
         std::size_t count = staticObjects.size();
         for (auto const& track : tracks) count += track.objects.size();
+        for (auto const& track : motionTracks) count += track.objects.size();
         return count;
     }
 
@@ -1594,9 +1598,14 @@ bool allFrames(std::vector<std::uint64_t> const& mask, int frameCount) {
     return true;
 }
 
-std::size_t triggerCount(std::vector<VisibilityTrack> const& tracks, int frames, bool loop) {
-    if (frames <= 1 || tracks.empty()) return 0;
-    std::size_t count = 1;
+std::size_t triggerCount(
+    std::vector<VisibilityTrack> const& tracks,
+    std::vector<MotionTrack> const& motion,
+    int frames,
+    bool loop
+) {
+    if (frames <= 1 || (tracks.empty() && motion.empty())) return 0;
+    std::size_t count = 1 + motionTriggerCount(motion, frames, loop);
     for (auto const& track : tracks) {
         if (!maskBit(track.mask, 0)) ++count;
     }
@@ -1656,16 +1665,15 @@ Candidate temporalCandidate(
         destination.insert(destination.end(), objects.begin(), objects.end());
     }
     sortByLayer(candidate.staticObjects);
+    for (auto& track : candidate.tracks) sortByLayer(track.objects);
+    // Podar cada pista por su cuenta no ve lo que hay debajo: un objeto que solo
+    // repite el color que ya pintan los fijos se salvaba porque en su pista era
+    // el unico que tocaba esa celda. Se miran juntos, frame a frame.
     if (usesPaintGeometry(context.mode)) {
-        prunePaintObjects(candidate.staticObjects, width, height);
+        prunePaintObjectsByVisibility(
+            candidate.staticObjects, candidate.tracks, frameCount, width, height);
     }
-    for (auto& track : candidate.tracks) {
-        sortByLayer(track.objects);
-        if (usesPaintGeometry(context.mode)) {
-            prunePaintObjects(track.objects, width, height);
-        }
-    }
-    candidate.triggers = triggerCount(candidate.tracks, frameCount, loop);
+    candidate.triggers = triggerCount(candidate.tracks, {}, frameCount, loop);
     return candidate;
 }
 
@@ -1707,9 +1715,6 @@ Candidate frameCandidate(
             candidate.staticObjects.end(), objects.begin(), objects.end());
     }
     sortByLayer(candidate.staticObjects);
-    if (usesPaintGeometry(context.mode)) {
-        prunePaintObjects(candidate.staticObjects, width, height);
-    }
 
     for (int frame = 0; frame < frameCount; ++frame) {
         VisibilityTrack track;
@@ -1728,13 +1733,55 @@ Candidate frameCandidate(
             track.objects.insert(track.objects.end(), objects.begin(), objects.end());
         }
         sortByLayer(track.objects);
-        if (usesPaintGeometry(context.mode)) {
-            prunePaintObjects(track.objects, width, height);
-        }
         if (!track.objects.empty()) candidate.tracks.push_back(std::move(track));
     }
-    candidate.triggers = triggerCount(candidate.tracks, frameCount, loop);
+    if (usesPaintGeometry(context.mode)) {
+        prunePaintObjectsByVisibility(
+            candidate.staticObjects, candidate.tracks, frameCount, width, height);
+    }
+    candidate.triggers = triggerCount(candidate.tracks, {}, frameCount, loop);
     return candidate;
+}
+
+// El fondo ya sale de la rejilla sin la silueta, asi que lo que se traza aqui es
+// solo la silueta en su pose de partida: los triggers Move la llevan al resto.
+std::vector<MotionTrack> buildMotionTracks(
+    std::vector<MotionGroup> const& groups,
+    int width,
+    int height,
+    GeometryContext const& context
+) {
+    std::vector<MotionTrack> tracks;
+    tracks.reserve(groups.size());
+    for (auto const& group : groups) {
+        MotionTrack track;
+        track.mask = group.mask;
+        track.keys = group.keys;
+        std::map<int, std::vector<int>> byColor;
+        for (std::size_t i = 0; i < group.positions.size(); ++i) {
+            byColor[group.colors[i]].push_back(group.positions[i]);
+        }
+        for (auto const& [color, positions] : byColor) {
+            auto objects = buildGeometry(positions, width, height, color, context);
+            track.objects.insert(track.objects.end(), objects.begin(), objects.end());
+        }
+        sortByLayer(track.objects);
+        for (auto& object : track.objects) {
+            object.layer = static_cast<std::int16_t>(std::min(object.layer + 400, 999));
+        }
+        if (!track.objects.empty()) tracks.push_back(std::move(track));
+    }
+    return tracks;
+}
+
+// Un trigger tambien es un objeto del nivel, asi que lo que decide si compensa
+// mover una silueta es el total: si baja de verdad y la reproduccion sigue por
+// debajo del tope de triggers, sale mas barata movida que repetida.
+bool worthMoving(Candidate const& plain, Candidate const& moved, std::size_t objectBudget) {
+    if (moved.triggers > kPlaybackTriggerLimit) return false;
+    if (moved.total() > objectBudget) return false;
+    if (plain.total() > objectBudget) return true;
+    return moved.total() * 20 < plain.total() * 19;
 }
 
 Candidate chooseCandidate(Candidate temporal, Candidate perFrame, std::size_t objectBudget) {
@@ -1946,10 +1993,30 @@ BuildResult buildAt(
             prunePaintObjects(chosen.staticObjects, width, height);
         }
     } else {
-        auto temporal = temporalCandidate(frames, width, height, options.loop, context);
-        auto perFrame = frameCandidate(
-            frames, width, height, static_cast<int>(palette.size()), options.loop, context);
-        chosen = chooseCandidate(std::move(temporal), std::move(perFrame), options.objectBudget);
+        auto plan = [&](std::vector<GridFrame> const& source) {
+            auto temporal = temporalCandidate(source, width, height, options.loop, context);
+            auto perFrame = frameCandidate(
+                source, width, height, static_cast<int>(palette.size()),
+                options.loop, context);
+            return chooseCandidate(
+                std::move(temporal), std::move(perFrame), options.objectBudget);
+        };
+        chosen = plan(frames);
+
+        MotionAnalysis motion;
+        if (options.motion) motion = analyzeMotion(frames, width, height);
+        // Seguir una silueta sale a deber cuando lo que se ahorra en copias no
+        // paga los triggers que la mueven, asi que el plan con movimiento compite
+        // con el de siempre en vez de sustituirlo.
+        if (!motion.groups.empty()) {
+            auto moved = plan(motion.residual);
+            moved.motionTracks = buildMotionTracks(motion.groups, width, height, context);
+            moved.strategy += "+move";
+            moved.triggers = triggerCount(
+                moved.tracks, moved.motionTracks,
+                static_cast<int>(frames.size()), options.loop);
+            if (worthMoving(chosen, moved, options.objectBudget)) chosen = std::move(moved);
+        }
     }
     report(progress, BuildStage::Geometry, 0.84f);
 
@@ -1963,11 +2030,15 @@ BuildResult buildAt(
     plan.frames = std::move(frames);
     plan.staticObjects = std::move(chosen.staticObjects);
     plan.tracks = std::move(chosen.tracks);
+    plan.motionTracks = std::move(chosen.motionTracks);
     plan.strategy = std::move(chosen.strategy);
     applyImageWatermark(plan, options.objectBudget);
     plan.visualObjects = plan.staticObjects.size();
     for (auto const& track : plan.tracks) plan.visualObjects += track.objects.size();
+    for (auto const& track : plan.motionTracks) plan.visualObjects += track.objects.size();
     plan.triggerObjects = chosen.triggers;
+    plan.moveTriggers = motionMoveCount(
+        plan.motionTracks, static_cast<int>(plan.frames.size()), options.loop);
     plan.totalObjects = plan.visualObjects + plan.triggerObjects;
 
     auto countShape = [&](Primitive const& object) {
@@ -1977,10 +2048,14 @@ BuildResult buildAt(
             case PrimitiveKind::Circle: ++plan.circleObjects; break;
             case PrimitiveKind::Triangle:
             case PrimitiveKind::WideTriangle: ++plan.triangleObjects; break;
+            case PrimitiveKind::Glow: ++plan.glowObjects; break;
         }
     };
     for (auto const& object : plan.staticObjects) countShape(object);
     for (auto const& track : plan.tracks) {
+        for (auto const& object : track.objects) countShape(object);
+    }
+    for (auto const& track : plan.motionTracks) {
         for (auto const& object : track.objects) countShape(object);
     }
     if (usesPaintGeometry(plan.mode)) {
@@ -2001,7 +2076,8 @@ BuildResult buildAt(
 bool planFits(ImportPlan const& plan, Options const& options) {
     return plan.totalObjects <= static_cast<std::size_t>(options.objectBudget) &&
         plan.triggerObjects <= kPlaybackTriggerLimit &&
-        plan.tracks.size() + animationEventGroupCount(plan.frames.size(), options.loop) < 9800;
+        plan.tracks.size() + plan.motionTracks.size() +
+            animationEventGroupCount(plan.frames.size(), options.loop) < 9800;
 }
 
 std::vector<int> renderDimensions(Options const& options) {
@@ -2189,6 +2265,35 @@ BuildResult buildRegularPlan(
     return {{}, "No cabe en el presupuesto ni con la resolucion y frames minimos."};
 }
 
+// El plan con movimiento se prueba al final y no dentro de la busqueda de
+// resolucion. La silueta que se mueve deja su borde en el fondo, y esa diferencia
+// metida en la busqueda se leia como que la rejilla iba grande: bajaba la
+// resolucion para arreglar algo que no era la resolucion.
+BuildResult tryMotionPlan(
+    SourceAnimation const& source,
+    Options const& options,
+    BuildResult best
+) {
+    if (!best || !best.plan.animated()) return best;
+    auto motionOptions = options;
+    motionOptions.motion = true;
+    auto moved = buildAt(
+        source, motionOptions, best.plan.actualDimension,
+        static_cast<int>(best.plan.frames.size()), true);
+    if (!moved || moved.plan.motionTracks.empty()) return best;
+    if (moved.plan.totalObjects * 20 >= best.plan.totalObjects * 19) return best;
+    if (usesPaintGeometry(options.mode) &&
+        moved.plan.similarity + 1.5f < best.plan.similarity) {
+        return best;
+    }
+    moved.plan.requestedDimension = best.plan.requestedDimension;
+    moved.plan.renderPasses = best.plan.renderPasses;
+    if (best.plan.strategy.starts_with("render/")) {
+        moved.plan.strategy = "render/" + moved.plan.strategy;
+    }
+    return moved;
+}
+
 } // namespace
 
 BuildResult buildPlan(
@@ -2215,10 +2320,20 @@ BuildResult buildPlan(
 
     Options const options = sanitize(rawOptions, source.frames.size());
     int frameLimit = std::min(options.maxFrames, static_cast<int>(source.frames.size()));
-    if (options.mode == ImportMode::Render) {
-        return buildRenderPlan(source, options, frameLimit, progress);
+    Options searchOptions = options;
+    searchOptions.motion = false;
+    auto result = options.mode == ImportMode::Render
+        ? buildRenderPlan(source, searchOptions, frameLimit, progress)
+        : buildRegularPlan(source, searchOptions, frameLimit, progress);
+    if (options.motion) result = tryMotionPlan(source, options, std::move(result));
+    // El glow va despues de elegir el plan a proposito: si entrase en la busqueda
+    // de resolucion, el halo contaria como diferencia contra el original y la
+    // busqueda responderia bajando la rejilla para compensar algo que es de adorno.
+    if (result) {
+        applyGlow(
+            result.plan, options.glow, static_cast<std::size_t>(options.objectBudget));
     }
-    return buildRegularPlan(source, options, frameLimit, progress);
+    return result;
 }
 
 } // namespace paimon::gifimport

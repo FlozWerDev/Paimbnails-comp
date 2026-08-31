@@ -28,6 +28,8 @@
 #include "../src/features/gif-import/services/ColorSpace.cpp"
 #include "../src/features/gif-import/services/GifVectorMath.cpp"
 #include "../src/features/gif-import/services/GifArtVectorizer.cpp"
+#include "../src/features/gif-import/services/GifGlowPass.cpp"
+#include "../src/features/gif-import/services/GifMotionPlanner.cpp"
 #include "../src/features/gif-import/services/GifPaintVectorizer.cpp"
 #include "../src/features/gif-import/services/ImageWatermark.cpp"
 #include "../src/features/gif-import/services/GifImportPipeline.cpp"

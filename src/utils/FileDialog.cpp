@@ -39,11 +39,11 @@ gfile::FilePickOptions::Filter videoFilter() {
 
 gfile::FilePickOptions::Filter mediaFilter() {
     gfile::FilePickOptions::Filter f;
-    f.description = "Images & Videos (*.png, *.jpg, *.gif, *.webp, *.mp4, *.mov ...)";
+    f.description = "Images & Videos (*.png, *.jpg, *.gif, *.webp, *.mp4, *.mov, *.avi ...)";
     f.files = {
         "*.png", "*.jpg", "*.jpeg", "*.webp", "*.gif", "*.bmp", "*.tiff", "*.tif",
         "*.tga", "*.psd", "*.qoi", "*.jxl",
-        "*.mp4", "*.mov", "*.m4v"
+        "*.mp4", "*.mov", "*.m4v", "*.mpg", "*.mpeg", "*.avi", "*.wmv", "*.mkv", "*.webm"
     };
     return f;
 }

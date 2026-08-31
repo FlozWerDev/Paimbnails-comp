@@ -30,6 +30,7 @@ private:
     void loadStill(
         std::filesystem::path const& path,
         std::shared_ptr<std::vector<std::uint8_t>> bytes);
+    void loadVideo(std::filesystem::path const& path);
     void applySource(std::filesystem::path const& path, std::shared_ptr<SourceAnimation> source);
     void requestProcess();
     void startProcess();
@@ -48,6 +49,7 @@ private:
     void toggleSampling();
     void toggleDither();
     void toggleLoop();
+    void toggleGlow();
 
     void loadOptions();
     void saveOptions() const;
@@ -87,6 +89,7 @@ private:
     ButtonSprite* m_samplingSprite = nullptr;
     ButtonSprite* m_ditherSprite = nullptr;
     ButtonSprite* m_loopSprite = nullptr;
+    ButtonSprite* m_glowSprite = nullptr;
     PaimonLoadingOverlay* m_busyOverlay = nullptr;
 };
 
