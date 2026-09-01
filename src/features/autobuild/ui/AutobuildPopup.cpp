@@ -347,9 +347,9 @@ std::vector<CCNode*> AutobuildPopup::templatesTab(float width, float inner) {
     auto& store = TemplateStore::get();
     if (store.all().empty()) {
         items.push_back(kit::makeHint(width,
-            "Todavia no tienes plantillas. Selecciona una zona ya decorada y pulsa "
-            "Capturar, escribe el id de un nivel en Nivel para sacarle las piezas, "
-            "o importa una libreria .tblib."));
+            "Todavia no tienes plantillas. Decora una zona, seleccionala\n"
+            "y pulsa Capturar; o escribe el id de un nivel en Nivel para\n"
+            "sacarle las piezas; o importa una libreria .tblib."));
         return items;
     }
 

@@ -183,8 +183,9 @@ std::vector<CCNode*> LevelAnalysisPopup::levelTab(float width, float inner) {
     }
     if (!m_data) {
         items.push_back(kit::makeHint(width,
-            "Escribe el id de un nivel y Autobuild lo descarga, separa lo que es "
-            "estructura de lo que es fondo y te ofrece cada pieza como plantilla."));
+            "Escribe el id de un nivel y Autobuild lo descarga.\n"
+            "Separa lo que es estructura de lo que es fondo\n"
+            "y te ofrece cada pieza como plantilla."));
         if (m_lastId > 0) {
             items.push_back(kit::makeButtonRow(inner, "Ultimo nivel",
                 fmt::format("Volver a analizar el {}.", m_lastId).c_str(), "Analizar",
@@ -252,7 +253,7 @@ std::vector<CCNode*> LevelAnalysisPopup::levelTab(float width, float inner) {
     }
     if (m_report.truncated) {
         breakdown.push_back(kit::makeHint(inner,
-            "El nivel supera el limite de objetos y se analizo solo una parte."));
+            "El nivel supera el limite de objetos\ny se analizo solo una parte."));
     }
     items.push_back(kit::makeCard(width, "Que hay dentro", {130, 240, 170}, breakdown));
 
@@ -335,14 +336,14 @@ std::vector<CCNode*> LevelAnalysisPopup::piecesTab(float width, float inner) {
     }
     if (m_suggestions.empty()) {
         items.push_back(kit::makeHint(width,
-            "El nivel no dejo ninguna pieza reutilizable. Suele pasar con niveles "
-            "muy cortos o hechos de una sola figura."));
+            "El nivel no dejo ninguna pieza reutilizable. Suele pasar\n"
+            "con niveles muy cortos o hechos de una sola figura."));
         return items;
     }
 
     items.push_back(kit::makeHint(inner,
-        "Cada fila es una forma que el nivel repite o una zona grande que merece "
-        "una plantilla propia. Los triggers nunca se copian."));
+        "Cada fila es una forma que el nivel repite, o una zona\n"
+        "grande que merece plantilla propia. Los triggers no se copian."));
     for (int i = 0; i < static_cast<int>(m_suggestions.size()); ++i) {
         items.push_back(suggestionRow(width, i));
     }
@@ -407,8 +408,8 @@ std::vector<CCNode*> LevelAnalysisPopup::paletteTab(float width, float inner) {
     }
 
     items.push_back(kit::makeHint(inner,
-        "El papel de cada canal sale de donde se usa: si casi todo lo que pinta "
-        "esta en el fondo, es un canal de fondo."));
+        "El papel de cada canal sale de donde se usa: si casi todo\n"
+        "lo que pinta esta en el fondo, es un canal de fondo."));
     std::vector<CCNode*> rows;
     for (int i = 0; i < static_cast<int>(m_report.palette.size()) && i < 40; ++i) {
         rows.push_back(paletteRow(inner, i));
@@ -420,7 +421,7 @@ std::vector<CCNode*> LevelAnalysisPopup::paletteTab(float width, float inner) {
 void LevelAnalysisPopup::askLevelId() {
     auto* popup = SetTextPopup::create(m_lastId > 0 ? std::to_string(m_lastId) : "",
                                        "Id del nivel", 12, "Analizar nivel", "Analizar",
-                                       true, 200.f);
+                                       true, 0.f);
     if (!popup) return;
     popup->m_delegate = this;
     kit::showAbove(popup, this);

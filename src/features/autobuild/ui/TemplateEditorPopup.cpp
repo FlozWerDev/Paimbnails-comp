@@ -195,7 +195,7 @@ void TemplateEditorPopup::buildActions() {
         // would be read as that remap instead of a rename.
         m_remapFrom = 0;
         auto* popup = SetTextPopup::create(m_draft.name, "Nombre", 30, "Renombrar",
-                                           "Guardar", true, 220.f);
+                                           "Guardar", true, 0.f);
         if (!popup) return;
         popup->m_delegate = this;
         kit::showAbove(popup, this);
@@ -505,8 +505,8 @@ std::vector<CCNode*> TemplateEditorPopup::piecesTab(float width, float inner) {
     }
     if (m_draft.pieces.size() > 120) {
         rows.push_back(kit::makeHint(inner,
-            "Solo se listan las primeras 120 piezas; los filtros de arriba actuan "
-            "sobre todas."));
+            "Solo se listan las primeras 120 piezas.\n"
+            "Los filtros de arriba actuan sobre todas."));
     }
     items.push_back(kit::makeCard(width, "Piezas", {130, 240, 170}, rows));
     return items;
@@ -542,7 +542,7 @@ std::vector<CCNode*> TemplateEditorPopup::colorsTab(float width, float inner) {
                 m_remapFrom = channel;
                 auto* popup = SetTextPopup::create("", "Canal destino", 4,
                                                    fmt::format("Canal {} pasa a", channel),
-                                                   "Cambiar", true, 200.f);
+                                                   "Cambiar", false, 0.f);
                 if (!popup) return;
                 popup->m_delegate = this;
                 kit::showAbove(popup, this);
@@ -551,14 +551,14 @@ std::vector<CCNode*> TemplateEditorPopup::colorsTab(float width, float inner) {
     }
     if (rows.empty()) {
         rows.push_back(kit::makeHint(inner,
-            "Ningun objeto de la plantilla fija un canal de color propio."));
+            "Ningun objeto de la plantilla fija un canal propio."));
     }
     items.push_back(kit::makeCard(width, "Canales que usa", {170, 190, 255}, rows));
 
     if (!m_draft.colors.empty()) {
         items.push_back(kit::makeHint(inner,
-            "La plantilla guarda la paleta del nivel de origen; al construir solo se "
-            "importan los canales que las piezas colocadas usan de verdad."));
+            "La plantilla guarda la paleta del nivel de origen. Al construir\n"
+            "solo se importan los canales que las piezas usan de verdad."));
     }
     return items;
 }
