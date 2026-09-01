@@ -1,7 +1,6 @@
 #include "SaveString.hpp"
 
-#include <fmt/format.h>
-
+#include <cstdio>
 #include <cstdlib>
 #include <string_view>
 #include <vector>
@@ -89,6 +88,14 @@ std::string shiftGroups(std::string_view token, int delta) {
     return out.empty() ? std::string(token) : out;
 }
 
+// snprintf instead of fmt so the save-string layer stays free of Geode and the
+// regression test can compile it on its own.
+std::string coord(float value) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof(buffer), "%.3f", value);
+    return buffer;
+}
+
 } // namespace
 
 std::string retarget(std::string const& save, float x, float y, IdShift const& shift) {
@@ -103,13 +110,13 @@ std::string retarget(std::string const& save, float x, float y, IdShift const& s
         int key = toInt(tokens[i], -1);
         std::string value;
         switch (key) {
-            case kKeyX:            value = fmt::format("{:.3f}", x); wroteX = true; break;
-            case kKeyY:            value = fmt::format("{:.3f}", y); wroteY = true; break;
+            case kKeyX:            value = coord(x); wroteX = true; break;
+            case kKeyY:            value = coord(y); wroteY = true; break;
             case kKeyMainColor:
             case kKeyDetailColor:  value = shiftColor(tokens[i + 1], shift.colors); break;
             case kKeyGroups:
                 value = shiftGroups(tokens[i + 1], shift.groups);
-                if (shift.addGroup > 0) value += fmt::format(".{}", shift.addGroup);
+                if (shift.addGroup > 0) value += "." + std::to_string(shift.addGroup);
                 wroteGroups = true;
                 break;
             case kKeyEditorLayer:
@@ -123,10 +130,10 @@ std::string retarget(std::string const& save, float x, float y, IdShift const& s
         out += value;
     }
 
-    if (!wroteX) out += fmt::format(",{},{:.3f}", kKeyX, x);
-    if (!wroteY) out += fmt::format(",{},{:.3f}", kKeyY, y);
+    if (!wroteX) out += "," + std::to_string(kKeyX) + "," + coord(x);
+    if (!wroteY) out += "," + std::to_string(kKeyY) + "," + coord(y);
     if (!wroteGroups && shift.addGroup > 0) {
-        out += fmt::format(",{},{}", kKeyGroups, shift.addGroup);
+        out += "," + std::to_string(kKeyGroups) + "," + std::to_string(shift.addGroup);
     }
     out += ';';
     return out;
@@ -165,6 +172,26 @@ bool positionOf(std::string const& save, float& x, float& y) {
         else if (key == kKeyY) { y = toFloat(tokens[i + 1], 0.f); gotY = true; }
     }
     return gotX && gotY;
+}
+
+std::string rewriteColors(std::string const& save, std::function<int(int)> const& map) {
+    auto tokens = tokenize(save);
+    std::string out;
+    out.reserve(save.size());
+    for (size_t i = 0; i + 1 < tokens.size(); i += 2) {
+        int key = toInt(tokens[i], -1);
+        if (!out.empty()) out += ',';
+        out.append(tokens[i].data(), tokens[i].size());
+        out += ',';
+        if (key == kKeyMainColor || key == kKeyDetailColor) {
+            int const id = toInt(tokens[i + 1], 0);
+            int const mapped = map(id);
+            out += std::to_string(mapped > 0 ? mapped : id);
+        } else {
+            out.append(tokens[i + 1].data(), tokens[i + 1].size());
+        }
+    }
+    return out;
 }
 
 void collectColorIds(std::string const& save, std::set<int>& out) {

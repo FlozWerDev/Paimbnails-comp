@@ -4,7 +4,6 @@
 #include <fmt/format.h>
 
 #include <algorithm>
-#include <limits>
 
 using namespace geode::prelude;
 
@@ -37,33 +36,6 @@ constexpr char const* kClusterRad   = "autobuild-cluster-radius";
 constexpr char const* kBacktracks   = "autobuild-backtracks";
 
 } // namespace
-
-void measurePiece(Piece& piece) {
-    if (piece.objects.empty()) {
-        piece.width = 0.f;
-        piece.height = 0.f;
-        return;
-    }
-
-    float minX = std::numeric_limits<float>::max();
-    float minY = std::numeric_limits<float>::max();
-    float maxX = std::numeric_limits<float>::lowest();
-    float maxY = std::numeric_limits<float>::lowest();
-    for (auto const& obj : piece.objects) {
-        minX = std::min(minX, obj.dx);
-        minY = std::min(minY, obj.dy);
-        maxX = std::max(maxX, obj.dx);
-        maxY = std::max(maxY, obj.dy);
-    }
-    piece.width = maxX - minX;
-    piece.height = maxY - minY;
-}
-
-int Template::objectCount() const {
-    int total = 0;
-    for (auto const& piece : pieces) total += static_cast<int>(piece.objects.size());
-    return total;
-}
 
 std::string Template::summary() const {
     return fmt::format("{} - {} piezas - {} objetos - {} muestra{}",

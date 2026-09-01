@@ -3,7 +3,6 @@
 // Editor panel: pick a template, capture new ones and run a build.
 
 #include <Geode/Geode.hpp>
-#include <Geode/binding/SetTextPopupDelegate.hpp>
 #include <Geode/ui/Popup.hpp>
 
 #include <functional>
@@ -20,11 +19,13 @@ class ScrollLayer;
 
 namespace paimon::autobuild {
 
-class AutobuildPopup : public geode::Popup, public SetTextPopupDelegate {
+class AutobuildPopup : public geode::Popup {
 public:
     static AutobuildPopup* create();
 
-    void setTextPopupClosed(SetTextPopup* popup, gd::string text) override;
+    // The analysis and editor popups add or change templates while this panel
+    // sits behind them, so they ask it to redraw on their way out.
+    static void refreshOpenPanel();
 
 private:
     bool init() override;
@@ -45,9 +46,10 @@ private:
 
     void runCapture(bool asSample);
     void importTemplate();
+    void analyzeLevel();
+    void editTemplate(int index);
     void runBuild(bool reroll);
     void undoBuild();
-    void askRename(int index);
     void confirmDelete(int index);
     void showHelp();
 
@@ -56,7 +58,6 @@ private:
 
     Options m_options;
     int m_tab = 0;
-    int m_renameIndex = -1;
     bool m_compact = false;
     GLubyte m_dimOpacity = 0;
     std::string m_status;

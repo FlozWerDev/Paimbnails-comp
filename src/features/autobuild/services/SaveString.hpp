@@ -7,6 +7,7 @@
 // and every key the mod does not model. Building only rewrites the keys it has
 // to: position, and the id shifts the user asked for.
 
+#include <functional>
 #include <set>
 #include <string>
 
@@ -34,5 +35,8 @@ bool positionOf(std::string const& save, float& x, float& y);
 // Color channels the object references, so a build only imports the palette it
 // actually uses instead of overwriting the whole level.
 void collectColorIds(std::string const& save, std::set<int>& out);
+
+// Same object with every colour channel it names passed through `map`.
+std::string rewriteColors(std::string const& save, std::function<int(int)> const& map);
 
 } // namespace paimon::autobuild

@@ -24,10 +24,6 @@ std::vector<GameObject*> selectionOf(EditorUI* ui);
 
 geode::Result<Template> capture(EditorUI* ui, Mode mode, Options const& opts);
 
-// Wave template out of loose objects whose dx/dy hold absolute level positions.
-// Shared by the editor capture and the .tblib importer.
-Template waveFromObjects(std::vector<CapturedObject> objects, float cell);
-
 // Fold another capture of the same kind into an existing template.
 geode::Result<> accumulate(Template& target, Template const& sample);
 

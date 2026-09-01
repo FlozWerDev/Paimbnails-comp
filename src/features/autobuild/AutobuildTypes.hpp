@@ -4,6 +4,8 @@
 // a generation run uses. Everything here is plain data so the solver can run
 // without touching the editor.
 
+#include <algorithm>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -49,7 +51,26 @@ struct Piece {
     float height = 0.f;
 };
 
-void measurePiece(Piece& piece);
+inline void measurePiece(Piece& piece) {
+    if (piece.objects.empty()) {
+        piece.width = 0.f;
+        piece.height = 0.f;
+        return;
+    }
+
+    float minX = std::numeric_limits<float>::max();
+    float minY = std::numeric_limits<float>::max();
+    float maxX = std::numeric_limits<float>::lowest();
+    float maxY = std::numeric_limits<float>::lowest();
+    for (auto const& obj : piece.objects) {
+        minX = std::min(minX, obj.dx);
+        minY = std::min(minY, obj.dy);
+        maxX = std::max(maxX, obj.dx);
+        maxY = std::max(maxY, obj.dy);
+    }
+    piece.width = maxX - minX;
+    piece.height = maxY - minY;
+}
 
 // Wave adjacency of one piece. `open[d]` means the piece was captured with
 // nothing on that side, so it is allowed to sit on the border of a fill.
@@ -82,8 +103,13 @@ struct Template {
     std::string file;          // file name on disk, empty until saved
 
     bool valid() const { return !pieces.empty(); }
-    int objectCount() const;
     std::string summary() const;
+
+    int objectCount() const {
+        int total = 0;
+        for (auto const& piece : pieces) total += static_cast<int>(piece.objects.size());
+        return total;
+    }
 };
 
 struct Options {

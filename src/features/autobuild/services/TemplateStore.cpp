@@ -1,6 +1,6 @@
 #include "TemplateStore.hpp"
 
-#include "Capture.hpp"
+#include "PieceGrid.hpp"
 #include "SaveString.hpp"
 
 #include <Geode/loader/Mod.hpp>
@@ -97,28 +97,6 @@ int toInt(std::string const& text, int fallback = 0) {
     } catch (...) {
         return fallback;
     }
-}
-
-void centerPiece(Piece& piece) {
-    if (piece.objects.empty()) return;
-    float minX = std::numeric_limits<float>::max();
-    float minY = std::numeric_limits<float>::max();
-    float maxX = std::numeric_limits<float>::lowest();
-    float maxY = std::numeric_limits<float>::lowest();
-    for (auto const& obj : piece.objects) {
-        minX = std::min(minX, obj.dx);
-        minY = std::min(minY, obj.dy);
-        maxX = std::max(maxX, obj.dx);
-        maxY = std::max(maxY, obj.dy);
-    }
-    float cx = (minX + maxX) / 2.f;
-    float cy = (minY + maxY) / 2.f;
-    for (auto& obj : piece.objects) {
-        obj.dx -= cx;
-        obj.dy -= cy;
-    }
-    piece.width = maxX - minX;
-    piece.height = maxY - minY;
 }
 
 // Libraries written by the older autobuild mods: a header block, then pieces

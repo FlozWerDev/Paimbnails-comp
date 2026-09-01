@@ -7,11 +7,12 @@
 #include "../services/Builder.hpp"
 #include "../services/Capture.hpp"
 #include "../services/TemplateStore.hpp"
+#include "LevelAnalysisPopup.hpp"
+#include "TemplateEditorPopup.hpp"
 
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/binding/EditorUI.hpp>
 #include <Geode/binding/LevelEditorLayer.hpp>
-#include <Geode/binding/SetTextPopup.hpp>
 #include <Geode/ui/ScrollLayer.hpp>
 #include <fmt/format.h>
 
@@ -233,6 +234,7 @@ void AutobuildPopup::buildActions() {
     if (m_tab == 0) {
         addAction("Capturar", "GJ_button_01.png", true, [this] { runCapture(false); });
         addAction("Muestra", "GJ_button_03.png", hasSelection, [this] { runCapture(true); });
+        addAction("Nivel", "GJ_button_02.png", true, [this] { analyzeLevel(); });
         addAction("Importar", "GJ_button_04.png", true, [this] { importTemplate(); });
     } else if (m_tab == 1) {
         addAction("Construir", "GJ_button_01.png", hasSelection, [this] { runBuild(false); });
@@ -308,13 +310,13 @@ CCNode* AutobuildPopup::templateRow(float width, int index) {
     useBtn->setPosition({width - 92.f, kRowH / 2.f});
     menu->addChild(useBtn);
 
-    auto* renameSpr = SpriteHelper::safeCreateWithFrameName("GJ_optionsBtn_001.png");
-    if (renameSpr) {
-        renameSpr->setScale(0.42f);
-        auto* renameBtn = CCMenuItemExt::createSpriteExtra(
-            renameSpr, [this, index](CCMenuItemSpriteExtra*) { askRename(index); });
-        renameBtn->setPosition({width - 50.f, kRowH / 2.f});
-        menu->addChild(renameBtn);
+    auto* editSpr = SpriteHelper::safeCreateWithFrameName("GJ_optionsBtn_001.png");
+    if (editSpr) {
+        editSpr->setScale(0.42f);
+        auto* editBtn = CCMenuItemExt::createSpriteExtra(
+            editSpr, [this, index](CCMenuItemSpriteExtra*) { editTemplate(index); });
+        editBtn->setPosition({width - 50.f, kRowH / 2.f});
+        menu->addChild(editBtn);
     }
 
     auto* deleteSpr = SpriteHelper::safeCreateWithFrameName("GJ_trashBtn_001.png");
@@ -346,7 +348,8 @@ std::vector<CCNode*> AutobuildPopup::templatesTab(float width, float inner) {
     if (store.all().empty()) {
         items.push_back(kit::makeHint(width,
             "Todavia no tienes plantillas. Selecciona una zona ya decorada y pulsa "
-            "Capturar, o importa una libreria .tblib."));
+            "Capturar, escribe el id de un nivel en Nivel para sacarle las piezas, "
+            "o importa una libreria .tblib."));
         return items;
     }
 
@@ -743,26 +746,23 @@ void AutobuildPopup::undoBuild() {
     scheduleRebuild();
 }
 
-void AutobuildPopup::askRename(int index) {
-    auto& store = TemplateStore::get();
-    if (index < 0 || index >= static_cast<int>(store.all().size())) return;
-    m_renameIndex = index;
-
-    auto* popup = SetTextPopup::create(store.all()[index].name, "Nombre", 30, "Renombrar",
-                                       "Guardar", true, 220.f);
-    if (!popup) return;
-    popup->m_delegate = this;
-    popup->show();
+void AutobuildPopup::refreshOpenPanel() {
+    auto* scene = CCDirector::get()->getRunningScene();
+    if (!scene) return;
+    auto* panel = typeinfo_cast<AutobuildPopup*>(scene->getChildByID("autobuild-popup"_spr));
+    if (panel) panel->scheduleRebuild();
 }
 
-void AutobuildPopup::setTextPopupClosed(SetTextPopup*, gd::string text) {
-    int index = m_renameIndex;
-    m_renameIndex = -1;
-    std::string name(text);
-    if (name.empty()) return;
-    TemplateStore::get().rename(index, name);
-    setStatus(fmt::format("Renombrada a {}", name), kOk);
-    scheduleRebuild();
+void AutobuildPopup::analyzeLevel() {
+    auto* scene = CCDirector::get()->getRunningScene();
+    if (!scene || scene->getChildByID("autobuild-analysis-popup"_spr)) return;
+    if (auto* popup = LevelAnalysisPopup::create()) popup->show();
+}
+
+void AutobuildPopup::editTemplate(int index) {
+    auto* scene = CCDirector::get()->getRunningScene();
+    if (!scene || scene->getChildByID("autobuild-editor-popup"_spr)) return;
+    if (auto* popup = TemplateEditorPopup::create(index)) popup->show();
 }
 
 void AutobuildPopup::confirmDelete(int index) {
@@ -796,6 +796,10 @@ void AutobuildPopup::showHelp() {
         "<cl>Sellos</c> guarda grupos enteros y suelta uno en cada sitio.\n\n"
         "<cy>Otra semilla</c> rehace el mismo sitio con otro resultado y "
         "<cr>Deshacer</c> borra lo generado y devuelve los marcadores.\n\n"
+        "<cy>Nivel</c> descarga un nivel por id, separa estructura, fondo, adornos y "
+        "triggers, y te ofrece cada forma que el nivel repite como plantilla. El boton "
+        "del engranaje de cada plantilla abre el <cy>editor</c>, donde puedes quitar "
+        "pinchos o adornos, cambiar pesos, abrir o cerrar bordes y mover canales.\n\n"
         "Las plantillas se guardan en <cp>config/autobuild</c> y puedes importar "
         "librerias <cp>.tblib</c> de otros autobuilders.",
         "OK")->show();
