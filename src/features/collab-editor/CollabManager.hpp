@@ -83,6 +83,8 @@ public:
     std::string cycleFollowPeer();
     void clearFollow();
     int followClientId() const { return m_followClientId; }
+    // Called by the overlay every rendered frame; does not send network data.
+    void updateFollow(float dt);
     struct HeatSample { float x = 0.f; float y = 0.f; float intensity = 0.f; };
     std::vector<HeatSample> heatmapSamples(size_t maxCount = 120) const;
     void recordHeat(float x, float y, float amount = 1.f);
@@ -182,7 +184,6 @@ private:
     void handlePeerWorkZone(matjson::Value const& msg);
     void clearPeerWorkZone(int clientId);
     void handlePeerPing(matjson::Value const& msg);
-    void tickFollow();
     void tickHeatmap(float dt);
     void tickPings(float dt);
     void handleLayerOwners(matjson::Value const& msg);

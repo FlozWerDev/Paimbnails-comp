@@ -2,6 +2,7 @@
 
 #include "CollabOverlay.hpp"
 #include "CollabPopups.hpp"
+#include "CollabSmoothing.hpp"
 #include "CollabVoice.hpp"
 
 #include "../cursor/services/CursorManager.hpp"
@@ -63,6 +64,8 @@ constexpr float kPeerCameraMaxAge = 6.f;
 constexpr float kCameraMoveEpsilon = 6.f;
 constexpr float kCameraZoomEpsilon = 0.02f;
 constexpr float kCursorMoveEpsilon = 3.f;
+constexpr float kFollowSmoothingHalfLife = 0.08f;
+constexpr float kFollowSettleDistancePx = 0.1f;
 
 constexpr float kWorkZoneFlushInterval = 0.75f;
 constexpr float kPeerWorkZoneMaxAge = 8.f;
@@ -598,7 +601,9 @@ void CollabManager::tick() {
         }
         tickPings(kTickInterval);
         tickHeatmap(kTickInterval);
-        tickFollow();
+        // Normally the overlay updates follow mode every rendered frame. Keep
+        // this fallback for the unlikely case that overlay creation failed.
+        if (!m_overlay) updateFollow(kTickInterval);
 
         bool playtesting = m_editor->m_playbackMode == PlaybackMode::Playing;
 
@@ -2527,11 +2532,31 @@ void CollabManager::clearFollow() {
     if (connected()) setStatus(fmt::format("En sala '{}' #{}", m_roomCode, m_clientId));
 }
 
-void CollabManager::tickFollow() {
+void CollabManager::updateFollow(float dt) {
     if (m_followClientId <= 0 || !m_editor) return;
     auto it = m_peerCameras.find(m_followClientId);
     if (it == m_peerCameras.end()) return;
-    paimon::editor::focusCameraOnPoint(m_editor, {it->second.x, it->second.y});
+    auto* layer = m_editor->m_objectLayer;
+    if (!layer || !std::isfinite(it->second.x) || !std::isfinite(it->second.y)) return;
+
+    auto const win = CCDirector::sharedDirector()->getWinSize();
+    auto const current = layer->convertToNodeSpace(win / 2.f);
+    float const dx = it->second.x - current.x;
+    float const dy = it->second.y - current.y;
+    float const distancePx = std::hypot(dx, dy) *
+        std::max(std::abs(layer->getScale()), 0.0001f);
+    if (distancePx <= kFollowSettleDistancePx) return;
+
+    float const alpha = smoothingAlpha(dt, kFollowSmoothingHalfLife);
+    if (alpha <= 0.f) return;
+    cocos2d::CCPoint next{
+        current.x + dx * alpha,
+        current.y + dy * alpha,
+    };
+    if (distancePx * (1.f - alpha) <= kFollowSettleDistancePx) {
+        next = cocos2d::CCPoint{it->second.x, it->second.y};
+    }
+    paimon::editor::focusCameraOnPoint(m_editor, next);
     if (m_editor->m_editorUI) m_editor->m_editorUI->updateSlider();
 }
 

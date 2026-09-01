@@ -3,6 +3,7 @@
 #include "CollabEmotes.hpp"
 #include "CollabManager.hpp"
 #include "CollabPopups.hpp"
+#include "CollabSmoothing.hpp"
 #include "CollabVoice.hpp"
 #include "../editor-suite/EditorModule.hpp"
 #include "../editor-suite/EditorEvents.hpp"
@@ -51,6 +52,9 @@ constexpr float kDefaultToolbarHeight = 92.f;
 constexpr size_t kTrailMaxPts = 14;
 constexpr float kTrailMinDist = 18.f;
 constexpr float kTrailDrainEvery = 0.2f;
+constexpr float kCursorSmoothingHalfLife = 0.05f;
+constexpr float kCursorSettleDistancePx = 0.1f;
+constexpr float kCursorTeleportViewports = 2.5f;
 constexpr float kHeatRedrawEvery = 0.35f;
 constexpr int kMaxRemoteCursorDimension = 512;
 
@@ -238,6 +242,7 @@ bool CollabEditorOverlay::init(LevelEditorLayer* editor) {
 
     CollabManager::get().setOverlay(this);
     schedule(schedule_selector(CollabEditorOverlay::refresh), 0.1f);
+    schedule(schedule_selector(CollabEditorOverlay::updatePresence));
     schedule(schedule_selector(CollabEditorOverlay::updateVoice));
     return true;
 }
@@ -398,10 +403,66 @@ void CollabEditorOverlay::drainTrails(float dt) {
     }
 }
 
+void CollabEditorOverlay::updatePresence(float dt) {
+    // Follow mode consumes the camera sample through the same per-frame path,
+    // instead of snapping the local view on the manager's 20 Hz logic tick.
+    CollabManager::get().updateFollow(dt);
+
+    auto* objectLayer = m_editor ? m_editor->m_objectLayer : nullptr;
+    if (!objectLayer || m_cameras.empty()) return;
+
+    float const zoom = std::max(std::abs(objectLayer->getScale()), 0.0001f);
+    float const alpha = smoothingAlpha(dt, kCursorSmoothingHalfLife);
+    if (alpha <= 0.f) return;
+
+    for (auto& [id, cam] : m_cameras) {
+        if (cam.visible) {
+            float const oldX = cam.x;
+            float const oldY = cam.y;
+            float const dx = cam.targetX - cam.x;
+            float const dy = cam.targetY - cam.y;
+            float const remainingPx = std::hypot(dx, dy) * zoom;
+
+            if (remainingPx <= kCursorSettleDistancePx) {
+                cam.x = cam.targetX;
+                cam.y = cam.targetY;
+            } else {
+                cam.x += dx * alpha;
+                cam.y += dy * alpha;
+            }
+
+            if (std::hypot(cam.x - oldX, cam.y - oldY) * zoom > 0.01f) {
+                cam.sinceMove = 0.f;
+            }
+
+            if (cam.trailPts.empty() ||
+                std::hypot(cam.x - cam.trailPts.back().x,
+                           cam.y - cam.trailPts.back().y) >= kTrailMinDist) {
+                cam.trailPts.push_back({cam.x, cam.y});
+                while (cam.trailPts.size() > kTrailMaxPts) cam.trailPts.pop_front();
+                rebuildTrail(cam, id);
+            }
+        }
+
+        if (cam.ghostRoot) {
+            cam.ghostRoot->setPosition({cam.x, cam.y});
+            float const baseScale = cam.customCursor ? 1.f : 0.55f;
+            cam.ghostRoot->setScale(baseScale / zoom);
+            cam.ghostRoot->setVisible(cam.visible && m_presenceVisible);
+        }
+        if (cam.trail) cam.trail->setVisible(cam.visible && m_presenceVisible);
+        if (cam.label) {
+            cam.label->setPosition({cam.x, cam.y + 22.f});
+            cam.label->setScale(std::clamp(0.34f / zoom, 0.08f, 4.f));
+            cam.label->setVisible(cam.visible && m_presenceVisible);
+        }
+    }
+}
+
 void CollabEditorOverlay::onPeerCamera(int clientId, std::string const& name, float x, float y,
                                        bool visible, PeerAppearance const& appearance) {
     auto* objectLayer = m_editor ? m_editor->m_objectLayer : nullptr;
-    if (!objectLayer) return;
+    if (!objectLayer || !std::isfinite(x) || !std::isfinite(y)) return;
 
     auto color = peerColor(clientId);
     bool wantsCustomCursor = customCursorsEnabled() && appearance.hasCustomCursor;
@@ -416,6 +477,11 @@ void CollabEditorOverlay::onPeerCamera(int clientId, std::string const& name, fl
     } else {
         CameraOverlay overlay;
         overlay.customCursorRequested = wantsCustomCursor;
+        overlay.x = x;
+        overlay.y = y;
+        overlay.targetX = x;
+        overlay.targetY = y;
+        overlay.visible = visible;
         overlay.trail = CCDrawNode::create();
         if (!overlay.trail) return;
         overlay.trail->setZOrder(8840);
@@ -470,19 +536,35 @@ void CollabEditorOverlay::onPeerCamera(int clientId, std::string const& name, fl
         slot = &m_cameras[clientId];
     }
 
-    if (visible && (slot->trailPts.empty() ||
-        std::hypot(x - slot->x, y - slot->y) >= kTrailMinDist)) {
-        slot->trailPts.push_back({x, y});
-        while (slot->trailPts.size() > kTrailMaxPts) slot->trailPts.pop_front();
+    bool const becameVisible = visible && !slot->visible;
+    slot->targetX = x;
+    slot->targetY = y;
+
+    auto const win = CCDirector::sharedDirector()->getWinSize();
+    float const zoom = std::max(std::abs(objectLayer->getScale()), 0.0001f);
+    float const viewportDiagonal = std::hypot(win.width, win.height);
+    bool const teleported = std::hypot(x - slot->x, y - slot->y) * zoom >
+        viewportDiagonal * kCursorTeleportViewports;
+
+    // Do not draw a wake across the whole level after a camera teleport or
+    // while the cursor was outside the window. Ordinary samples are smoothed.
+    if (becameVisible || teleported) {
+        slot->x = x;
+        slot->y = y;
+        slot->trailPts.clear();
+        if (visible) slot->trailPts.push_back({x, y});
         slot->sinceMove = 0.f;
         rebuildTrail(*slot, clientId);
     }
-    slot->x = x;
-    slot->y = y;
+    if (!visible && slot->visible) {
+        slot->trailPts.clear();
+        slot->sinceMove = 0.f;
+        rebuildTrail(*slot, clientId);
+    }
+    slot->visible = visible;
 
     if (slot->ghostRoot) {
-        slot->ghostRoot->setPosition({x, y});
-        float zoom = objectLayer->getScale();
+        slot->ghostRoot->setPosition({slot->x, slot->y});
         float baseScale = slot->customCursor ? 1.f : 0.55f;
         float sc = zoom > 0.f ? baseScale / zoom : baseScale;
         slot->ghostRoot->setScale(sc);
@@ -503,9 +585,8 @@ void CollabEditorOverlay::onPeerCamera(int clientId, std::string const& name, fl
         label->setString(name.c_str());
         label->setColor(color);
         label->setOpacity(235);
-        float zoom = objectLayer->getScale();
         label->setScale(zoom > 0.f ? std::clamp(0.34f / zoom, 0.08f, 4.f) : 0.34f);
-        label->setPosition({x, y + 22.f});
+        label->setPosition({slot->x, slot->y + 22.f});
         label->setVisible(visible && m_presenceVisible);
     }
 }
@@ -685,9 +766,9 @@ void CollabEditorOverlay::applyVisibility() {
         if (sel.label) sel.label->setVisible(show);
     }
     for (auto& [id, cam] : m_cameras) {
-        if (cam.ghostRoot) cam.ghostRoot->setVisible(show);
-        if (cam.trail) cam.trail->setVisible(show);
-        if (cam.label) cam.label->setVisible(show);
+        if (cam.ghostRoot) cam.ghostRoot->setVisible(show && cam.visible);
+        if (cam.trail) cam.trail->setVisible(show && cam.visible);
+        if (cam.label) cam.label->setVisible(show && cam.visible);
     }
     for (auto& [id, zone] : m_workZones) {
         if (zone.draw) zone.draw->setVisible(show);
@@ -770,13 +851,13 @@ void CollabEditorOverlay::refresh(float dt) {
                 if (tag && tag->getParent() && tag->isVisible()) tag->setScale(scale);
             }
             float camScale = std::clamp(0.34f / zoom, 0.08f, 4.f);
-            float ghostSc = std::clamp(0.55f / zoom, 0.12f, 1.4f);
             for (auto& [id, cam] : m_cameras) {
                 if (cam.label && cam.label->getParent() && cam.label->isVisible()) {
                     cam.label->setScale(camScale);
                 }
                 if (cam.ghostRoot && cam.ghostRoot->getParent()) {
-                    cam.ghostRoot->setScale(ghostSc);
+                    float const baseScale = cam.customCursor ? 1.f : 0.55f;
+                    cam.ghostRoot->setScale(baseScale / zoom);
                 }
                 rebuildTrail(cam, id);
             }

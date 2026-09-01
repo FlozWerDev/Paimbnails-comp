@@ -45,6 +45,7 @@ private:
     ~CollabEditorOverlay() override;
 
     void refresh(float dt);
+    void updatePresence(float dt);
     float overlayZoom() const;
 
     cocos2d::CCNode* buildToast(ChatMessage const& msg);
@@ -78,9 +79,14 @@ private:
         geode::Ref<cocos2d::CCDrawNode> trail;
         geode::Ref<cocos2d::CCLabelBMFont> label;
         std::deque<cocos2d::CCPoint> trailPts;
+        // Network samples only update the target. The rendered position chases
+        // it every frame so a 5 Hz presence stream still looks continuous.
         float x = 0.f;
         float y = 0.f;
+        float targetX = 0.f;
+        float targetY = 0.f;
         float sinceMove = 0.f;
+        bool visible = false;
         bool customCursor = false;
         bool customCursorRequested = false;
     };
