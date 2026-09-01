@@ -62,6 +62,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
     float m_refreshClock = 0.f;
+    float m_restartClock = 0.f;
     uint64_t m_revision = 0;
     bool m_initialized = false;
 };

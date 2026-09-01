@@ -3,6 +3,7 @@
 #include "TwitchRequestFilters.hpp"
 #include "TwitchRequestNotify.hpp"
 #include "TwitchRequestParser.hpp"
+#include "services/TwitchLevelBriefCache.hpp"
 #include "../../core/modules/ModuleRegistry.hpp"
 #include "../../core/RuntimeLifecycle.hpp"
 #include "../../utils/MainThreadDelay.hpp"
@@ -175,6 +176,7 @@ void TwitchRequestManager::init() {
                 rule.difficulties = static_cast<uint32_t>(
                     item["difficulties"].asInt().unwrapOr(static_cast<int>(kAllDifficulties))) & kAllDifficulties;
             }
+            if (rule.difficulties == 0) rule.difficulties = kAllDifficulties;
             m_filters.videoRules.push_back(rule);
         }
     }
@@ -194,6 +196,10 @@ void TwitchRequestManager::shutdown() {
     }
     stopWebRequests();
     saveQueue();
+    // Allow a later game/runtime load in the same process to initialize every
+    // source again. Leaving this true made init() return while shutdown mode
+    // was still active.
+    m_initialized = false;
 }
 
 ConnectionState TwitchRequestManager::state(Platform platform) const {
@@ -507,6 +513,11 @@ void TwitchRequestManager::scheduleMonitor() {
 void TwitchRequestManager::monitor() {
     if (!m_initialized || m_shuttingDown || !m_live) return;
 
+    // requestPasses() queues metadata lookups even when no request UI is open.
+    // Keep that queue moving so mode/difficulty/video rules stay effective in
+    // the background as requests arrive from chat or the public web page.
+    TwitchLevelBriefCache::get().tick();
+
     for (int index = 0; index < kPlatformCount; ++index) {
         auto platform = platformFromIndex(index);
         auto& entry = link(platform);
@@ -562,6 +573,8 @@ std::string TwitchRequestManager::enqueueRequest(
     if (requester.empty()) requester = platformName(platform);
     clampUtf8(requester, 64);
     clampUtf8(message, 300);
+    parsed.url = trimCopy(std::move(parsed.url));
+    if (!isValidVideoUrl(parsed.url)) parsed.url.clear();
 
     if (m_filters.verifiedOnly && !requesterVerified) return "unverified";
     if (m_filters.blockDuplicates
@@ -631,6 +644,12 @@ void TwitchRequestManager::setFilters(RequestFilters filters) {
     filters.maxPerUser = std::clamp(filters.maxPerUser, 0, kMaxPerUserLimit);
     filters.cooldownSeconds = std::clamp(
         filters.cooldownSeconds, 0, kMaxCooldownSeconds);
+    for (auto& rule : filters.videoRules) {
+        rule.mode = static_cast<ModeFilter>(
+            std::clamp(static_cast<int>(rule.mode), 0, kModeFilterCount - 1));
+        rule.difficulties &= kAllDifficulties;
+        if (rule.difficulties == 0) rule.difficulties = kAllDifficulties;
+    }
     m_filters = filters;
     Mod::get()->setSavedValue<int64_t>(kFilterModeKey, static_cast<int64_t>(filters.mode));
     Mod::get()->setSavedValue<int64_t>(
@@ -761,7 +780,8 @@ void TwitchRequestManager::loadQueue() {
         request.played = item["played"].asBool().unwrapOr(false);
         request.percent = static_cast<int>(
             std::clamp<int64_t>(item["percent"].asInt().unwrapOr(0), 0, 100));
-        request.videoUrl = item["video"].asString().unwrapOr("");
+        request.videoUrl = trimCopy(item["video"].asString().unwrapOr(""));
+        if (!isValidVideoUrl(request.videoUrl)) request.videoUrl.clear();
         auto platform = item["platform"].asString().unwrapOr("twitch");
         request.platform = platform == "web" ? Platform::Web : platformFromKey(platform);
         if (request.receivedAt > 0) {

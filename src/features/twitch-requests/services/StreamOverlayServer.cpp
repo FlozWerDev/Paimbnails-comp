@@ -37,6 +37,7 @@ constexpr char const* kModuleID = "paimbnails.streamoverlay.menu";
 constexpr char const* kConfigKey = "twitch-requests-obs-config";
 constexpr uint16_t kPort = 21680;
 constexpr float kRefreshSeconds = .25f;
+constexpr float kRestartRetrySeconds = 2.f;
 
 StreamOverlayConfig g_config;
 
@@ -319,6 +320,10 @@ Ref<StreamOverlayTicker> g_ticker;
 struct StreamOverlayServer::Impl {
     std::atomic_bool stopping = false;
     std::atomic_bool running = false;
+    // A completed std::thread remains joinable. Keep completion separate from
+    // running so the main thread can reap a failed startup without ever
+    // blocking on a server that is still coming up.
+    std::atomic_bool finished = true;
     std::thread worker;
     mutable std::mutex mutex;
     std::string payload = "{}";
@@ -390,6 +395,14 @@ struct StreamOverlayServer::Impl {
     }
 
     void run() {
+        struct FinishRun {
+            Impl* impl;
+            ~FinishRun() {
+                impl->running = false;
+                impl->finished = true;
+            }
+        } finish{this};
+
 #ifdef GEODE_IS_WINDOWS
         WSADATA data{};
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
@@ -451,7 +464,6 @@ struct StreamOverlayServer::Impl {
             closeSocket(client);
         }
 
-        running = false;
         closeListener();
 #ifdef GEODE_IS_WINDOWS
         WSACleanup();
@@ -546,11 +558,14 @@ void StreamOverlayServer::start() {
 #if defined(GEODE_IS_WINDOWS) || defined(GEODE_IS_MACOS)
     m_impl->stopping = false;
     m_impl->running = false;
+    m_impl->finished = false;
+    m_restartClock = 0.f;
     m_impl->setStatus("Iniciando servidor local...");
     refreshSnapshot();
     try {
         m_impl->worker = std::thread([impl = m_impl.get()] { impl->run(); });
     } catch (...) {
+        m_impl->finished = true;
         m_impl->setStatus("No se pudo iniciar el hilo del servidor");
     }
 #endif
@@ -562,6 +577,8 @@ void StreamOverlayServer::stop() {
     m_impl->closeListener();
     if (m_impl->worker.joinable()) m_impl->worker.join();
     m_impl->running = false;
+    m_impl->finished = true;
+    m_restartClock = 0.f;
     m_impl->setStatus("Apagado");
 #endif
 }
@@ -578,6 +595,25 @@ void StreamOverlayServer::tick(float dt) {
         if (m_impl->worker.joinable()) stop();
         return;
     }
+
+#if defined(GEODE_IS_WINDOWS) || defined(GEODE_IS_MACOS)
+    // Startup can fail transiently when a previous game process has only just
+    // released the port. The old implementation left the completed thread
+    // joinable forever, so toggling the overlay was the only way to recover.
+    // Reap only threads known to be finished, then retry at a restrained rate.
+    if (!m_impl->running) {
+        if (m_impl->finished && m_impl->worker.joinable()) {
+            m_impl->worker.join();
+        }
+        if (!m_impl->worker.joinable()) {
+            m_restartClock += std::max(dt, 0.f);
+            if (m_restartClock >= kRestartRetrySeconds) start();
+        }
+    } else {
+        m_restartClock = 0.f;
+    }
+#endif
+
     m_refreshClock += dt;
     if (m_refreshClock < kRefreshSeconds) return;
     m_refreshClock = 0.f;

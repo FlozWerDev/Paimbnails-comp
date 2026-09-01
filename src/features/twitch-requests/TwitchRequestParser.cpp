@@ -38,7 +38,7 @@ std::string cleanUrl(std::string_view token) {
     while (!token.empty() && junk.find(token.back()) != std::string_view::npos) {
         token.remove_suffix(1);
     }
-    if (token.size() < 12 || token.size() > 300) return {};
+    if (!isValidVideoUrl(token)) return {};
     return std::string(token);
 }
 
@@ -141,6 +141,20 @@ std::optional<ParsedRequest> parseRequest(
     }
 
     return std::nullopt;
+}
+
+bool isValidVideoUrl(std::string_view url) {
+    url = trim(url);
+    if (url.size() < 12 || url.size() > 300 || !looksLikeUrl(url)) return false;
+    if (std::ranges::any_of(url, [](unsigned char ch) { return std::isspace(ch); })) {
+        return false;
+    }
+
+    auto const scheme = url.find("://");
+    if (scheme == std::string_view::npos) return false;
+    auto const hostStart = scheme + 3;
+    auto const hostEnd = url.find_first_of("/?#", hostStart);
+    return hostStart < (hostEnd == std::string_view::npos ? url.size() : hostEnd);
 }
 
 bool isYouTubeUrl(std::string_view url) {

@@ -19,6 +19,9 @@ std::optional<ParsedRequest> parseRequest(
     std::string_view configuredCommands
 );
 
+// A video field only counts when it is a bounded HTTP(S) URL without spaces.
+// The host is intentionally unrestricted so links from any video provider work.
+bool isValidVideoUrl(std::string_view url);
 bool isYouTubeUrl(std::string_view url);
 
 } // namespace paimon::twitch
