@@ -198,7 +198,7 @@ void TemplateEditorPopup::buildActions() {
                                            "Guardar", true, 220.f);
         if (!popup) return;
         popup->m_delegate = this;
-        popup->show();
+        kit::showAbove(popup, this);
     });
     m_actions->updateLayout();
 }
@@ -545,7 +545,7 @@ std::vector<CCNode*> TemplateEditorPopup::colorsTab(float width, float inner) {
                                                    "Cambiar", true, 200.f);
                 if (!popup) return;
                 popup->m_delegate = this;
-                popup->show();
+                kit::showAbove(popup, this);
             }));
         if (rows.size() >= 60) break;
     }
@@ -669,7 +669,7 @@ void TemplateEditorPopup::save() {
 }
 
 void TemplateEditorPopup::showHelp() {
-    FLAlertLayer::create(
+    kit::showAbove(FLAlertLayer::create(
         "Editar plantilla",
         "<cy>Plantilla</c> cambia el modo y quita de golpe todo lo de un tipo: "
         "pinchos, adornos, triggers.\n\n"
@@ -680,7 +680,7 @@ void TemplateEditorPopup::showHelp() {
         "<cy>Colores</c> mueve los canales de la plantilla sin tocar los fijos "
         "(1000 en adelante).\n\n"
         "Nada se escribe en disco hasta que pulsas <cg>Guardar</c>.",
-        "OK")->show();
+        "OK"), this);
 }
 
 } // namespace paimon::autobuild

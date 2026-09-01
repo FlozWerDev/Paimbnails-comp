@@ -1,6 +1,7 @@
 #include "PaiConfigKit.hpp"
 #include "../utils/SpriteHelper.hpp"
 
+#include <Geode/binding/FLAlertLayer.hpp>
 #include <Geode/binding/SliderThumb.hpp>
 #include <Geode/binding/ButtonSprite.hpp>
 #include <Geode/ui/ColorPickPopup.hpp>
@@ -750,6 +751,16 @@ void stepWheelScroll(geode::ScrollLayer* scrollLayer,
     }
     float t = 1.f - std::pow(0.001f, dt);
     contentLayer->setPositionY(cur + diff * t);
+}
+
+void showAbove(FLAlertLayer* alert, CCNode* owner) {
+    if (!alert) return;
+    int const above = owner ? owner->getZOrder() + 1 : 100;
+    alert->m_ZOrder = above;
+    alert->show();
+    // show() may ignore m_ZOrder depending on how the alert was built, so put
+    // it where it belongs once it actually has a parent.
+    if (auto* parent = alert->getParent()) parent->reorderChild(alert, above);
 }
 
 }

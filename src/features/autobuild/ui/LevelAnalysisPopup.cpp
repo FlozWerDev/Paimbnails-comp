@@ -423,7 +423,7 @@ void LevelAnalysisPopup::askLevelId() {
                                        true, 200.f);
     if (!popup) return;
     popup->m_delegate = this;
-    popup->show();
+    kit::showAbove(popup, this);
 }
 
 void LevelAnalysisPopup::setTextPopupClosed(SetTextPopup*, gd::string text) {
@@ -542,7 +542,7 @@ void LevelAnalysisPopup::importAll() {
 }
 
 void LevelAnalysisPopup::showHelp() {
-    FLAlertLayer::create(
+    kit::showAbove(FLAlertLayer::create(
         "Analizar nivel",
         "Autobuild descarga el nivel y lo lee como lo leerias tu: mira la <cy>capa Z</c>, "
         "si el objeto cae en la rejilla de 30, su escala, su giro y que canal de color "
@@ -554,7 +554,7 @@ void LevelAnalysisPopup::showHelp() {
         "<cp>id tipo</c> en <cp>config/autobuild/objects.txt</c> "
         "(tipos: solid, slope, hazard, portal, pad, orb, collectible, trigger, deco, "
         "text) y vuelve a analizar.",
-        "OK")->show();
+        "OK"), this);
 }
 
 } // namespace paimon::autobuild

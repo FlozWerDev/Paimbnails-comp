@@ -756,13 +756,13 @@ void AutobuildPopup::refreshOpenPanel() {
 void AutobuildPopup::analyzeLevel() {
     auto* scene = CCDirector::get()->getRunningScene();
     if (!scene || scene->getChildByID("autobuild-analysis-popup"_spr)) return;
-    if (auto* popup = LevelAnalysisPopup::create()) popup->show();
+    if (auto* popup = LevelAnalysisPopup::create()) kit::showAbove(popup, this);
 }
 
 void AutobuildPopup::editTemplate(int index) {
     auto* scene = CCDirector::get()->getRunningScene();
     if (!scene || scene->getChildByID("autobuild-editor-popup"_spr)) return;
-    if (auto* popup = TemplateEditorPopup::create(index)) popup->show();
+    if (auto* popup = TemplateEditorPopup::create(index)) kit::showAbove(popup, this);
 }
 
 void AutobuildPopup::confirmDelete(int index) {
@@ -770,7 +770,7 @@ void AutobuildPopup::confirmDelete(int index) {
     if (index < 0 || index >= static_cast<int>(store.all().size())) return;
 
     Ref<AutobuildPopup> self = this;
-    createQuickPopup(
+    auto* confirm = createQuickPopup(
         "Borrar plantilla",
         fmt::format("Se borrara <cy>{}</c> del disco. Esto no se puede deshacer.",
                     store.all()[index].name),
@@ -780,11 +780,13 @@ void AutobuildPopup::confirmDelete(int index) {
             TemplateStore::get().remove(index);
             self->setStatus("Plantilla borrada.", kWarn);
             self->scheduleRebuild();
-        });
+        },
+        false);
+    kit::showAbove(confirm, this);
 }
 
 void AutobuildPopup::showHelp() {
-    FLAlertLayer::create(
+    kit::showAbove(FLAlertLayer::create(
         "Autobuild",
         "<cg>1.</c> Decora una zona pequena, seleccionala y pulsa <cy>Capturar</c>.\n"
         "<cg>2.</c> Marca donde quieres construir: bloques <co>467 / 143 / 146</c>, "
@@ -802,7 +804,7 @@ void AutobuildPopup::showHelp() {
         "pinchos o adornos, cambiar pesos, abrir o cerrar bordes y mover canales.\n\n"
         "Las plantillas se guardan en <cp>config/autobuild</c> y puedes importar "
         "librerias <cp>.tblib</c> de otros autobuilders.",
-        "OK")->show();
+        "OK"), this);
 }
 
 } // namespace paimon::autobuild
