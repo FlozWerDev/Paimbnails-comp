@@ -25,7 +25,6 @@ namespace preview {
     constexpr float ZOOM_MAX_MULT  = 6.0f;
     constexpr float SCROLL_ZOOM_IN  = 1.12f;
     constexpr float SCROLL_ZOOM_OUT = 0.89f;
-    constexpr float SMOOTH_SCROLL_ZOOM_SCALE = 0.05f;
 
     constexpr int TOUCH_PRIORITY = -502;
 

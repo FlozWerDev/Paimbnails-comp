@@ -1,6 +1,7 @@
 #include "PhysicsPopup.hpp"
 
 #include "../../../core/modules/ModuleRegistry.hpp"
+#include "../../smooth-scroll/services/SmoothScrollController.hpp"
 #include "../../../utils/PaimonNotification.hpp"
 #include "../../../utils/SpriteHelper.hpp"
 #include "../services/PhysicsObjectArt.hpp"
@@ -1126,9 +1127,12 @@ void PhysicsPopup::ccTouchCancelled(CCTouch* touch, CCEvent* event) {
 }
 
 void PhysicsPopup::scrollWheel(float vertical, float horizontal) {
-    float const amount = std::abs(vertical) > 0.001f ? vertical : -horizontal;
-    if (std::abs(amount) < 0.001f) return;
-    adjustZoom(amount > 0.f ? kScrollZoomIn : kScrollZoomOut);
+    float const steps = paimon::smoothscroll::SmoothScrollController::get()
+        .filteredZoomSteps(vertical, horizontal);
+    if (std::abs(steps) < 0.000001f) return;
+
+    float const baseFactor = steps > 0.f ? kScrollZoomIn : kScrollZoomOut;
+    adjustZoom(std::pow(baseFactor, std::abs(steps)));
 }
 
 void PhysicsPopup::tick(float dt) {

@@ -219,7 +219,6 @@ class $modify(PaimonVolumeScrollMouseHook, CCMouseDispatcher) {
 
     bool dispatchScrollMSG(float y, float x) {
         auto passthrough = [&]() -> bool {
-            paimon::pausezoom::dispatchScroll(y, x);
             return CCMouseDispatcher::dispatchScrollMSG(y, x);
         };
 
@@ -289,6 +288,23 @@ class $modify(PaimonVolumeScrollMouseHook, CCMouseDispatcher) {
             paimon::quickhub::notifyVolumeScrollUsed();
         }
         return true;
+    }
+};
+
+// Run after the global smooth-scroll hook. Raw events captured for momentum do
+// not reach this point; their normalized replay frames do. Bypassed/discrete
+// gestures still arrive once, preserving the non-smooth behavior.
+class $modify(PaimonPauseZoomMouseHook, CCMouseDispatcher) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriorityPre(
+            "cocos2d::CCMouseDispatcher::dispatchScrollMSG",
+            geode::Priority::Late
+        );
+    }
+
+    bool dispatchScrollMSG(float y, float x) {
+        paimon::pausezoom::dispatchScroll(y, x);
+        return CCMouseDispatcher::dispatchScrollMSG(y, x);
     }
 };
 #endif

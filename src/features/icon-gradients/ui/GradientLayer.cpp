@@ -6,8 +6,10 @@
 
 #include "../GradientCache.hpp"
 #include "../GradientUtils.hpp"
+#include "../../smooth-scroll/services/SmoothScrollController.hpp"
 
 #include <Geode/loader/Dispatch.hpp>
+#include <cmath>
 
 using namespace geode::prelude;
 using namespace paimon::icon_gradients;
@@ -649,12 +651,17 @@ void GradientLayer::keyDown(enumKeyCodes key, double timestamp) {
     return FLAlertLayer::keyDown(key, timestamp);
 }
 
-void GradientLayer::scrollWheel(float y, float) {
+void GradientLayer::scrollWheel(float y, float x) {
     if (m_buttons.empty() || Mod::get()->getSettingValue<bool>(kSettingDisableKeys)) return;
 
-    m_scroll = m_smoothScroll ? m_scroll + y : y;
-
-    if (m_scroll < 12 && m_scroll > -12 && m_smoothScroll) return;
+    auto& smooth = paimon::smoothscroll::SmoothScrollController::get();
+    if (smooth.isReplaying()) {
+        m_scroll += smooth.filteredWheelSteps(y, x);
+        if (std::abs(m_scroll) < 0.999f) return;
+    } else {
+        m_scroll = m_smoothScroll ? m_scroll + y : y;
+        if (m_scroll < 12.f && m_scroll > -12.f && m_smoothScroll) return;
+    }
 
     int index = 0;
 
@@ -666,9 +673,15 @@ void GradientLayer::scrollWheel(float y, float) {
         index++;
     }
 
-    index += m_scroll > 0 ? 1 : -1;
+    float const direction = m_scroll > 0.f ? 1.f : -1.f;
+    index += direction > 0.f ? 1 : -1;
 
-    m_scroll = 0;
+    if (smooth.isReplaying()) {
+        m_scroll -= direction;
+        if (std::abs(m_scroll) < 0.001f) m_scroll = 0.f;
+    } else {
+        m_scroll = 0.f;
+    }
 
     if (index >= static_cast<int>(m_buttons.size())) index = 0;
     if (index < 0) index = static_cast<int>(m_buttons.size()) - 1;

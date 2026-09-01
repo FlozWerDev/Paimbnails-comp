@@ -739,6 +739,12 @@ void buildSmoothUIGroup(CCNode* c, float w) {
         [](bool v) { ssaved<bool>("smooth-scroll-editor-zoom", v); },
         w));
 
+    c->addChild(createSliderRow("Editor Zoom Sensitivity",
+        static_cast<float>(gsaved<double>("smooth-scroll-editor-zoom-sensitivity", 1.0)),
+        0.25f, 3.0f,
+        [](float v) { ssaved<double>("smooth-scroll-editor-zoom-sensitivity", static_cast<double>(v)); },
+        w));
+
     c->addChild(createSliderRow("Editor Zoom Smoothness",
         static_cast<float>(gsaved<double>("smooth-scroll-editor-zoom-smoothness", 1.15)),
         0.25f, 3.0f,

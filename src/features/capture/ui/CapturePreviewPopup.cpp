@@ -1331,14 +1331,12 @@ void CapturePreviewPopup::scrollWheel(float x, float y) {
     namespace C = paimon::capture::preview;
     if (!m_previewSprite || !m_previewSprite->getParent()) return;
 
-    float scrollAmount = y;
-    if (std::abs(y) < 0.001f) scrollAmount = -x;
-    if (std::abs(scrollAmount) < 0.001f) return;
+    float const steps = paimon::smoothscroll::SmoothScrollController::get()
+        .filteredZoomSteps(x, y);
+    if (std::abs(steps) < 0.000001f) return;
 
-    float zoomFactor  = scrollAmount > 0 ? C::SCROLL_ZOOM_IN : C::SCROLL_ZOOM_OUT;
-    if (paimon::smoothscroll::SmoothScrollController::get().isReplaying()) {
-        zoomFactor = std::pow(zoomFactor, std::abs(scrollAmount) * C::SMOOTH_SCROLL_ZOOM_SCALE);
-    }
+    float const baseFactor = steps > 0.f ? C::SCROLL_ZOOM_IN : C::SCROLL_ZOOM_OUT;
+    float const zoomFactor = std::pow(baseFactor, std::abs(steps));
     float curScale    = m_previewSprite->getScale();
     float newScale    = clampF(curScale * zoomFactor, m_minScale, m_maxScale);
     if (std::abs(newScale - curScale) < 0.001f) return;

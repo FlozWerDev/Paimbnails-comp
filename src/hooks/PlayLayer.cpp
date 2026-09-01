@@ -304,7 +304,7 @@ namespace {
             }
         }
 
-        void onScroll(float y, float) {
+        void onScroll(float y, float x) {
             if (!m_isPaused) {
                 agentLog347("PlayLayer.cpp:onScroll", "blocked_not_paused", "E", "{}");
     // This hot path is logged only when debug logging is enabled.
@@ -343,8 +343,10 @@ namespace {
             }
 
             float zoomDelta = getPauseZoomSensitivity() * 0.1f;
-            if (paimon::smoothscroll::shouldUseSmoothPauseZoom()) {
-                zoomAtMouse(-y * zoomDelta * 0.1f);
+            auto& smooth = paimon::smoothscroll::SmoothScrollController::get();
+            if (smooth.isReplaying() ||
+                paimon::compat::ModCompat::isPrevterSmoothScrollLoaded()) {
+                zoomAtMouse(smooth.filteredZoomSteps(y, x) * zoomDelta);
             } else if (y > 0.f) {
                 zoomAtMouse(-zoomDelta);
             } else if (y < 0.f) {

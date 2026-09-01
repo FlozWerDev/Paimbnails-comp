@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ScrollInputFilter.hpp"
 #include <Geode/utils/function.hpp>
 
 namespace paimon::smoothscroll {
@@ -13,24 +14,32 @@ public:
 
     bool isActive() const;
     bool isReplaying() const { return m_replaying; }
+    bool isEditorZoomReplay() const { return m_replaying && m_editorZoomMode; }
 
     // true = consumir el evento (no pasar scroll instantaneo al juego).
     bool queueInput(float wheelY, float wheelX);
     void tick(float dt, ScrollDispatchFn const& dispatch);
+
+    // Signed, normalized wheel steps. A normal wheel notch sums to +/-1 even
+    // while its continuous delta is split across many replay frames.
+    float replayedWheelSteps() const;
+    float replayedZoomSteps() const;
+    float filteredWheelSteps(float wheelY, float wheelX) const;
+    float filteredZoomSteps(float wheelY, float wheelX) const;
 
     bool hasMomentum() const;
     void stop();
     void reset();
 
 private:
-    double m_momentumY = 0.0;
-    double m_momentumX = 0.0;
+    ScrollInputFilter m_filter;
+    ScrollVector m_replayActions;
+    void const* m_scrollTarget = nullptr;
     bool m_replaying = false;
     bool m_editorZoomMode = false;
 };
 
 bool shouldBypassSmoothScroll();
-bool shouldUseSmoothPauseZoom();
 bool isEditorZoomGesture();
 
 } // namespace paimon::smoothscroll

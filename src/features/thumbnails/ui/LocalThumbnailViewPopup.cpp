@@ -4,6 +4,7 @@
 #include "../../../utils/PaimonLoadingOverlay.hpp"
 #include "../../../utils/PaimonDrawNode.hpp"
 #include "../../../utils/MainThreadDelay.hpp"
+#include "../../smooth-scroll/services/SmoothScrollController.hpp"
 
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/PopupManager.hpp>
@@ -44,6 +45,7 @@
 #include "ThumbnailOrderPopup.hpp"
 #include "ThumbnailSettingsPopup.hpp"
 #include <algorithm>
+#include <cmath>
 
 using namespace geode::prelude;
 using namespace cocos2d;
@@ -2967,12 +2969,12 @@ void LocalThumbnailViewPopup::scrollWheel(float x, float y) {
         return;
     }
 
-    float scrollAmount = y;
-    if (std::abs(y) < 0.001f) {
-        scrollAmount = -x;
-    }
+    float const steps = paimon::smoothscroll::SmoothScrollController::get()
+        .filteredZoomSteps(x, y);
+    if (std::abs(steps) < 0.000001f) return;
 
-    float zoomFactor = scrollAmount > 0 ? 1.12f : 0.89f;
+    float const baseFactor = steps > 0.f ? 1.12f : 0.89f;
+    float const zoomFactor = std::pow(baseFactor, std::abs(steps));
 
     float currentScale = m_thumbnailSprite->getScale();
     float newScale = currentScale * zoomFactor;
