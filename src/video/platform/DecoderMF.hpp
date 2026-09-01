@@ -47,6 +47,7 @@ private:
     bool setupD3D11();
     bool setupReader(const std::string& path);
     bool setOutputFormat();
+    void refreshLinearStride();
     void copyPlanesToSlot2D(BYTE* scanline0, LONG lStride, Frame& slot, size_t bufferSize = 0);
     void copyPlanesToSlotLinear(BYTE* data, DWORD bufLen, Frame& slot);
     bool createStagingTexture();
@@ -82,6 +83,9 @@ private:
     int                m_outWidth  = 0;
     int                m_outHeight = 0;
     int                m_downscaleFactor = 1;
+    // Row stride the reader declares for system-memory samples; MF pads it
+    // (854 -> 856) and those buffers carry no stride of their own.
+    int                m_linearStride = 0;
     // Native-sized scratch frame; only allocated when downscaling is active.
     Frame              m_scratch;
     double             m_duration = 0.0;

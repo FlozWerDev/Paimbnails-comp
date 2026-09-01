@@ -1041,6 +1041,20 @@ void ThumbnailLoader::workerDownload(std::shared_ptr<Task> task) {
     int realID = std::abs(task->levelID);
     bool isGif = task->levelID < 0;
     PaimonDebug::log("[ThumbnailLoader] workerDownload: levelID={} isGif={} cancelled={}", realID, isGif, task->cancelled);
+
+    // The server already answered nothing for this id this session; going through
+    // the batch again only parks the Level Thumbnails image behind another round trip.
+    if (!task->externalFallback && HttpClient::get().isThumbnailNotFound(realID)
+        && paimon::levelthumbs::shouldFallback(task->levelID)) {
+        task->wasNotFound = true;
+        if (!m_shuttingDown.load(std::memory_order_acquire) && !paimon::isRuntimeShuttingDown()) {
+            Loader::get()->queueInMainThread([this, task]() {
+                finishTask(task, nullptr, false);
+            });
+        }
+        return;
+    }
+
     paimon::cache::ThumbnailCache::get().stats().downloads.fetch_add(1, std::memory_order_relaxed);
 
     auto retryCount = std::make_shared<std::atomic<int>>(0);
@@ -1261,7 +1275,13 @@ void ThumbnailLoader::finishTask(std::shared_ptr<Task> task, cocos2d::CCTexture2
                         cache.markFailed(keyStr);
                     }
                 }
-                recordDownloadFailure();
+                // A level nobody uploaded to us is not a transport failure. Counting
+                // it here trips the global cooldown on any page where most levels
+                // only exist on Level Thumbnails, and the cooldown then drops the
+                // prefetch requests that would have filled the rest of the list.
+                if (!task->wasNotFound) {
+                    recordDownloadFailure();
+                }
             }
 
             if (startFallback) {
@@ -2004,6 +2024,25 @@ void ThumbnailLoader::flushBatchDownloads() {
                         }
                         std::vector<uint8_t> data = it->second.data;
                         self->processDownloadedData(pending.task, std::move(data), realID);
+                    }
+                    continue;
+                }
+
+                // The batch just asked the Worker for this id. With no manifest
+                // entry the single download only guesses a CDN path and then asks
+                // that same Worker again, so it burns two more round trips (one of
+                // them a 4s CDN timeout) before the Level Thumbnails fallback can
+                // even start. Only levels with a known CDN copy are worth retrying.
+                if (success && !HttpClient::get().getManifestEntry(realID).has_value()) {
+                    HttpClient::get().markThumbnailNotFound(realID);
+                    for (auto& pending : pendings) {
+                        if (!pending.task) continue;
+                        pending.task->wasNotFound = true;
+                        if (!paimon::isRuntimeShuttingDown()) {
+                            Loader::get()->queueInMainThread([self, pending]() {
+                                self->finishTask(pending.task, nullptr, false);
+                            });
+                        }
                     }
                     continue;
                 }

@@ -35,11 +35,15 @@ void convertFrame(
     VideoFrame const& frame,
     int outputWidth,
     int outputHeight,
+    bool wideGamut,
     std::vector<std::uint8_t>& rgba
 ) {
+    // El reproductor ya trata la alta definicion como BT.709; leerla como BT.601
+    // vira los verdes y apaga los rojos, y la paleta sale de estos pixeles.
+    auto const convert = wideGamut ? libyuv::H420ToABGR : libyuv::I420ToABGR;
     rgba.assign(static_cast<std::size_t>(outputWidth) * outputHeight * 4, 0);
     if (frame.width == outputWidth && frame.height == outputHeight) {
-        libyuv::I420ToABGR(
+        convert(
             frame.planeY, frame.strideY, frame.planeCb, frame.strideCb,
             frame.planeCr, frame.strideCr, rgba.data(), outputWidth * 4,
             outputWidth, outputHeight);
@@ -56,7 +60,7 @@ void convertFrame(
         frame.planeCr, frame.strideCr, frame.width, frame.height,
         luma.data(), outputWidth, blue.data(), uvWidth, red.data(), uvWidth,
         outputWidth, outputHeight, libyuv::kFilterBox);
-    libyuv::I420ToABGR(
+    convert(
         luma.data(), outputWidth, blue.data(), uvWidth, red.data(), uvWidth,
         rgba.data(), outputWidth * 4, outputWidth, outputHeight);
 }
@@ -97,6 +101,7 @@ std::shared_ptr<SourceAnimation> decodeVideo(
     int const outputWidth = std::max(2, static_cast<int>(std::lround(sourceWidth * shrink)) & ~1);
     int const outputHeight = std::max(2, static_cast<int>(std::lround(sourceHeight * shrink)) & ~1);
 
+    bool const wideGamut = sourceWidth >= 1280 || sourceHeight >= 720;
     int const wanted = std::clamp(maxFrames, 1, 120);
     double const duration = decoder->getDuration();
     double const step = duration > 0.1 ? duration / wanted : 0.0;
@@ -120,7 +125,7 @@ std::shared_ptr<SourceAnimation> decodeVideo(
         lastFrame = std::chrono::steady_clock::now();
         if (frame->pts + 1e-6 >= nextWanted) {
             SourceFrame captured;
-            convertFrame(*frame, outputWidth, outputHeight, captured.rgba);
+            convertFrame(*frame, outputWidth, outputHeight, wideGamut, captured.rgba);
             animation->frames.push_back(std::move(captured));
             stamps.push_back(frame->pts);
             nextWanted = step > 0.0 ? nextWanted + step : frame->pts;

@@ -172,10 +172,12 @@ std::vector<std::uint8_t> backgroundMask(
         std::uint64_t b = 0;
     };
     std::array<Bin, 4096> bins{};
+    std::uint32_t borderSamples = 0;
 
     auto addBorder = [&](int x, int y) {
         auto const pixel = sourcePixel(frame, static_cast<std::size_t>(y) * width + x);
         if (pixel.a < options.alphaThreshold) return;
+        ++borderSamples;
         int const key = (pixel.r >> 4) << 8 | (pixel.g >> 4) << 4 | (pixel.b >> 4);
         auto& bin = bins[static_cast<std::size_t>(key)];
         ++bin.count;
@@ -196,6 +198,10 @@ std::vector<std::uint8_t> backgroundMask(
         return a.count < b.count;
     });
     if (best == bins.end() || best->count == 0) return removed;
+    // Un fondo plano se lleva casi todo el borde. En una foto o en un fotograma
+    // de video el tono mas repetido no llega ni a un tercio, y el relleno se
+    // comia media imagen dejando agujeros distintos en cada frame.
+    if (best->count * 3 < borderSamples) return removed;
 
     Pixel background{
         static_cast<std::uint8_t>(best->r / best->count),

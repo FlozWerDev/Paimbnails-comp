@@ -248,6 +248,7 @@ bool DecoderMF::setupReader(const std::string& path) {
 
     m_width  = static_cast<int>(w);
     m_height = static_cast<int>(h);
+    refreshLinearStride();
 
     // Apply the quality cap to reduce ring-buffer, texture, PBO, and FBO memory.
     // Integer scaling preserves aspect ratio and even 4:2:0 dimensions.
@@ -403,52 +404,91 @@ void DecoderMF::copyPlanesToSlot2D(BYTE* scanline0, LONG lStride, Frame& slot, s
     }
 }
 
+// A system-memory sample carries no stride of its own and MF pads the row
+// (854 px of picture in 856 bytes), so reading it as m_width slides every row
+// sideways and lands the chroma planes short. Wine's readers never expose
+// IMF2DBuffer, which leaves that path as the only one they take.
+void DecoderMF::refreshLinearStride() {
+    m_linearStride = m_width;
+    if (!m_reader) return;
+
+    IMFMediaType* type = nullptr;
+    HRESULT hr = m_reader->GetCurrentMediaType(
+        static_cast<UINT32>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), &type);
+    if (FAILED(hr) || !type) return;
+
+    LONG stride = 0;
+    UINT32 declared = 0;
+    if (SUCCEEDED(type->GetUINT32(MF_MT_DEFAULT_STRIDE, &declared))) {
+        LONG const value = static_cast<LONG>(declared);
+        stride = value < 0 ? -value : value;
+    } else if (FAILED(MFGetStrideForBitmapInfoHeader(
+                   m_pixelFormat.Data1, m_width, &stride))) {
+        stride = 0;
+    }
+    type->Release();
+
+    if (stride > m_width) {
+        m_linearStride = static_cast<int>(stride);
+        geode::log::info("DecoderMF: linear stride {} for {} px rows",
+            m_linearStride, m_width);
+    }
+}
+
 void DecoderMF::copyPlanesToSlotLinear(BYTE* data, DWORD bufLen, Frame& slot) {
     int uvW    = (m_width + 1) / 2;
     int uvH    = (m_height + 1) / 2;
 
-    int alignedH = deriveYPlaneRows(static_cast<size_t>(bufLen), m_width, m_height);
+    // A declared stride that does not divide the buffer would walk the rows off
+    // the end, so the tight layout stays as the fallback.
+    int srcStride = m_linearStride > m_width ? m_linearStride : m_width;
+    int alignedH = deriveYPlaneRows(static_cast<size_t>(bufLen), srcStride, m_height);
+    if (static_cast<size_t>(srcStride) * alignedH * 3 / 2 > bufLen) {
+        srcStride = m_width;
+        alignedH = deriveYPlaneRows(static_cast<size_t>(bufLen), srcStride, m_height);
+    }
+    int uvSrcStride = (srcStride + 1) / 2;
     int alignedUvH = (alignedH + 1) / 2;
-    int ySize  = m_width * alignedH;
-    int uvSize = uvW * alignedUvH;
+    int ySize  = srcStride * alignedH;
+    int uvSize = uvSrcStride * alignedUvH;
 
-    if (slot.strideY == m_width) {
-        std::memcpy(slot.planeY, data, static_cast<size_t>(m_width) * m_height);
+    if (slot.strideY == srcStride) {
+        std::memcpy(slot.planeY, data, static_cast<size_t>(srcStride) * m_height);
     } else {
         for (int r = 0; r < m_height; ++r) {
             std::memcpy(slot.planeY + r * slot.strideY,
-                        data + r * m_width, m_width);
+                        data + r * srcStride, m_width);
         }
     }
 
     if (m_pixelFormat == MFVideoFormat_I420) {
         BYTE* cbStart = data + ySize;
         BYTE* crStart = cbStart + uvSize;
-        if (slot.strideCb == uvW && slot.strideCr == uvW) {
-            std::memcpy(slot.planeCb, cbStart, static_cast<size_t>(uvW) * uvH);
-            std::memcpy(slot.planeCr, crStart, static_cast<size_t>(uvW) * uvH);
+        if (slot.strideCb == uvSrcStride && slot.strideCr == uvSrcStride) {
+            std::memcpy(slot.planeCb, cbStart, static_cast<size_t>(uvSrcStride) * uvH);
+            std::memcpy(slot.planeCr, crStart, static_cast<size_t>(uvSrcStride) * uvH);
         } else {
             for (int r = 0; r < uvH; ++r) {
-                std::memcpy(slot.planeCb + r * slot.strideCb, cbStart + r * uvW, uvW);
-                std::memcpy(slot.planeCr + r * slot.strideCr, crStart + r * uvW, uvW);
+                std::memcpy(slot.planeCb + r * slot.strideCb, cbStart + r * uvSrcStride, uvW);
+                std::memcpy(slot.planeCr + r * slot.strideCr, crStart + r * uvSrcStride, uvW);
             }
         }
     } else if (m_pixelFormat == MFVideoFormat_YV12) {
         BYTE* crStart = data + ySize;
         BYTE* cbStart = crStart + uvSize;
-        if (slot.strideCb == uvW && slot.strideCr == uvW) {
-            std::memcpy(slot.planeCb, cbStart, static_cast<size_t>(uvW) * uvH);
-            std::memcpy(slot.planeCr, crStart, static_cast<size_t>(uvW) * uvH);
+        if (slot.strideCb == uvSrcStride && slot.strideCr == uvSrcStride) {
+            std::memcpy(slot.planeCb, cbStart, static_cast<size_t>(uvSrcStride) * uvH);
+            std::memcpy(slot.planeCr, crStart, static_cast<size_t>(uvSrcStride) * uvH);
         } else {
             for (int r = 0; r < uvH; ++r) {
-                std::memcpy(slot.planeCb + r * slot.strideCb, cbStart + r * uvW, uvW);
-                std::memcpy(slot.planeCr + r * slot.strideCr, crStart + r * uvW, uvW);
+                std::memcpy(slot.planeCb + r * slot.strideCb, cbStart + r * uvSrcStride, uvW);
+                std::memcpy(slot.planeCr + r * slot.strideCr, crStart + r * uvSrcStride, uvW);
             }
         }
     } else if (m_pixelFormat == MFVideoFormat_NV12) {
         // NV12 stores interleaved Cb/Cr.
         BYTE* uvStart = data + ySize;
-        libyuv::SplitUVPlane(uvStart, m_width,
+        libyuv::SplitUVPlane(uvStart, srcStride,
                              slot.planeCb, slot.strideCb,
                              slot.planeCr, slot.strideCr,
                              uvW, uvH);
@@ -811,6 +851,7 @@ bool DecoderMF::fallbackToSoftwareDecode(const std::string& path) {
         geode::log::warn("DecoderMF: fallback - failed to set output format");
         return false;
     }
+    refreshLinearStride();
 
     geode::log::info("DecoderMF: successfully switched to software decode");
     return true;

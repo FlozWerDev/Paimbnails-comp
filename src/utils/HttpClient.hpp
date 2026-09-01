@@ -123,6 +123,7 @@ public:
     void checkThumbnailExists(int levelId, CheckCallback callback);
 
     bool isThumbnailNotFound(int levelId) const;
+    void markThumbnailNotFound(int levelId) const;
     void clearThumbnailNotFound(int levelId);
     
     void checkModerator(std::string const& username, ModeratorCallback callback);
@@ -292,7 +293,6 @@ private:
     mutable std::unordered_map<int, std::chrono::steady_clock::time_point> m_notFoundCache;
     mutable std::mutex m_notFoundMutex;
     static constexpr int NOT_FOUND_TTL_SECONDS = 5 * 60;
-    void markThumbnailNotFound(int levelId) const;
 
     // Coalesce concurrent moderator checks for the same username.
     std::unordered_map<std::string, std::vector<ModeratorCallback>> m_inflightModChecks;
