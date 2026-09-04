@@ -7,6 +7,7 @@
 #include "../data/ProgressionStats.hpp"
 #include "../data/ProgressionTiers.hpp"
 #include "../services/ProgressionService.hpp"
+#include "../ui/GDProgressBar.hpp"
 #include "../ui/ProgressionPopup.hpp"
 #include "../ui/TierBadgeNode.hpp"
 #include "../../../framework/HookConventions.hpp"
@@ -34,11 +35,16 @@ CCNode* buildLevelChip(BadgeContext const& ctx, float height) {
     chip->setContentSize({width, height});
     chip->setAnchorPoint({0.5f, 0.5f});
 
-    if (auto* panel = paimon::SpriteHelper::createRoundedRect(
-            width, height, height * 0.42f,
-            {tier.base.r / 255.f * 0.30f, tier.base.g / 255.f * 0.30f, tier.base.b / 255.f * 0.30f, 0.85f},
-            {tier.accent.r / 255.f, tier.accent.g / 255.f, tier.accent.b / 255.f, 0.9f},
-            1.f)) {
+    if (auto* panel = GDProgressBar::makeCapsule()) {
+        panel->setContentSize({width / (height / 20.f), 20.f});
+        panel->setScale(height / 20.f);
+        panel->setAnchorPoint({0.f, 0.5f});
+        panel->setPosition({0.f, height / 2.f});
+        panel->setColor({
+            static_cast<GLubyte>(tier.base.r * 0.42f),
+            static_cast<GLubyte>(tier.base.g * 0.42f),
+            static_cast<GLubyte>(tier.base.b * 0.42f),
+        });
         chip->addChild(panel, 0);
     }
 

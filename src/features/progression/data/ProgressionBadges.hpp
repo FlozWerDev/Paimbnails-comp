@@ -58,6 +58,7 @@ struct BadgeCategory {
     char const* id;
     char const* name;
     char const* glyph;
+    cocos2d::ccColor3B color;
 };
 
 // Everything a badge is evaluated against, so callers build it once per profile.
@@ -86,6 +87,8 @@ int unlockedCount(BadgeContext const& ctx);
 BadgeDef const* highestUnlocked(BadgeContext const& ctx);
 
 cocos2d::ccColor3B rarityColor(BadgeRarity rarity);
+// Rarity paints the frame, the category paints the face behind the glyph.
+cocos2d::ccColor3B categoryColor(std::string_view categoryId);
 char const* rarityId(BadgeRarity rarity);
 
 // Localized display strings.
@@ -93,6 +96,8 @@ std::string metricLabel(BadgeMetric metric);
 std::string rarityLabel(BadgeRarity rarity);
 std::string categoryLabel(std::string_view categoryId);
 std::string badgeRequirement(BadgeDef const& badge);
+// Two or three characters for the tile: "35K", "#100".
+std::string badgeShortGoal(BadgeDef const& badge);
 std::string badgeProgressText(BadgeDef const& badge, BadgeContext const& ctx);
 
 } // namespace paimon::progression

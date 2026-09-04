@@ -66,6 +66,19 @@ struct SpriteHelper {
         return cocos2d::extension::CCScale9Sprite::create(file);
     }
 
+    // The default insets are thirds of the texture, which fold in on themselves
+    // once the target is smaller than two corners.
+    static cocos2d::extension::CCScale9Sprite* safeCreateScale9(
+        const char* file,
+        cocos2d::CCRect const& capInsets
+    ) {
+        auto* tex = cocos2d::CCTextureCache::sharedTextureCache()->addImage(file, false);
+        if (!tex) return nullptr;
+        auto const size = tex->getContentSize();
+        return cocos2d::extension::CCScale9Sprite::create(
+            file, cocos2d::CCRectMake(0.f, 0.f, size.width, size.height), capInsets);
+    }
+
     static cocos2d::extension::CCScale9Sprite* safeCreateScale9WithFrameName(const char* frameName) {
         auto frame = cocos2d::CCSpriteFrameCache::sharedSpriteFrameCache()->spriteFrameByName(frameName);
         if (!frame || frame->isUsingFallback()) return nullptr;

@@ -1,6 +1,7 @@
 #include "ProgressionPopup.hpp"
 #include "BadgeDetailPopup.hpp"
 #include "BadgeIconNode.hpp"
+#include "GDProgressBar.hpp"
 #include "TierBadgeNode.hpp"
 #include "XPBarNode.hpp"
 #include "../data/ProgressionStats.hpp"
@@ -33,9 +34,8 @@ constexpr int kGridColumns = 7;
 constexpr float kTileSize = 44.f;
 constexpr float kTileGap = 7.f;
 
-ccColor4F toColor4F(ccColor3B const& c, float alpha) {
-    return {c.r / 255.f, c.g / 255.f, c.b / 255.f, alpha};
-}
+constexpr ccColor3B kIdleTint = {104, 108, 122};
+constexpr ccColor3B kMutedText = {168, 178, 198};
 
 ccColor3B sourceColor(ExpSource source) {
     switch (source) {
@@ -51,11 +51,14 @@ ccColor3B sourceColor(ExpSource source) {
     return {255, 255, 255};
 }
 
-CCNode* makeCard(float width, float height, float alpha = 0.30f) {
+CCNode* makeCard(float width, float height) {
     auto* card = CCNode::create();
     card->setContentSize({width, height});
-    if (auto* panel = paimon::SpriteHelper::createRoundedRect(
-            width, height, 8.f, {0.f, 0.f, 0.f, alpha}, {1.f, 1.f, 1.f, 0.10f}, 1.f)) {
+    if (auto* panel = paimon::SpriteHelper::safeCreateScale9("GJ_square05.png", CCRectMake(12.f, 12.f, 56.f, 56.f))) {
+        panel->setContentSize({width, height});
+        panel->setAnchorPoint({0.f, 0.f});
+        panel->setColor({0, 0, 0});
+        panel->setOpacity(85);
         card->addChild(panel, -1);
     }
     return card;
@@ -69,34 +72,61 @@ CCLabelBMFont* makeLabel(std::string const& text, char const* font, float scale,
     return label;
 }
 
-// Pill with an inactive and an active background stacked, so selection is a
-// visibility flip instead of a rebuild.
-CCNode* makePill(float width, float height, ccColor3B accent, CCNode* content) {
-    auto* pill = CCNode::create();
-    pill->setContentSize({width, height});
+// Both tab faces are the same sprite; selecting one is a tint swap plus the
+// little rise the game gives its own tabs.
+CCNode* makeTab(float width, float height, CCNode* content) {
+    auto* tab = CCNode::create();
+    tab->setContentSize({width, height});
 
-    if (auto* off = paimon::SpriteHelper::createRoundedRect(
-            width, height, height * 0.42f, {1.f, 1.f, 1.f, 0.07f}, {1.f, 1.f, 1.f, 0.10f}, 1.f)) {
-        off->setID("pill-off");
-        pill->addChild(off, 0);
-    }
-    if (auto* on = paimon::SpriteHelper::createRoundedRect(
-            width, height, height * 0.42f, toColor4F(accent, 0.85f), toColor4F(accent, 1.f), 1.2f)) {
-        on->setID("pill-on");
-        on->setVisible(false);
-        pill->addChild(on, 1);
+    if (auto* skin = paimon::SpriteHelper::safeCreateScale9WithFrameName("GJ_tabOff_001.png")) {
+        skin->setContentSize({width, height});
+        skin->setAnchorPoint({0.f, 0.f});
+        skin->setID("tab-skin");
+        tab->addChild(skin, 0);
     }
     if (content) {
         content->setPosition({width / 2.f, height / 2.f});
-        pill->addChild(content, 2);
+        tab->addChild(content, 1);
     }
-    return pill;
+    return tab;
 }
 
-void setPillActive(CCNode* pill, bool active) {
-    if (!pill) return;
-    if (auto* off = pill->getChildByID("pill-off")) off->setVisible(!active);
-    if (auto* on = pill->getChildByID("pill-on")) on->setVisible(active);
+// Same idea for the category chips, built from the badge plate so the row reads
+// as part of the grid underneath.
+CCNode* makeChip(float size, CCNode* content) {
+    auto* chip = CCNode::create();
+    chip->setContentSize({size, size});
+
+    auto place = [&](CCSprite* sprite, char const* id, int z) {
+        if (!sprite) return;
+        sprite->setScale(size / std::max(1.f, sprite->getContentSize().width));
+        sprite->setPosition({size / 2.f, size / 2.f});
+        sprite->setID(id);
+        chip->addChild(sprite, z);
+    };
+    place(paimon::SpriteHelper::safeCreate("paim_progPlateFace.png"_spr), "chip-face", 0);
+    place(paimon::SpriteHelper::safeCreate("paim_progPlate1.png"_spr), "chip-plate", 1);
+
+    if (content) {
+        content->setPosition({size / 2.f, size / 2.f});
+        chip->addChild(content, 2);
+    }
+    return chip;
+}
+
+ccColor3B dim(ccColor3B const& color, float factor) {
+    return {
+        static_cast<GLubyte>(color.r * factor),
+        static_cast<GLubyte>(color.g * factor),
+        static_cast<GLubyte>(color.b * factor),
+    };
+}
+
+void setTinted(CCNode* holder, char const* childId, ccColor3B color) {
+    if (!holder) return;
+    if (auto* rgba = typeinfo_cast<CCRGBAProtocol*>(holder->getChildByID(childId))) {
+        rgba->setColor(color);
+    }
 }
 
 } // namespace
@@ -151,7 +181,6 @@ bool ProgressionPopup::init(BadgeContext const& ctx, std::string const& username
 
 void ProgressionPopup::buildTabRow() {
     auto& loc = Localization::get();
-    auto const& tier = tierForLevel(m_ctx.level);
 
     auto* menu = CCMenu::create();
     menu->setPosition({0.f, 0.f});
@@ -164,21 +193,22 @@ void ProgressionPopup::buildTabRow() {
         "progression.tab.badges",
     };
 
-    constexpr float pillW = 108.f;
-    constexpr float pillH = 24.f;
-    constexpr float gap = 10.f;
-    float const totalW = pillW * kTabCount + gap * (kTabCount - 1);
-    float const startX = (kPopupW - totalW) / 2.f + pillW / 2.f;
+    constexpr float tabW = 112.f;
+    constexpr float tabH = 26.f;
+    constexpr float gap = 8.f;
+    float const totalW = tabW * kTabCount + gap * (kTabCount - 1);
+    float const startX = (kPopupW - totalW) / 2.f + tabW / 2.f;
 
     for (int i = 0; i < kTabCount; ++i) {
         auto* label = makeLabel(loc.getString(keys[i]).c_str(), "bigFont.fnt", 0.4f, {255, 255, 255});
-        auto* pill = makePill(pillW, pillH, tier.base, label);
-        auto* btn = CCMenuItemSpriteExtra::create(pill, this, menu_selector(ProgressionPopup::onTab));
+        if (label) label->limitLabelWidth(tabW - 16.f, 0.4f, 0.2f);
+        auto* tab = makeTab(tabW, tabH, label);
+        auto* btn = CCMenuItemSpriteExtra::create(tab, this, menu_selector(ProgressionPopup::onTab));
         if (!btn) continue;
         btn->setTag(i);
-        btn->setPosition({startX + (pillW + gap) * i, kPopupH - 46.f});
+        btn->setPosition({startX + (tabW + gap) * i, kPopupH - 46.f});
         menu->addChild(btn);
-        m_tabPills.push_back(pill);
+        m_tabs.push_back(tab);
     }
 }
 
@@ -191,10 +221,14 @@ void ProgressionPopup::onTab(CCObject* sender) {
 void ProgressionPopup::showTab(int index, bool animated) {
     if (!m_pageHolder) return;
 
+    auto const& tier = tierForLevel(m_ctx.level);
     int const previous = m_tab;
     m_tab = std::clamp(index, 0, kTabCount - 1);
-    for (int i = 0; i < static_cast<int>(m_tabPills.size()); ++i) {
-        setPillActive(m_tabPills[i], i == m_tab);
+    for (int i = 0; i < static_cast<int>(m_tabs.size()); ++i) {
+        setTinted(m_tabs[i], "tab-skin", i == m_tab ? tier.base : kIdleTint);
+        if (auto* parent = m_tabs[i]->getParent()) {
+            parent->setPositionY(kPopupH - (i == m_tab ? 44.f : 46.f));
+        }
     }
 
     CCNode* page = nullptr;
@@ -232,14 +266,14 @@ CCNode* ProgressionPopup::buildOverview() {
     auto* page = CCNode::create();
     page->setContentSize({kPageW, kPageH});
 
-    // Top band: tier badge on the left, everything else stacked to its right.
+    // Top band: tier medal on the left, everything else stacked to its right.
     // Keep it above y=110 so the two cards underneath stay clear.
-    constexpr float kColX = 110.f;
+    constexpr float kColX = 108.f;
     constexpr float kColRight = kPageW - 8.f;
 
-    if (auto* badge = TierBadgeNode::create(m_ctx.level, 78.f)) {
+    if (auto* badge = TierBadgeNode::create(m_ctx.level, 72.f)) {
         badge->setProgress(levelProgress(m_ctx.exp));
-        badge->setPosition({52.f, 155.f});
+        badge->setPosition({52.f, 152.f});
         badge->playIntro(0.04f);
         page->addChild(badge);
     }
@@ -254,14 +288,14 @@ CCNode* ProgressionPopup::buildOverview() {
     if (auto* tierIndex = makeLabel(
             fmt::format("{} {} / {}", loc.getString("progression.tier"),
                         tier.index + 1, kTierCount),
-            "chatFont.fnt", 0.38f, {165, 178, 200})) {
+            "chatFont.fnt", 0.38f, kMutedText)) {
         tierIndex->setAnchorPoint({1.f, 0.5f});
         tierIndex->setPosition({kColRight, 188.f});
         page->addChild(tierIndex);
     }
 
     if (auto* levelWord = makeLabel(loc.getString("progression.level"),
-                                    "chatFont.fnt", 0.44f, {165, 178, 200})) {
+                                    "chatFont.fnt", 0.44f, kMutedText)) {
         levelWord->setAnchorPoint({0.f, 0.5f});
         levelWord->setPosition({kColX, 163.f});
         page->addChild(levelWord);
@@ -283,13 +317,13 @@ CCNode* ProgressionPopup::buildOverview() {
     if (auto* total = makeLabel(
             fmt::format("{}  {}", loc.getString("progression.total-xp"),
                         formatCount(m_ctx.exp)),
-            "chatFont.fnt", 0.4f, {210, 220, 238})) {
+            "chatFont.fnt", 0.4f, {215, 224, 240})) {
         total->setAnchorPoint({1.f, 0.5f});
         total->setPosition({kColRight, 163.f});
         page->addChild(total);
     }
 
-    if (auto* bar = XPBarNode::create(kColRight - kColX, 17.f)) {
+    if (auto* bar = XPBarNode::create(kColRight - kColX, 18.f)) {
         bar->setTier(tier);
         bar->setExp(m_ctx.exp);
         bar->setPosition({(kColX + kColRight) / 2.f, 138.f});
@@ -321,14 +355,14 @@ CCNode* ProgressionPopup::buildOverview() {
 
     if (auto* header = makeLabel(
             loc.getString(lastTier ? "progression.max-tier" : "progression.next-tier").c_str(),
-            "chatFont.fnt", 0.38f, {150, 162, 185})) {
+            "chatFont.fnt", 0.38f, kMutedText)) {
         header->setAnchorPoint({0.f, 0.5f});
         header->setPosition({12.f, cardH - 14.f});
         nextCard->addChild(header);
     }
 
-    if (auto* preview = TierBadgeNode::create(lastTier ? m_ctx.level : goalLevel, 44.f)) {
-        preview->setPosition({36.f, 44.f});
+    if (auto* preview = TierBadgeNode::create(lastTier ? m_ctx.level : goalLevel, 42.f)) {
+        preview->setPosition({36.f, 46.f});
         preview->playIntro(0.18f);
         nextCard->addChild(preview);
     }
@@ -356,24 +390,11 @@ CCNode* ProgressionPopup::buildOverview() {
             nextCard->addChild(need);
         }
 
-        constexpr float barW = 172.f;
-        constexpr float barH = 8.f;
-        if (auto* track = paimon::SpriteHelper::createRoundedRect(
-                barW, barH, barH * 0.5f, {0.f, 0.f, 0.f, 0.5f})) {
-            track->setPosition({12.f, 14.f});
-            nextCard->addChild(track);
-        }
-        if (auto* fill = paimon::SpriteHelper::createRoundedRect(
-                std::max(barH, barW * tierProgress), barH, barH * 0.5f,
-                toColor4F(nextTier.base, 1.f))) {
-            fill->setPosition({12.f, 14.f});
-            fill->setScaleX(0.f);
-            fill->runAction(CCSequence::create(
-                CCDelayTime::create(0.22f),
-                CCEaseSineOut::create(CCScaleTo::create(0.5f, 1.f, 1.f)),
-                nullptr
-            ));
-            nextCard->addChild(fill);
+        if (auto* bar = GDProgressBar::create(cardW - 24.f, 10.f)) {
+            bar->setFillColor(nextTier.base);
+            bar->animateTo(tierProgress, 0.22f, 0.5f);
+            bar->setPosition({cardW / 2.f, 16.f});
+            nextCard->addChild(bar);
         }
     }
 
@@ -385,40 +406,25 @@ CCNode* ProgressionPopup::buildOverview() {
     int const totalBadges = static_cast<int>(allBadges().size());
 
     if (auto* header = makeLabel(loc.getString("progression.tab.badges").c_str(),
-                                 "chatFont.fnt", 0.38f, {150, 162, 185})) {
+                                 "chatFont.fnt", 0.38f, kMutedText)) {
         header->setAnchorPoint({0.f, 0.5f});
         header->setPosition({12.f, cardH - 14.f});
         badgeCard->addChild(header);
     }
 
     if (auto* count = makeLabel(fmt::format("{} / {}", unlocked, totalBadges).c_str(),
-                                "bigFont.fnt", 0.62f, {255, 255, 255})) {
+                                "bigFont.fnt", 0.58f, {255, 255, 255})) {
         count->setAnchorPoint({0.f, 0.5f});
-        count->setPosition({12.f, cardH - 36.f});
+        count->setPosition({12.f, cardH - 34.f});
         badgeCard->addChild(count);
     }
 
-    {
-        constexpr float barW = 172.f;
-        constexpr float barH = 8.f;
-        float const ratio = totalBadges > 0
-            ? static_cast<float>(unlocked) / static_cast<float>(totalBadges) : 0.f;
-        if (auto* track = paimon::SpriteHelper::createRoundedRect(
-                barW, barH, barH * 0.5f, {0.f, 0.f, 0.f, 0.5f})) {
-            track->setPosition({12.f, cardH - 56.f});
-            badgeCard->addChild(track);
-        }
-        if (auto* fill = paimon::SpriteHelper::createRoundedRect(
-                std::max(barH, barW * ratio), barH, barH * 0.5f, toColor4F(tier.base, 1.f))) {
-            fill->setPosition({12.f, cardH - 56.f});
-            fill->setScaleX(0.f);
-            fill->runAction(CCSequence::create(
-                CCDelayTime::create(0.26f),
-                CCEaseSineOut::create(CCScaleTo::create(0.5f, 1.f, 1.f)),
-                nullptr
-            ));
-            badgeCard->addChild(fill);
-        }
+    if (auto* bar = GDProgressBar::create(cardW - 24.f, 10.f)) {
+        bar->setFillColor(tier.base);
+        bar->animateTo(totalBadges > 0
+            ? static_cast<float>(unlocked) / static_cast<float>(totalBadges) : 0.f, 0.26f, 0.5f);
+        bar->setPosition({cardW / 2.f, cardH - 54.f});
+        badgeCard->addChild(bar);
     }
 
     // Four rarest unlocked badges as a teaser row.
@@ -433,7 +439,7 @@ CCNode* ProgressionPopup::buildOverview() {
 
     for (size_t i = 0; i < showcase.size(); ++i) {
         if (auto* icon = BadgeIconNode::create(*showcase[i], m_ctx, 32.f)) {
-            icon->setPosition({28.f + 44.f * i, 20.f});
+            icon->setPosition({28.f + 44.f * i, 22.f});
             icon->playIntro(0.28f + 0.06f * i);
             badgeCard->addChild(icon);
         }
@@ -457,7 +463,7 @@ CCNode* ProgressionPopup::buildSources() {
     int64_t const peak = rows.empty() ? 0 : std::max<int64_t>(1, rows.front().exp);
 
     if (auto* header = makeLabel(loc.getString("progression.sources.title").c_str(),
-                                 "chatFont.fnt", 0.4f, {160, 172, 196})) {
+                                 "chatFont.fnt", 0.4f, kMutedText)) {
         header->setAnchorPoint({0.f, 0.5f});
         header->setPosition({8.f, kPageH - 10.f});
         page->addChild(header);
@@ -494,29 +500,15 @@ CCNode* ProgressionPopup::buildSources() {
             page->addChild(count);
         }
 
-        constexpr float barX = 122.f;
         constexpr float barW = 190.f;
-        constexpr float barH = 9.f;
         float const ratio = peak > 0
             ? std::clamp(static_cast<float>(entry.exp) / static_cast<float>(peak), 0.f, 1.f) : 0.f;
 
-        if (auto* track = paimon::SpriteHelper::createRoundedRect(
-                barW, barH, barH * 0.5f, {0.f, 0.f, 0.f, 0.42f})) {
-            track->setPosition({barX, y - barH / 2.f});
-            page->addChild(track);
-        }
-        if (ratio > 0.004f) {
-            if (auto* fill = paimon::SpriteHelper::createRoundedRect(
-                    std::max(barH, barW * ratio), barH, barH * 0.5f, toColor4F(color, 0.95f))) {
-                fill->setPosition({barX, y - barH / 2.f});
-                fill->setScaleX(0.f);
-                fill->runAction(CCSequence::create(
-                    CCDelayTime::create(0.05f + 0.045f * static_cast<float>(i)),
-                    CCEaseSineOut::create(CCScaleTo::create(0.42f, 1.f, 1.f)),
-                    nullptr
-                ));
-                page->addChild(fill);
-            }
+        if (auto* bar = GDProgressBar::create(barW, 10.f)) {
+            bar->setFillColor(color);
+            bar->animateTo(ratio, 0.05f + 0.045f * static_cast<float>(i), 0.42f);
+            bar->setPosition({122.f + barW / 2.f, y});
+            page->addChild(bar);
         }
 
         if (auto* value = makeLabel(
@@ -533,11 +525,9 @@ CCNode* ProgressionPopup::buildSources() {
 }
 
 CCNode* ProgressionPopup::buildBadges() {
-    auto const& tier = tierForLevel(m_ctx.level);
-
     auto* page = CCNode::create();
     page->setContentSize({kPageW, kPageH});
-    m_categoryPills.clear();
+    m_categoryChips.clear();
 
     auto* menu = CCMenu::create();
     menu->setPosition({0.f, 0.f});
@@ -545,9 +535,9 @@ CCNode* ProgressionPopup::buildBadges() {
 
     auto const& categories = allCategories();
     int const buttonCount = static_cast<int>(categories.size()) + 1;
-    constexpr float pillSize = 26.f;
-    float const gap = (kPageW - 12.f - pillSize * buttonCount) / (buttonCount - 1);
-    float const startX = 6.f + pillSize / 2.f;
+    constexpr float chipSize = 26.f;
+    float const gap = (kPageW - 12.f - chipSize * buttonCount) / (buttonCount - 1);
+    float const startX = 6.f + chipSize / 2.f;
     float const rowY = kPageH - 16.f;
 
     for (int i = 0; i < buttonCount; ++i) {
@@ -556,20 +546,29 @@ CCNode* ProgressionPopup::buildBadges() {
             content = makeLabel("*", "bigFont.fnt", 0.5f, {255, 255, 255});
         } else if (auto* glyph = paimon::SpriteHelper::safeCreateWithFrameName(categories[i - 1].glyph)) {
             float const source = std::max(glyph->getContentSize().width, glyph->getContentSize().height);
-            glyph->setScale(16.f / std::max(1.f, source));
+            glyph->setScale(15.f / std::max(1.f, source));
             content = glyph;
         }
 
-        auto* pill = makePill(pillSize, pillSize, tier.base, content);
-        auto* btn = CCMenuItemSpriteExtra::create(pill, this, menu_selector(ProgressionPopup::onCategory));
+        auto* chip = makeChip(chipSize, content);
+        auto* btn = CCMenuItemSpriteExtra::create(chip, this, menu_selector(ProgressionPopup::onCategory));
         if (!btn) continue;
         btn->setTag(i - 1);
-        btn->setPosition({startX + (pillSize + gap) * i, rowY});
+        btn->setPosition({startX + (chipSize + gap) * i, rowY});
         menu->addChild(btn);
-        m_categoryPills.push_back(pill);
+        m_categoryChips.push_back(chip);
     }
 
-    m_grid = ScrollLayer::create({kPageW, kPageH - 36.f});
+    float const gridH = kPageH - 36.f;
+    if (auto* panel = paimon::SpriteHelper::safeCreateScale9("GJ_square05.png", CCRectMake(12.f, 12.f, 56.f, 56.f))) {
+        panel->setContentSize({kPageW, gridH});
+        panel->setAnchorPoint({0.f, 0.f});
+        panel->setColor({0, 0, 0});
+        panel->setOpacity(75);
+        page->addChild(panel, 0);
+    }
+
+    m_grid = ScrollLayer::create({kPageW, gridH});
     m_grid->setPosition({0.f, 0.f});
     page->addChild(m_grid, 1);
 
@@ -587,8 +586,15 @@ void ProgressionPopup::onCategory(CCObject* sender) {
 void ProgressionPopup::rebuildBadgeGrid() {
     if (!m_grid || !m_grid->m_contentLayer) return;
 
-    for (int i = 0; i < static_cast<int>(m_categoryPills.size()); ++i) {
-        setPillActive(m_categoryPills[i], (i - 1) == m_category);
+    auto const& tier = tierForLevel(m_ctx.level);
+    auto const& categories = allCategories();
+    for (int i = 0; i < static_cast<int>(m_categoryChips.size()); ++i) {
+        bool const active = (i - 1) == m_category;
+        auto const accent = i == 0 ? tier.base : categories[i - 1].color;
+        setTinted(m_categoryChips[i], "chip-plate", active ? accent : kIdleTint);
+        // The face keeps a trace of the category colour while idle, so the row
+        // still reads as twelve different things.
+        setTinted(m_categoryChips[i], "chip-face", active ? accent : dim(accent, 0.42f));
     }
 
     auto* layer = m_grid->m_contentLayer;

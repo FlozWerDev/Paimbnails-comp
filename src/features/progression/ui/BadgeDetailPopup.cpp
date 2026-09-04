@@ -1,5 +1,6 @@
 #include "BadgeDetailPopup.hpp"
 #include "BadgeIconNode.hpp"
+#include "GDProgressBar.hpp"
 #include "../data/ProgressionStats.hpp"
 #include "../../../utils/DynamicPopupRegistry.hpp"
 #include "../../../utils/Localization.hpp"
@@ -55,44 +56,22 @@ bool BadgeDetailPopup::init(BadgeDef const& badge, BadgeContext const& ctx) {
     m_mainLayer->addChild(requirement);
 
     float const barW = size.width - 70.f;
-    float const barH = 11.f;
-    float const barY = 34.f;
-    float const progress = badgeProgress(badge, ctx);
+    float const barY = 40.f;
 
-    if (auto* track = paimon::SpriteHelper::createRoundedRect(
-            barW, barH, barH * 0.5f, {0.f, 0.f, 0.f, 0.55f}, {1.f, 1.f, 1.f, 0.14f}, 1.f)) {
-        track->setPosition({cx - barW / 2.f, barY});
-        m_mainLayer->addChild(track);
+    if (auto* bar = GDProgressBar::create(barW, 16.f)) {
+        bar->setFillColor(accent);
+        bar->animateTo(badgeProgress(badge, ctx), 0.12f, 0.45f);
+        bar->setText(badgeProgressText(badge, ctx), 0.42f, {240, 245, 255});
+        bar->setPosition({cx, barY});
+        m_mainLayer->addChild(bar);
     }
-
-    if (progress > 0.01f) {
-        if (auto* fill = paimon::SpriteHelper::createRoundedRect(
-                barW * progress, barH, barH * 0.5f,
-                {accent.r / 255.f, accent.g / 255.f, accent.b / 255.f, 1.f})) {
-            fill->setPosition({cx - barW / 2.f, barY});
-            fill->setScaleX(0.f);
-            fill->setAnchorPoint({0.f, 0.f});
-            fill->runAction(CCSequence::create(
-                CCDelayTime::create(0.12f),
-                CCEaseSineOut::create(CCScaleTo::create(0.45f, 1.f, 1.f)),
-                nullptr
-            ));
-            m_mainLayer->addChild(fill);
-        }
-    }
-
-    auto* progressLabel = CCLabelBMFont::create(badgeProgressText(badge, ctx).c_str(), "chatFont.fnt");
-    progressLabel->setScale(0.42f);
-    progressLabel->setPosition({cx, barY + barH / 2.f});
-    progressLabel->setColor({240, 245, 255});
-    m_mainLayer->addChild(progressLabel, 2);
 
     auto* state = CCLabelBMFont::create(
         loc.getString(unlocked ? "progression.badge.unlocked" : "progression.badge.locked").c_str(),
         "goldFont.fnt"
     );
     state->setScale(0.4f);
-    state->setPosition({cx, barY + 26.f});
+    state->setPosition({cx, barY + 28.f});
     if (!unlocked) state->setColor({150, 155, 170});
     m_mainLayer->addChild(state);
 

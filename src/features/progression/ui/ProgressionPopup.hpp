@@ -33,8 +33,8 @@ protected:
     cocos2d::CCNode* m_pageHolder = nullptr;
     cocos2d::CCNode* m_page = nullptr;
     geode::ScrollLayer* m_grid = nullptr;
-    std::vector<cocos2d::CCNode*> m_tabPills;
-    std::vector<cocos2d::CCNode*> m_categoryPills;
+    std::vector<cocos2d::CCNode*> m_tabs;
+    std::vector<cocos2d::CCNode*> m_categoryChips;
     std::vector<BadgeDef const*> m_gridBadges;
 };
 

@@ -133,6 +133,10 @@ PlayerStats statsFromScore(GJUserScore* score);
 // Own profile only: GameStatsManager is live, the cached server score lags.
 PlayerStats statsFromLocalSave();
 
+// The breakdown comes from the server and can outlive the account it was cached
+// for; the demon total the game counts itself decides whether it is usable.
+void reconcileDemons(PlayerStats& stats);
+
 ExpReport computeExp(PlayerStats const& stats);
 
 char const* sourceId(ExpSource source);
@@ -140,6 +144,9 @@ char const* sourceIconFrame(ExpSource source);
 
 // Thousand-grouped number for labels ("1,204,500").
 std::string formatCount(int64_t value);
+
+// Same number squeezed into a badge tile ("500", "35K", "2M").
+std::string shortCount(int64_t value);
 
 // Comma separated GD info strings; missing trailing fields stay at zero.
 DemonBreakdown parseDemonInfo(std::string const& raw, bool* ok = nullptr);

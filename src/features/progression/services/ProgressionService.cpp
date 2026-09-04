@@ -59,7 +59,6 @@ BadgeContext ProgressionService::ownContext() {
     auto const demonInfo = mod->getSavedValue<std::string>(kKeyDemonInfo, "");
     if (!demonInfo.empty()) {
         stats.demonInfo = parseDemonInfo(demonInfo, &stats.hasDemonInfo);
-        if (stats.demonInfo.counted() == 0) stats.hasDemonInfo = false;
     }
     auto const starsInfo = mod->getSavedValue<std::string>(kKeyStarsInfo, "");
     if (!starsInfo.empty()) {

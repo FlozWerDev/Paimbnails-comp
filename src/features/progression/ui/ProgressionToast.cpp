@@ -1,4 +1,5 @@
 #include "ProgressionToast.hpp"
+#include "GDProgressBar.hpp"
 #include "TierBadgeNode.hpp"
 #include "XPBarNode.hpp"
 #include "BadgeIconNode.hpp"
@@ -25,10 +26,6 @@ constexpr float kProgressHeight = 64.f;
 constexpr float kProgressTallHeight = 92.f;
 constexpr float kBadgeHeight = 50.f;
 
-ccColor4F toColor4F(ccColor3B const& c, float alpha) {
-    return {c.r / 255.f, c.g / 255.f, c.b / 255.f, alpha};
-}
-
 CCLabelBMFont* label(std::string const& text, char const* font, float scale, ccColor3B color) {
     auto* node = CCLabelBMFont::create(text.c_str(), font);
     if (!node) return nullptr;
@@ -52,17 +49,17 @@ void burst(CCNode* parent, CCPoint const& at, ccColor3B color) {
     }
 
     for (int i = 0; i < 9; ++i) {
-        auto* spark = paimon::SpriteHelper::safeCreateWithFrameName("GJ_bigStar_noShadow_001.png");
+        auto* spark = paimon::SpriteHelper::safeCreate("paim_progSpark.png"_spr);
         if (!spark) break;
         float const angle = static_cast<float>(i) * 6.2831853f / 9.f;
         spark->setPosition(at);
-        spark->setScale(0.2f);
+        spark->setScale(0.32f);
         spark->setColor(color);
         spark->setBlendFunc({GL_SRC_ALPHA, GL_ONE});
         spark->runAction(CCSpawn::create(
             CCEaseSineOut::create(CCMoveBy::create(
                 0.6f, ccp(std::cos(angle) * 46.f, std::sin(angle) * 46.f))),
-            CCScaleTo::create(0.6f, 0.02f),
+            CCScaleTo::create(0.6f, 0.04f),
             CCFadeTo::create(0.6f, 0),
             nullptr
         ));
@@ -130,15 +127,20 @@ void ProgressionToast::buildCard(float width, float height, ccColor3B accent) {
     m_card->setPosition({-width / 2.f, -height / 2.f});
     this->addChild(m_card);
 
-    if (auto* panel = paimon::SpriteHelper::createRoundedRect(
-            width, height, 9.f, {0.f, 0.f, 0.f, 0.80f}, toColor4F(accent, 0.9f), 1.4f)) {
+    if (auto* panel = paimon::SpriteHelper::safeCreateScale9("GJ_square05.png", CCRectMake(12.f, 12.f, 56.f, 56.f))) {
+        panel->setContentSize({width, height});
+        panel->setAnchorPoint({0.f, 0.f});
+        panel->setColor({22, 22, 28});
+        panel->setOpacity(240);
         m_card->addChild(panel, -2);
     }
-    // Accent strip down the left edge, the only decoration that survives at
-    // this size.
-    if (auto* strip = paimon::SpriteHelper::createRoundedRect(
-            4.f, height - 14.f, 2.f, toColor4F(accent, 1.f))) {
-        strip->setPosition({5.f, 7.f});
+    // Accent underline, the only decoration that survives at this size.
+    if (auto* strip = GDProgressBar::makeCapsule()) {
+        strip->setContentSize({width - 16.f, 20.f});
+        strip->setScaleY(0.34f);
+        strip->setAnchorPoint({0.f, 0.5f});
+        strip->setColor(accent);
+        strip->setPosition({8.f, 5.f});
         m_card->addChild(strip, -1);
     }
 }

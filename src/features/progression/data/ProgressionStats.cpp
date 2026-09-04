@@ -3,6 +3,7 @@
 #include <Geode/binding/GJUserScore.hpp>
 #include <Geode/binding/GameStatsManager.hpp>
 #include <charconv>
+#include <cmath>
 #include <vector>
 
 namespace paimon::progression {
@@ -108,12 +109,24 @@ PlayerStats statsFromScore(GJUserScore* score) {
     stats.classicInfo    = parseDifficultyInfo(std::string(score->m_starsInfo), &stats.hasClassicInfo);
     stats.platformerInfo = parseDifficultyInfo(std::string(score->m_platformerInfo), &stats.hasPlatformerInfo);
 
+    reconcileDemons(stats);
+    return stats;
+}
+
+void reconcileDemons(PlayerStats& stats) {
     // A zeroed breakdown next to a real demon count means the field never came
     // down; treat it as absent so the fallback rate applies.
-    if (stats.hasDemonInfo && stats.demonInfo.counted() == 0 && stats.demons > 0) {
+    if (stats.demonInfo.counted() == 0) {
         stats.hasDemonInfo = false;
     }
-    return stats;
+
+    // The other way around the breakdown is simply wrong: it hands out demon XP
+    // and demon badges to an account that never beat one. Drop it whole, weekly
+    // and gauntlet included, since those come from the same string.
+    if (stats.demonInfo.counted() > stats.demons) {
+        stats.demonInfo = {};
+        stats.hasDemonInfo = false;
+    }
 }
 
 PlayerStats statsFromLocalSave() {
@@ -191,6 +204,20 @@ std::string formatCount(int64_t value) {
     }
     if (negative) out.insert(out.begin(), '-');
     return out;
+}
+
+std::string shortCount(int64_t value) {
+    auto trim = [](double scaled, char suffix) {
+        // One decimal only while it still fits in three characters.
+        if (scaled < 10.0 && std::fabs(scaled - std::round(scaled)) > 0.05) {
+            return fmt::format("{:.1f}{}", scaled, suffix);
+        }
+        return fmt::format("{}{}", static_cast<int64_t>(std::llround(scaled)), suffix);
+    };
+
+    if (value >= 1000000) return trim(value / 1000000.0, 'M');
+    if (value >= 1000) return trim(value / 1000.0, 'K');
+    return std::to_string(value);
 }
 
 char const* sourceId(ExpSource source) {

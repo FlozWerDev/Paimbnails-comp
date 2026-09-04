@@ -1,7 +1,6 @@
 #include "XPBarNode.hpp"
+#include "GDProgressBar.hpp"
 #include "../data/ProgressionStats.hpp"
-#include "../../../utils/SpriteHelper.hpp"
-#include "../../../utils/PaimonDrawNode.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -12,17 +11,6 @@ using namespace cocos2d;
 namespace paimon::progression {
 
 namespace {
-
-constexpr int kGradientSlices = 26;
-
-ccColor4F lerpColor(ccColor3B const& a, ccColor3B const& b, float t, float alpha) {
-    return {
-        (a.r + (b.r - a.r) * t) / 255.f,
-        (a.g + (b.g - a.g) * t) / 255.f,
-        (a.b + (b.b - a.b) * t) / 255.f,
-        alpha,
-    };
-}
 
 int64_t lerpExp(int64_t from, int64_t to, float t) {
     return from + static_cast<int64_t>(std::llround((to - from) * static_cast<double>(t)));
@@ -48,48 +36,17 @@ bool XPBarNode::init(float width, float height) {
     this->setContentSize({width, height});
     this->setAnchorPoint({0.5f, 0.5f});
 
-    float const radius = height * 0.5f;
-
-    if (auto* track = paimon::SpriteHelper::createRoundedRect(
-            width, height, radius, {0.f, 0.f, 0.f, 0.55f}, {1.f, 1.f, 1.f, 0.14f}, 1.f)) {
-        this->addChild(track, 0);
-    }
-
-    if (auto* stencil = paimon::SpriteHelper::createRoundedRectStencil(width, height, radius)) {
-        if (auto* clip = CCClippingNode::create(stencil)) {
-            clip->setAlphaThreshold(0.05f);
-            clip->setContentSize({width, height});
-
-            m_fill = PaimonDrawNode::create();
-            if (m_fill) clip->addChild(m_fill, 0);
-
-            if (auto* shine = PaimonDrawNode::create()) {
-                CCPoint quad[4] = {
-                    ccp(0.f, 0.f),
-                    ccp(height * 0.7f, 0.f),
-                    ccp(height * 1.3f, height),
-                    ccp(height * 0.6f, height),
-                };
-                shine->drawPolygon(quad, 4, {1.f, 1.f, 1.f, 0.28f}, 0.f, {0.f, 0.f, 0.f, 0.f});
-                shine->setPosition({-height * 2.f, 0.f});
-                shine->setBlendFunc({GL_SRC_ALPHA, GL_ONE});
-                shine->runAction(CCRepeatForever::create(CCSequence::create(
-                    CCDelayTime::create(1.8f),
-                    CCEaseSineInOut::create(CCMoveTo::create(0.85f, ccp(width + height, 0.f))),
-                    CCPlace::create(ccp(-height * 2.f, 0.f)),
-                    nullptr
-                )));
-                clip->addChild(shine, 1);
-            }
-            this->addChild(clip, 1);
-        }
+    m_bar = GDProgressBar::create(width, height);
+    if (m_bar) {
+        m_bar->setPosition({width / 2.f, height / 2.f});
+        this->addChild(m_bar, 0);
     }
 
     m_label = CCLabelBMFont::create("", "chatFont.fnt");
     if (m_label) {
         m_label->setScale(std::clamp(height * 0.028f, 0.30f, 0.42f));
         m_label->setPosition({width / 2.f, height / 2.f});
-        m_label->setColor({235, 242, 255});
+        m_label->setColor({255, 255, 255});
         this->addChild(m_label, 2);
     }
 
@@ -98,9 +55,7 @@ bool XPBarNode::init(float width, float height) {
 }
 
 void XPBarNode::setTier(Tier const& tier) {
-    m_base = tier.base;
-    m_accent = tier.accent;
-    redrawFill();
+    if (m_bar) m_bar->setFillColor(tier.base);
 }
 
 void XPBarNode::setLabelVisible(bool visible) {
@@ -149,9 +104,11 @@ void XPBarNode::animateTo(int64_t exp, float duration) {
 void XPBarNode::applyExp(int64_t exp, int level) {
     int64_t const base = expForLevel(level);
     int64_t const span = expSpanOfLevel(level);
-    m_shown = span > 0
+    float const progress = span > 0
         ? std::clamp(static_cast<float>(exp - base) / static_cast<float>(span), 0.f, 1.f)
         : 1.f;
+
+    if (m_bar) m_bar->setProgress(progress);
 
     if (m_label) {
         m_label->setString(fmt::format(
@@ -160,7 +117,6 @@ void XPBarNode::applyExp(int64_t exp, int level) {
             span > 0 ? formatCount(span) : std::string("MAX")
         ).c_str());
     }
-    redrawFill();
 }
 
 void XPBarNode::update(float dt) {
@@ -191,44 +147,17 @@ void XPBarNode::update(float dt) {
 }
 
 void XPBarNode::flashLevelUp() {
-    if (auto* flash = paimon::SpriteHelper::createRoundedRect(
-            m_width, m_height, m_height * 0.5f, {1.f, 1.f, 1.f, 0.85f})) {
-        flash->setBlendFunc({GL_SRC_ALPHA, GL_ONE});
-        flash->runAction(CCSequence::create(
-            CCFadeTo::create(0.35f, 0),
-            CCRemoveSelf::create(),
-            nullptr
-        ));
-        this->addChild(flash, 3);
-    }
-}
+    auto* flash = GDProgressBar::makeCapsule();
+    if (!flash) return;
 
-void XPBarNode::redrawFill() {
-    if (!m_fill) return;
-    m_fill->clear();
-
-    float const filled = std::clamp(m_shown, 0.f, 1.f) * m_width;
-    if (filled <= 0.5f) return;
-
-    float const slice = m_width / kGradientSlices;
-    for (int i = 0; i < kGradientSlices; ++i) {
-        float const x0 = slice * i;
-        if (x0 >= filled) break;
-        float const x1 = std::min(x0 + slice + 0.5f, filled);
-        float const t = (static_cast<float>(i) + 0.5f) / kGradientSlices;
-        CCPoint quad[4] = {
-            ccp(x0, 0.f), ccp(x1, 0.f), ccp(x1, m_height), ccp(x0, m_height),
-        };
-        m_fill->drawPolygon(quad, 4, lerpColor(m_base, m_accent, t, 1.f), 0.f, {0.f, 0.f, 0.f, 0.f});
-    }
-
-    CCPoint cap[4] = {
-        ccp(0.f, m_height * 0.58f),
-        ccp(filled, m_height * 0.58f),
-        ccp(filled, m_height * 0.92f),
-        ccp(0.f, m_height * 0.92f),
-    };
-    m_fill->drawPolygon(cap, 4, {1.f, 1.f, 1.f, 0.16f}, 0.f, {0.f, 0.f, 0.f, 0.f});
+    flash->setContentSize({m_width, m_height});
+    flash->setPosition({m_width / 2.f, m_height / 2.f});
+    flash->runAction(CCSequence::create(
+        CCFadeTo::create(0.35f, 0),
+        CCRemoveSelf::create(),
+        nullptr
+    ));
+    this->addChild(flash, 3);
 }
 
 } // namespace paimon::progression

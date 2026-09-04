@@ -18,19 +18,21 @@ constexpr char const* kDiamond  = "GJ_diamondsIcon_001.png";
 constexpr char const* kCoin     = "GJ_coinsIcon_001.png";
 constexpr char const* kUserCoin = "GJ_coinsIcon2_001.png";
 constexpr char const* kDemon    = "GJ_demonIcon_001.png";
-constexpr char const* kEasyD    = "difficulty_07_btn_001.png";
-constexpr char const* kMedD     = "difficulty_08_btn_001.png";
-constexpr char const* kHardD    = "difficulty_06_btn_001.png";
-constexpr char const* kInsD     = "difficulty_09_btn_001.png";
-constexpr char const* kExtD     = "difficulty_10_btn_001.png";
-constexpr char const* kPlatD    = "difficulty_10_btn2_001.png";
+// diffIcon_* is the list-cell face without the difficulty caption baked in; the
+// caption turns to mush at tile size and the faces alone already differ.
+constexpr char const* kEasyD    = "diffIcon_07_btn_001.png";
+constexpr char const* kMedD     = "diffIcon_08_btn_001.png";
+constexpr char const* kHardD    = "diffIcon_06_btn_001.png";
+constexpr char const* kInsD     = "diffIcon_09_btn_001.png";
+constexpr char const* kExtD     = "diffIcon_10_btn_001.png";
+constexpr char const* kPlatD    = "diffIcon_10_btn_001.png";
 constexpr char const* kWeekly   = "gj_eventCrown_001.png";
 constexpr char const* kGauntlet = "GJ_gauntletsBtn_001.png";
 constexpr char const* kPoints   = "GJ_pointsIcon_001.png";
 constexpr char const* kMapPack  = "GJ_mapPacksBtn_001.png";
 constexpr char const* kDaily    = "gj_dailyCrown_001.png";
-constexpr char const* kInsane   = "difficulty_05_btn_001.png";
-constexpr char const* kHarder   = "difficulty_04_btn_001.png";
+constexpr char const* kInsane   = "diffIcon_05_btn_001.png";
+constexpr char const* kHarder   = "diffIcon_04_btn_001.png";
 constexpr char const* kBigStar  = "GJ_bigStar_001.png";
 constexpr char const* kMagic    = "GJ_sMagicIcon_001.png";
 
@@ -186,18 +188,18 @@ std::vector<BadgeDef> buildBadges() {
 
 std::vector<BadgeCategory> buildCategories() {
     return {
-        {"journey",    "Journey",    kBigStar},
-        {"stars",      "Stars",      kStar},
-        {"moons",      "Moons",      kMoon},
-        {"diamonds",   "Diamonds",   kDiamond},
-        {"coins",      "Coins",      kCoin},
-        {"demons",     "Demons",     kDemon},
-        {"extremes",   "Extremes",   kExtD},
-        {"platformer", "Platformer", kPlatD},
-        {"events",     "Events",     kWeekly},
-        {"mastery",    "Mastery",    "GJ_completesIcon_001.png"},
-        {"creator",    "Creator",    kPoints},
-        {"ranking",    "Ranking",    "rankIcon_top100_001.png"},
+        {"journey",    "Journey",    kBigStar,                   {255, 205, 100}},
+        {"stars",      "Stars",      kStar,                      {255, 232,  96}},
+        {"moons",      "Moons",      kMoon,                      {140, 185, 255}},
+        {"diamonds",   "Diamonds",   kDiamond,                   {105, 235, 245}},
+        {"coins",      "Coins",      kCoin,                      {250, 160,  55}},
+        {"demons",     "Demons",     kDemon,                     {235,  85,  85}},
+        {"extremes",   "Extremes",   kExtD,                      {255,  95, 175}},
+        {"platformer", "Platformer", kPlatD,                     {115, 225, 135}},
+        {"events",     "Events",     kWeekly,                    {185, 130, 255}},
+        {"mastery",    "Mastery",    "GJ_completesIcon_001.png", { 85, 210, 195}},
+        {"creator",    "Creator",    kPoints,                    {160, 245,  90}},
+        {"ranking",    "Ranking",    "rankIcon_top100_001.png",  {200, 210, 230}},
     };
 }
 
@@ -238,7 +240,8 @@ std::vector<BadgeDef const*> badgesInCategory(std::string_view category) {
 BadgeContext makeContext(PlayerStats const& stats) {
     BadgeContext ctx;
     ctx.stats = stats;
-    ctx.exp = computeExp(stats).total;
+    reconcileDemons(ctx.stats);
+    ctx.exp = computeExp(ctx.stats).total;
     ctx.level = levelForExp(ctx.exp);
     return ctx;
 }
@@ -326,6 +329,13 @@ cocos2d::ccColor3B rarityColor(BadgeRarity rarity) {
     return {170, 180, 195};
 }
 
+cocos2d::ccColor3B categoryColor(std::string_view categoryId) {
+    for (auto const& category : allCategories()) {
+        if (categoryId == category.id) return category.color;
+    }
+    return {200, 210, 230};
+}
+
 static char const* metricId(BadgeMetric metric) {
     switch (metric) {
         case BadgeMetric::Stars:            return "stars";
@@ -378,6 +388,12 @@ std::string badgeRequirement(BadgeDef const& badge) {
     }
     return fmt::format(fmt::runtime(loc.getString("progression.req.reach")),
                        formatCount(badge.threshold), metricLabel(badge.metric));
+}
+
+std::string badgeShortGoal(BadgeDef const& badge) {
+    // A rank counts down, so it needs the hash to not read as a total.
+    if (badge.metric == BadgeMetric::GlobalRank) return "#" + shortCount(badge.threshold);
+    return shortCount(badge.threshold);
 }
 
 std::string badgeProgressText(BadgeDef const& badge, BadgeContext const& ctx) {
