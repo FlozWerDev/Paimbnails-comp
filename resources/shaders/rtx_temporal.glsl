@@ -9,13 +9,6 @@
 // El historial se recorta contra media +- k*desviacion del vecindario (variance
 // clipping) en vez de contra su minimo y maximo: con entrada ruidosa el rango
 // min/max es tan ancho que no recorta nada, y las estelas pasan igual.
-#ifdef GL_ES
-#ifdef GL_FRAGMENT_PRECISION_HIGH
-precision highp float;
-#else
-precision mediump float;
-#endif
-#endif
 
 varying vec2 v_texCoord;
 

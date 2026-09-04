@@ -57,6 +57,14 @@ cocos2d::CCNode* makeSliderRow(
     Slider** outSlider = nullptr,
     cocos2d::CCLabelBMFont** outValue = nullptr);
 
+// Igual que makeSliderRow pero con casilla escribible y flechas de paso, para
+// poder poner un valor exacto en vez de pelearse con el slider.
+cocos2d::CCNode* makeNumberRow(
+    float width,
+    char const* title, char const* desc,
+    double value, double minV, double maxV, double step, int decimals,
+    std::function<void(double)> onChange);
+
 cocos2d::CCNode* makeSelectRow(
     float width,
     char const* title, char const* desc,

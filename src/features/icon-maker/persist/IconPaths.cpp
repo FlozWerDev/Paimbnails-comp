@@ -13,6 +13,7 @@ namespace {
 
 constexpr std::string_view kRootName    = "icon-maker";
 constexpr std::string_view kIndexName   = "icons.json";
+constexpr std::string_view kStylesName  = "styles.json";
 constexpr std::string_view kSlotsDir    = "slots";
 constexpr std::string_view kProjectFile = "project.json";
 constexpr std::string_view kImagesDir   = "images";
@@ -27,6 +28,10 @@ std::filesystem::path IconPaths::rootDir() {
 
 std::filesystem::path IconPaths::indexFile() {
     return rootDir() / std::string(kIndexName);
+}
+
+std::filesystem::path IconPaths::stylesFile() {
+    return rootDir() / std::string(kStylesName);
 }
 
 std::filesystem::path IconPaths::slotsDir() {

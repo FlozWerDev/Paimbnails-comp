@@ -532,6 +532,7 @@ static std::vector<std::string> relocatableIDs(bool ownProfile) {
         "add-moderator-button"_spr, "ban-user-button"_spr,
         "paimon-moderator-badge"_spr, "paimon-admin-badge"_spr,
         "paimon-custom-badge"_spr, "paimon-user-status-dot"_spr,
+        "paimon-level-badge"_spr,
         "profile-reviews-btn"_spr, "rate-profile-btn"_spr,
         "paimon-thumb-count-btn"_spr, "profile-music-pause-button"_spr,
         "copy-icons-button"_spr,
@@ -1185,6 +1186,7 @@ void buildInPlace(CCLayer* layer, CCNode* buttonMenu, GJUserScore* score,
             "flozwer.paimbnails2/paimon-admin-badge",
             "flozwer.paimbnails2/paimon-custom-badge",
             "flozwer.paimbnails2/paimon-user-status-dot",
+            "flozwer.paimbnails2/paimon-level-badge",
         }) relocate(menu, id);
         menu->updateLayout();
 

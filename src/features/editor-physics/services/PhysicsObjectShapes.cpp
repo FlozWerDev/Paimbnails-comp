@@ -17,6 +17,7 @@ namespace paimon::editorphysics {
 namespace {
 
 constexpr float kDegreesToRadians = 0.01745329251994329577f;
+constexpr float kPi = 3.14159265358979323846f;
 
 // Every orb, ring and pickup GD collides against with a radius instead of a box.
 bool isRoundType(GameObjectType type) {
@@ -204,6 +205,33 @@ ObjectShape shapeOf(LevelEditorLayer* editor, GameObject* object) {
     if (applySilhouette(object, shape, rotation, oriented)) return shape;
     if (oriented) orientedCorners(object, shape);
     return shape;
+}
+
+float shapeArea(ObjectShape const& shape) {
+    if (shape.radius > 0.f) return kPi * shape.radius * shape.radius;
+    if (shape.vertexCount >= 3) {
+        return std::abs(signedArea(shape.vertices, shape.vertexCount));
+    }
+    return shape.halfSize.x * shape.halfSize.y * 4.f;
+}
+
+Vec2 shapeCentroid(ObjectShape const& shape) {
+    if (shape.radius > 0.f || shape.vertexCount < 3) return shape.center;
+    float twiceArea = 0.f;
+    Vec2 weighted{};
+    for (int i = 0; i < shape.vertexCount; ++i) {
+        Vec2 const& current = shape.vertices[i];
+        Vec2 const& next = shape.vertices[(i + 1) % shape.vertexCount];
+        float const step = current.x * next.y - next.x * current.y;
+        twiceArea += step;
+        weighted.x += (current.x + next.x) * step;
+        weighted.y += (current.y + next.y) * step;
+    }
+    if (std::abs(twiceArea) < 0.0001f) return shape.center;
+    return {
+        shape.center.x + weighted.x / (3.f * twiceArea),
+        shape.center.y + weighted.y / (3.f * twiceArea),
+    };
 }
 
 Fixture fixtureFrom(ObjectShape const& shape, Vec2 bodyCenter) {

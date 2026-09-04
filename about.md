@@ -50,6 +50,10 @@ Adopt <co>**custom pets**</c> from the Pet Shop and watch them follow you across
 
 <cl>**Rate profiles**</c> with 1–5 stars and a message. View all <cl>profile reviews</c> directly from the profile page. VIP users, Moderators, and Admins can set <cl>animated GIFs</c> as their profile picture.
 
+## Profile Levels
+
+Every profile gets an <cy>**XP level, a tier and badges**</c> derived from its public stats. Stars, moons, diamonds, coins and creator points all pay XP, and <cy>demons pay by difficulty</c> from easy to extreme. <cy>**200 levels across 20 tiers**</c>, <cy>**124 badges**</c> in twelve categories, an animated breakdown of where your XP comes from, and a card that slides in with the gain every time you beat a level.
+
 ## Custom Backgrounds
 
 Customize the background for <cg>CreatorLayer</c>, <cg>LevelBrowserLayer</c>, <cg>LevelSearchLayer</c> and <cg>LeaderboardsLayer</c> individually. Options include Custom Image, Random Thumbnail, Level ID, same as Menu or GD Default, each with <cg>dark mode and intensity controls</c>.

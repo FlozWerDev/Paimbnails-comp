@@ -21,6 +21,29 @@ struct Entry { char const* title; char const* text; cocos2d::ccColor3B accent; }
 
 std::vector<Entry> entriesFor(IconHelpPopup::Topic topic) {
     switch (topic) {
+        case IconHelpPopup::Topic::Canvas:
+            return {
+                {"Elegir tocando", "Toca cualquier parte del icono y se "
+                                   "selecciona esa capa, saltando a su zona. No "
+                                   "hace falta buscarla en la lista.",
+                 ui::kAccentZones},
+                {"Mover y estirar", "Arrastra dentro de la seleccion para "
+                                    "moverla; las cuatro esquinas la estiran y "
+                                    "el tirador de arriba la gira. Se imanta al "
+                                    "centro y a los bordes del cuadro guia.",
+                 ui::kAccentShape},
+                {"Acercar", "La rueda del raton acerca donde apuntas y "
+                            "arrastrar el vacio mueve el encuadre. El boton "
+                            "Ajustar lo devuelve todo a su sitio.",
+                 ui::kAccentShape},
+                {"Bloquear", "Una capa bloqueada no se mueve ni se estira desde "
+                             "el icono. Va bien para el fondo cuando ya esta "
+                             "puesto donde toca.",
+                 ui::kAccentLayers},
+                {"Cuentagotas", "Con el activado, tocar el icono copia ese "
+                                "color a la capa que tengas elegida.",
+                 ui::kAccentPaint},
+            };
         case IconHelpPopup::Topic::Paint:
             return {
                 {"Color", "Un color plano para toda la capa. Es lo mas rapido "
@@ -78,10 +101,14 @@ std::vector<Entry> entriesFor(IconHelpPopup::Topic topic) {
                               "una imagen. Es lo que mas cambia el resultado, "
                               "asi que prueba sin miedo: puedes deshacer.",
                  ui::kAccentPaint},
-                {"4. Colocar", "Arrastra en la vista previa para mover la capa "
-                               "seleccionada, o toca una zona del icono para "
-                               "saltar a ella.",
+                {"4. Colocar", "Toca una capa en el icono para elegirla y "
+                               "arrastrala para moverla. Las esquinas la "
+                               "estiran y el tirador de arriba la gira.",
                  ui::kAccentShape},
+                {"5. Un tema y listo", "Si solo quieres cambiarle el color, en "
+                                       "la pestana Icono hay temas que pintan "
+                                       "el icono entero de una vez.",
+                 ui::kAccentProject},
             };
     }
 }
@@ -107,7 +134,7 @@ bool IconHelpPopup::init(Topic topic) {
     auto size = m_mainLayer->getContentSize();
 
     auto* tabs = kit::makeTabBar(size.width - 30.f,
-        {"Lo basico", "Pintura", "Usar y exportar"},
+        {"Lo basico", "En el icono", "Pintura", "Usar"},
         static_cast<int>(topic),
         [this](int index) {
             Ref<IconHelpPopup> self = this;

@@ -9,7 +9,9 @@
 #include "NewIconPopup.hpp"
 #include "../data/IconAnatomy.hpp"
 #include "../persist/IconProjectStore.hpp"
+#include "../services/IconApplier.hpp"
 #include "../services/IconBuildService.hpp"
+#include "../services/MoreIconsBridge.hpp"
 #include "../services/IconShare.hpp"
 #include "../services/IconThumbs.hpp"
 #include "../../../core/RuntimeLifecycle.hpp"
@@ -56,6 +58,15 @@ std::string lowered(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(),
         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return text;
+}
+
+// Un icono esta "en uso" cuando es el activo de su gamemode, sea por la via
+// de More Icons o por el aplicador propio.
+bool isInUse(IconIndexEntry const& entry) {
+    if (MoreIconsBridge::available()) {
+        return MoreIconsBridge::activeOursSlotId(entry.type) == entry.id;
+    }
+    return IconApplier::get().activeFor(entry.type) == entry.id;
 }
 
 IconIndexEntry const* entryFor(std::string const& id) {
@@ -222,9 +233,12 @@ void IconGalleryLayer::buildHeader() {
     sortMenu->setPosition({0.f, 0.f});
     addChild(sortMenu, 10);
 
-    auto* tabs = kit::makeTabBar(180.f, {"Recientes", "Por nombre"}, 0,
+    float const rowCY = win.height - 52.f;
+    float const tabsW = std::min(168.f, win.width * 0.32f);
+    auto* tabs = kit::makeTabBar(tabsW, {"Recientes", "Nombre", "Creacion"}, 0,
         [this](int index) {
-            m_sort = index == 1 ? Sort::Name : Sort::Recent;
+            m_sort = index == 1 ? Sort::Name
+                   : index == 2 ? Sort::Created : Sort::Recent;
             Ref<IconGalleryLayer> self = this;
             Loader::get()->queueInMainThread([self] {
                 if (paimon::isRuntimeShuttingDown() || !self) return;
@@ -232,8 +246,89 @@ void IconGalleryLayer::buildHeader() {
             });
         });
     if (tabs) {
-        tabs->setPosition({win.width - 20.f - 180.f, win.height - 52.f - kit::kTabBarHeight / 2.f});
+        tabs->setPosition({win.width - 20.f - tabsW, rowCY - kit::kTabBarHeight / 2.f});
         addChild(tabs, 6);
+    }
+
+    float toolX = win.width - 26.f - tabsW;
+
+    // El filtro por gamemode vive detras de un boton: diez chips no caben.
+    auto* filterHolder = CCNode::create();
+    filterHolder->setAnchorPoint({0.5f, 0.5f});
+    filterHolder->setContentSize({64.f, 22.f});
+    if (auto* plate = paimon::SpriteHelper::createColorPanel(
+            64.f, 22.f, {14, 24, 52}, 210, 3.f)) {
+        plate->setAnchorPoint({0.f, 0.f});
+        filterHolder->addChild(plate, -1);
+    }
+    m_filterLabel = CCLabelBMFont::create("Todos", "bigFont.fnt");
+    m_filterLabel->setAnchorPoint({0.5f, 0.5f});
+    m_filterLabel->limitLabelWidth(58.f, 0.36f, 0.14f);
+    m_filterLabel->setPosition({32.f, 11.f});
+    filterHolder->addChild(m_filterLabel);
+
+    if (auto* filterBtn = CCMenuItemExt::createSpriteExtra(filterHolder,
+            [this](CCMenuItemSpriteExtra*) { this->onFilterMenu(); })) {
+        toolX -= 32.f;
+        filterBtn->setPosition({toolX, rowCY});
+        sortMenu->addChild(filterBtn);
+        toolX -= 32.f + 6.f;
+    }
+
+    if (auto* star = CCSprite::createWithSpriteFrameName("GJ_starsIcon_001.png")) {
+        star->setScale(0.7f);
+        star->setOpacity(110);
+        m_favGlyph = star;
+        if (auto* favBtn = CCMenuItemExt::createSpriteExtra(star,
+                [this](CCMenuItemSpriteExtra*) {
+                    m_onlyFavorites = !m_onlyFavorites;
+                    if (m_favGlyph) m_favGlyph->setOpacity(m_onlyFavorites ? 255 : 110);
+                    Ref<IconGalleryLayer> self = this;
+                    Loader::get()->queueInMainThread([self] {
+                        if (paimon::isRuntimeShuttingDown() || !self) return;
+                        self->rebuildGrid();
+                    });
+                })) {
+            toolX -= favBtn->getScaledContentSize().width / 2.f;
+            favBtn->setPosition({toolX, rowCY});
+            sortMenu->addChild(favBtn);
+        }
+    }
+}
+
+void IconGalleryLayer::onFilterMenu() {
+    Ref<IconGalleryLayer> self = this;
+    std::vector<IconActionSheet::Action> actions;
+
+    actions.push_back({"Todos los gamemodes", "", [self] {
+        if (!self) return;
+        self->m_typeFilter = -1;
+        if (self->m_filterLabel) {
+            self->m_filterLabel->setString("Todos");
+            self->m_filterLabel->limitLabelWidth(58.f, 0.36f, 0.14f);
+        }
+        self->rebuildGrid();
+    }, false});
+
+    auto const& types = supportedTypes();
+    for (std::size_t i = 0; i < types.size(); ++i) {
+        auto const* def = anatomyFor(types[i]);
+        if (!def) continue;
+        std::string name(def->displayName);
+        int const index = static_cast<int>(i);
+        actions.push_back({name, "", [self, index, name] {
+            if (!self) return;
+            self->m_typeFilter = index;
+            if (self->m_filterLabel) {
+                self->m_filterLabel->setString(name.c_str());
+                self->m_filterLabel->limitLabelWidth(58.f, 0.36f, 0.14f);
+            }
+            self->rebuildGrid();
+        }, false});
+    }
+
+    if (auto* sheet = IconActionSheet::create("Ver solo", std::move(actions))) {
+        sheet->show();
     }
 }
 
@@ -247,34 +342,43 @@ void IconGalleryLayer::rebuildGrid() {
     float const scrollW = win.width - 40.f;
     float const scrollH = win.height - kHeaderH - 44.f;
 
+    auto const& types = supportedTypes();
     std::vector<IconIndexEntry> entries;
     for (auto const& entry : IconProjectStore::get().list()) {
         if (!m_query.empty() && lowered(entry.name).find(m_query) == std::string::npos) {
             continue;
         }
+        if (m_onlyFavorites && !entry.favorite) continue;
+        if (m_typeFilter >= 0 && m_typeFilter < static_cast<int>(types.size()) &&
+            entry.type != types[static_cast<std::size_t>(m_typeFilter)]) {
+            continue;
+        }
         entries.push_back(entry);
     }
 
-    if (m_sort == Sort::Name) {
-        std::sort(entries.begin(), entries.end(),
-            [](IconIndexEntry const& a, IconIndexEntry const& b) {
-                return lowered(a.name) < lowered(b.name);
-            });
-    } else {
-        std::sort(entries.begin(), entries.end(),
-            [](IconIndexEntry const& a, IconIndexEntry const& b) {
-                return a.modifiedAt > b.modifiedAt;
-            });
-    }
+    // Los favoritos van arriba siempre; el orden elegido decide el resto.
+    Sort const sort = m_sort;
+    std::sort(entries.begin(), entries.end(),
+        [sort](IconIndexEntry const& a, IconIndexEntry const& b) {
+            if (a.favorite != b.favorite) return a.favorite;
+            switch (sort) {
+                case Sort::Name:    return lowered(a.name) < lowered(b.name);
+                case Sort::Created: return a.createdAt > b.createdAt;
+                case Sort::Recent:
+                default:            return a.modifiedAt > b.modifiedAt;
+            }
+        });
 
     if (entries.empty()) {
         auto* empty = mkui::makeEmptyState(scrollW,
-            m_query.empty() ? "Todavia no tienes iconos"
-                            : "Nada con ese nombre",
-            m_query.empty()
+            m_query.empty() && !m_onlyFavorites && m_typeFilter < 0
+                ? "Todavia no tienes iconos"
+                : "Nada con ese filtro",
+            m_query.empty() && !m_onlyFavorites && m_typeFilter < 0
                 ? "Toca Crear para hacer el primero. Puedes partir de un icono "
                   "del juego y solo cambiarle los colores."
-                : "Prueba con otras palabras o borra la busqueda.");
+                : "Prueba con otras palabras, o quita el filtro de gamemode y "
+                  "el de favoritos.");
         if (empty) {
             empty->setPosition({0.f, scrollH / 2.f});
             m_scrollHost->addChild(empty);
@@ -366,6 +470,21 @@ CCNode* IconGalleryLayer::buildCard(std::string const& id, float width) {
         card->addChild(name, 3);
     }
 
+    if (isInUse(*entry)) {
+        if (auto* badge = paimon::SpriteHelper::createColorPanel(
+                40.f, 12.f, {70, 200, 110}, 235, 3.f)) {
+            badge->setAnchorPoint({1.f, 1.f});
+            badge->setPosition({width - 7.f, kCardH - 7.f});
+            card->addChild(badge, 4);
+        }
+        if (auto* text = CCLabelBMFont::create("En uso", "bigFont.fnt")) {
+            text->setAnchorPoint({1.f, 1.f});
+            text->limitLabelWidth(36.f, 0.3f, 0.12f);
+            text->setPosition({width - 9.f, kCardH - 8.f});
+            card->addChild(text, 5);
+        }
+    }
+
     std::string info = entry->hasBuiltOnce ? "Listo para usar" : "Sin terminar";
     if (auto const* def = anatomyFor(entry->type)) {
         info = fmt::format("{}  -  {}", def->displayName, formatDate(entry->modifiedAt));
@@ -399,6 +518,15 @@ CCNode* IconGalleryLayer::buildCard(std::string const& id, float width) {
         auto* btn = CCMenuItemExt::createSpriteExtra(more,
             [this, id](CCMenuItemSpriteExtra*) { this->onIconMenu(id); });
         btn->setPosition({width - 13.f, 28.f});
+        menu->addChild(btn);
+    }
+
+    if (auto* star = CCSprite::createWithSpriteFrameName("GJ_starsIcon_001.png")) {
+        star->setScale(0.5f);
+        star->setOpacity(entry->favorite ? 255 : 90);
+        auto* btn = CCMenuItemExt::createSpriteExtra(star,
+            [this, id](CCMenuItemSpriteExtra*) { this->onToggleFavorite(id); });
+        btn->setPosition({12.f, kCardH - 10.f});
         menu->addChild(btn);
     }
 
@@ -471,6 +599,18 @@ void IconGalleryLayer::onIconMenu(std::string const& slotId) {
     };
 
     if (auto* sheet = IconActionSheet::create(title, std::move(actions))) sheet->show();
+}
+
+void IconGalleryLayer::onToggleFavorite(std::string const& slotId) {
+    auto const* entry = entryFor(slotId);
+    if (!entry) return;
+    bool const wanted = !entry->favorite;
+    if (auto r = IconProjectStore::get().setFavorite(slotId, wanted); !r) {
+        setStatus(r.unwrapErr());
+        return;
+    }
+    rebuildGrid();
+    setStatus(wanted ? "Marcado como favorito." : "Quitado de favoritos.");
 }
 
 void IconGalleryLayer::onUseIcon(std::string const& slotId) {

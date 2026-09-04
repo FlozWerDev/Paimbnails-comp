@@ -18,6 +18,10 @@ enum class PhysicsBackend {
     Reactive,
 };
 
+// Advanced Follow counts speed in blocks per second while the solver works in
+// pixels, so every speed the graph writes goes through this.
+constexpr float kPixelsPerSpeedUnit = 30.f;
+
 enum class NativePreset {
     Pushable,
     Bouncy,
@@ -40,6 +44,18 @@ struct NativeBodySettings {
 char const* backendName(PhysicsBackend backend);
 char const* presetName(NativePreset preset);
 NativePreset cyclePreset(NativePreset preset, int direction);
+
+// The axis-aligned box the graph builds its Collision Blocks and its four
+// sensors around.
+struct NativeBounds {
+    float minX = 0.f;
+    float maxX = 0.f;
+    float minY = 0.f;
+    float maxY = 0.f;
+    bool valid = false;
+};
+
+NativeBounds nativeBounds(BodySpec const& body);
 
 struct NativeProfile {
     float gravityImpulse = 0.f;

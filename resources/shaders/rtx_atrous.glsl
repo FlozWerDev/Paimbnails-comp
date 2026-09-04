@@ -5,13 +5,6 @@
 // vez de 225. El corte por luminancia de la escena impide que la luz cruce los
 // bordes de los objetos, que es lo que convierte un desenfoque cualquiera en un
 // reductor de ruido.
-#ifdef GL_ES
-#ifdef GL_FRAGMENT_PRECISION_HIGH
-precision highp float;
-#else
-precision mediump float;
-#endif
-#endif
 
 varying vec2 v_texCoord;
 
@@ -20,10 +13,6 @@ uniform sampler2D u_guide;
 uniform vec2  u_texel;
 uniform float u_stride;
 uniform float u_phi;
-
-float luma(vec3 c) {
-    return dot(c, vec3(0.2126, 0.7152, 0.0722));
-}
 
 float bspline(int i) {
     return i == 0 ? 0.5 : 0.25;

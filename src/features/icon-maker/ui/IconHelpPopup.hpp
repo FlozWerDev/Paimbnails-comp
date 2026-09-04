@@ -10,7 +10,7 @@ namespace paimon::icon_maker {
 
 class IconHelpPopup : public geode::Popup {
 public:
-    enum class Topic { Basics = 0, Paint = 1, Export = 2 };
+    enum class Topic { Basics = 0, Canvas = 1, Paint = 2, Export = 3 };
 
     static IconHelpPopup* create(Topic topic = Topic::Basics);
 

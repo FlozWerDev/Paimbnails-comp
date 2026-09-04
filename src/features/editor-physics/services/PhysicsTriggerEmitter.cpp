@@ -216,6 +216,25 @@ CCArray* changedSourcesArray(
     return array;
 }
 
+// GD moves a group around a single object, its group parent, so the baked path
+// has to trace that object: a body that spins turns around it and not around
+// the centre of mass the solver sampled.
+GameObject* pivotObject(LevelEditorLayer* editor, ResolvedBody const& body, int group) {
+    if (auto* parent = editor->tryGetGroupParent(group)) return parent;
+    GameObject* best = nullptr;
+    float closest = std::numeric_limits<float>::max();
+    for (auto* object : body.objects) {
+        if (object->m_hasGroupParent) continue;
+        float const dx = object->getPositionX() - body.spec.position.x;
+        float const dy = object->getPositionY() - body.spec.position.y;
+        if (dx * dx + dy * dy >= closest) continue;
+        closest = dx * dx + dy * dy;
+        best = object;
+    }
+    if (best) return best;
+    return body.objects.empty() ? nullptr : body.objects.front();
+}
+
 NativeBodyInput nativeInput(ResolvedBody const& body) {
     NativeBodyInput input;
     input.spec = body.spec;
@@ -492,7 +511,19 @@ Result<EmitReport> emitToEditor(
         nativeInputs, config.gravity, config.airDrag
     );
 
-    std::size_t const samples = trace.frames.size();
+    // Nothing moves once every dynamic body fell asleep, so the bake stops
+    // there instead of spending a keyframe per sample on a still scene.
+    std::size_t samples = trace.frames.size();
+    if (!bakedBodies.empty() && trace.settleTime >= 0.f && samples > 2) {
+        float const span = trace.frames.back().time / static_cast<float>(samples - 1);
+        if (span > 0.f) {
+            samples = std::clamp<std::size_t>(
+                static_cast<std::size_t>(std::ceil(trace.settleTime / span)) + 1,
+                2,
+                samples
+            );
+        }
+    }
     std::size_t newTargets = 0;
     for (auto index : dynamicBodies) {
         newTargets += needsTargetGroup[index] && preferredGroups[index] <= 0;
@@ -644,7 +675,8 @@ Result<EmitReport> emitToEditor(
     // the timeline. Uniform slices keep the bake independent of whether GD reads a
     // keyframe's duration as the segment reaching it or the one leaving it.
     float const step = bakedBodies.empty()
-        ? 0.f : trace.frames.back().time / static_cast<float>(samples - 1);
+        ? 0.f
+        : trace.frames.back().time / static_cast<float>(trace.frames.size() - 1);
     std::vector<int> animations;
     animations.reserve(bakedBodies.size());
     EmitReport report;
@@ -667,7 +699,20 @@ Result<EmitReport> emitToEditor(
     };
 
     std::size_t triggerSlot = 0;
+    std::vector<std::pair<GameObject*, int>> bakedPivots;
     for (auto index : bakedBodies) {
+        auto* pivot = pivotObject(editor, bodies[index], targetGroups[index]);
+        Vec2 arm;
+        if (pivot) {
+            arm = {
+                pivot->getPositionX() - bodies[index].spec.position.x,
+                pivot->getPositionY() - bodies[index].spec.position.y,
+            };
+            if (bodies[index].objects.size() > 1) {
+                bakedPivots.emplace_back(pivot, targetGroups[index]);
+            }
+        }
+
         auto* animation = editor->createNewKeyframeAnim();
         if (!animation) return abort("GD no pudo reservar una animacion de keyframes.");
         int const animationID = animation->getTag();
@@ -680,7 +725,12 @@ Result<EmitReport> emitToEditor(
             float const degrees = -pose.angle * kRadiansToDegrees;
             spins = spins || std::abs(degrees) > 0.002f;
 
-            CCPoint const position{pose.position.x, pose.position.y};
+            float const cosine = std::cos(pose.angle);
+            float const sine = std::sin(pose.angle);
+            CCPoint const position{
+                pose.position.x + arm.x * cosine - arm.y * sine,
+                pose.position.y + arm.x * sine + arm.y * cosine,
+            };
             auto* keyframe = typeinfo_cast<KeyframeGameObject*>(
                 editor->createObject(kKeyframeObject, position, true)
             );
@@ -730,9 +780,9 @@ Result<EmitReport> emitToEditor(
         animTrigger->setPosition(triggerPosition);
         animTrigger->m_targetGroupID = targetGroups[index];
         animTrigger->m_animationID = animGroups[index];
-        // The animation lasts what the simulation lasted. Left at whatever a fresh
+        // The animation lasts what the baked slice lasted. Left at whatever a fresh
         // trigger carries, the whole fall replayed in a fraction of the time.
-        animTrigger->m_duration = trace.frames.back().time;
+        animTrigger->m_duration = step * static_cast<float>(samples - 1);
         animTrigger->m_easingType = EasingType::None;
         animTrigger->m_easingRate = 2.f;
         animTrigger->m_timeMod = 1.f;
@@ -810,6 +860,9 @@ Result<EmitReport> emitToEditor(
     if (replacingLast) {
         removeEmission(g_history[*previousIndex], editor, true);
         g_history.erase(g_history.begin() + static_cast<std::ptrdiff_t>(*previousIndex));
+    }
+    for (auto const& [object, group] : bakedPivots) {
+        makeGroupParent(editor, object, group, next.parents);
     }
     for (auto const& binding : nativeGraph.bindings) {
         if (!binding.makeGroupParent || binding.body >= bodies.size()) continue;

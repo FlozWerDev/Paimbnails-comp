@@ -1,21 +1,25 @@
 #pragma once
 // Editor del Creador de Iconos.
 //
-// Layout: a la izquierda el icono entero, vivo y tocable (tocas una zona para
-// saltar a ella, arrastras para mover la capa elegida); a la derecha una sola
-// columna con scroll -- zonas, capas, pintura, forma -- en vez de pestanas
-// escondidas. Todo lo secundario vive en popups, para que la columna nunca
-// pase de "una fila = una decision".
+// A la izquierda el icono, vivo y manipulable: tocas una capa y la eliges, la
+// arrastras, la estiras por las esquinas y la giras por el tirador de arriba;
+// la rueda acerca y el vacio panea. A la derecha la tira de zonas y cuatro
+// pestanas -- Capas, Pintura, Forma, Icono -- para no tener que desplazarse
+// por lo que no estas tocando.
 
+#include "IconMakerUI.hpp"
 #include "../data/IconAnatomy.hpp"
 #include "../data/IconHistory.hpp"
 #include "../data/IconProject.hpp"
+#include "../engine/PieceRenderer.hpp"
 
 #include <Geode/Geode.hpp>
 
 #include <atomic>
+#include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace geode { class ScrollLayer; }
@@ -23,6 +27,7 @@ namespace geode { class ScrollLayer; }
 namespace paimon::icon_maker {
 
 class EditorCanvas;
+struct IconTheme;
 
 class IconEditorLayer : public cocos2d::CCLayer {
 public:
@@ -30,6 +35,8 @@ public:
     static IconEditorLayer* create(std::string const& slotId);
 
 protected:
+    enum class Tab : int { Layers = 0, Paint = 1, Shape = 2, Icon = 3 };
+
     bool init(std::string const& slotId);
     void keyBackClicked() override;
     void update(float dt) override;
@@ -44,13 +51,14 @@ protected:
     void refreshTopBar();
     void refreshViewTools();
     void refreshZoneChips();
+    void refreshSelectionStrip();
     void scheduleInspectorRebuild();
     void rebuildInspector();
 
-    cocos2d::CCNode* buildLayersCard(float width);
-    cocos2d::CCNode* buildPaintCard(float width);
-    cocos2d::CCNode* buildShapeCard(float width);
-    cocos2d::CCNode* buildProjectCard(float width);
+    std::vector<cocos2d::CCNode*> buildLayersTab(float width);
+    std::vector<cocos2d::CCNode*> buildPaintTab(float width);
+    std::vector<cocos2d::CCNode*> buildShapeTab(float width);
+    std::vector<cocos2d::CCNode*> buildIconTab(float width);
 
     // -- model ---------------------------------------------------------------
     std::vector<SlotDef> visibleZones() const;
@@ -61,12 +69,18 @@ protected:
 
     void selectPart(int part);
     void selectZone(int zoneIndex);
-    void selectZoneByKey(std::string const& storageKey);
     void selectPiece(int index);
+    void selectTab(Tab tab);
 
-    // Wraps a mutation so undo/redo, autosave and the preview all stay in sync.
-    // `coalesceKey` merges a burst of related edits (one slider drag) into a
-    // single undo step.
+    // Entrada desde el lienzo: cambia zona y capa a la vez y deja la
+    // reconstruccion del panel para el siguiente frame, porque llega desde
+    // dentro del reparto de toques.
+    void selectFromCanvas(std::string const& zoneKey, int pieceIndex);
+    void pushCanvasSelection();
+
+    // Envuelve una modificacion para que deshacer, autoguardado y vista previa
+    // queden en su sitio. `coalesceKey` junta una rafaga de cambios (arrastrar
+    // un slider) en un solo paso de deshacer.
     void edit(std::string coalesceKey, std::function<void()> mutate);
     void applyRestoredProject();
 
@@ -76,56 +90,83 @@ protected:
     void onRedo();
     void onApply();
     void onExport();
+    void onTry();
     void onRename();
     void onProjectMenu();
     void onLayerMenu(int pieceIndex);
     void onAddImportLayer();
     void onAddTemplateLayer();
+    void onLoadWholeIcon();
     void onReplaceShape();
+    void adoptShapeFromProject(std::string const& projectId);
     void onCopyPartToOthers();
     void onCopyLayerToZones(int pieceIndex);
+    void onSaveStyle();
+    void onApplyStyle();
+    void onThemeMenu();
+    void applyTheme(IconTheme const& theme, bool wholeIcon);
+    void applyFillToZone(FillSpec const& fill, std::string const& storageKey);
+    void alignSelected(ui::AlignMode mode);
+    void pickColor(cocos2d::ccColor3B color);
+
+    // Los tres avisos de la primera vez, sobre las zonas del editor.
+    void maybeShowTour();
 
     void saveProject(bool notify);
     void setStatus(std::string const& text, bool good = true);
 
     // -- preview -------------------------------------------------------------
-    void schedulePreview();
+    // `fast` re-dibuja solo la zona activa, que es lo unico que cambia
+    // mientras se arrastra en el lienzo.
+    void schedulePreview(bool fast);
     void kickPreviewJob();
-    void onCanvasDrag(float dxFraction, float dyFraction);
-    void nudgeSelected(float dxFraction, float dyFraction);
+    void applyPreview(std::vector<std::pair<std::string, SlotRender>> rendered,
+                      std::string const& activeKey);
+    std::vector<std::string> drawOrderKeys() const;
 
     IconProject m_project;
     IconHistory m_history;
 
-    int m_currentPart = 0;            // 0 = single-part; 1..4 robot/spider
+    int m_currentPart = 0;            // 0 = una sola parte; 1..4 robot/spider
     int m_zoneIndex = 0;
     int m_selectedPiece = -1;
+    Tab m_tab = Tab::Layers;
 
     bool m_dirty = false;
     float m_autosaveCountdown = -1.f;
     float m_previewCountdown = -1.f;
     bool m_compileBusy = false;
     bool m_rebuildQueued = false;
+    bool m_previewFast = false;
+    bool m_gestureActive = false;
 
     int m_backgroundMode = 0;         // 0 oscuro, 1 claro, 2 tablero
     bool m_isolateZone = false;
     bool m_showGuide = true;
+    bool m_eyedropper = false;
 
     EditorCanvas* m_canvas = nullptr;
     cocos2d::CCSprite* m_undoGlyph = nullptr;
     cocos2d::CCSprite* m_redoGlyph = nullptr;
     cocos2d::CCNode* m_zoneChipsHost = nullptr;
+    cocos2d::CCNode* m_tabsHost = nullptr;
+    cocos2d::CCNode* m_stripHost = nullptr;
     cocos2d::CCNode* m_inspectorHost = nullptr;
     geode::ScrollLayer* m_inspector = nullptr;
     cocos2d::CCLabelBMFont* m_statusLabel = nullptr;
     cocos2d::CCLabelBMFont* m_titleLabel = nullptr;
     cocos2d::CCNode* m_partsHost = nullptr;
 
-    // Botones de vista: su texto dice en que estado estan.
+    // Los botones de vista dicen en su texto en que estado estan.
     cocos2d::CCLabelBMFont* m_bgToolLabel = nullptr;
     cocos2d::CCLabelBMFont* m_guideToolLabel = nullptr;
     cocos2d::CCLabelBMFont* m_isolateToolLabel = nullptr;
+    cocos2d::CCLabelBMFont* m_pickToolLabel = nullptr;
     float m_toolLabelW = 60.f;
+
+    std::map<std::string, SlotRender> m_slotRenders;
+    std::map<std::string, geode::Ref<cocos2d::CCTexture2D>> m_zoneTextures;
+    std::map<std::string, geode::Ref<cocos2d::CCTexture2D>> m_pieceThumbs;
 
     float m_inspectorScrollY = 0.f;
     float m_wheelTargetY = 0.f;

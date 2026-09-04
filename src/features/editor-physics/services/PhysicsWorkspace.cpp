@@ -222,8 +222,19 @@ Result<std::vector<ResolvedBody>> PhysicsWorkspace::resolve(
             return Err("No se pudo medir uno de los cuerpos.");
         }
 
-        body.spec.position = {(minX + maxX) * 0.5f, (minY + maxY) * 0.5f};
+        // A body turns around the mass it really has, so the origin is the
+        // area weighted centroid: the middle of the bounding box put the pivot
+        // outside an L shape and made a slope spin like the block it fills.
         float area = 0.f;
+        Vec2 weighted{};
+        for (auto const& shape : shapes) {
+            float const part = std::max(shapeArea(shape), 1.f);
+            auto const centroid = shapeCentroid(shape);
+            weighted.x += centroid.x * part;
+            weighted.y += centroid.y * part;
+            area += part;
+        }
+        body.spec.position = {weighted.x / area, weighted.y / area};
         body.spec.fixtures.reserve(body.objects.size());
         body.visuals.reserve(body.objects.size());
         for (std::size_t index = 0; index < body.objects.size(); ++index) {
@@ -270,7 +281,6 @@ Result<std::vector<ResolvedBody>> PhysicsWorkspace::resolve(
                 case ShapeKind::Hull: ++body.shapes.hulls; break;
                 case ShapeKind::Box: ++body.shapes.boxes; break;
             }
-            area += shape.halfSize.x * shape.halfSize.y * 4.f;
         }
         body.spec.mass = material.mass > 0.f
             ? material.mass

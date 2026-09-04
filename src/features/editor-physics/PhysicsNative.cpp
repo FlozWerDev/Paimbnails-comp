@@ -25,55 +25,6 @@ Vec2 rotate(Vec2 value, float angle) {
     return {value.x * c - value.y * s, value.x * s + value.y * c};
 }
 
-struct Bounds {
-    float minX = 0.f;
-    float maxX = 0.f;
-    float minY = 0.f;
-    float maxY = 0.f;
-    bool valid = false;
-};
-
-Bounds bodyBounds(BodySpec const& body) {
-    Bounds result;
-    auto include = [&](float minX, float maxX, float minY, float maxY) {
-        if (!result.valid) {
-            result = {minX, maxX, minY, maxY, true};
-            return;
-        }
-        result.minX = std::min(result.minX, minX);
-        result.maxX = std::max(result.maxX, maxX);
-        result.minY = std::min(result.minY, minY);
-        result.maxY = std::max(result.maxY, maxY);
-    };
-
-    for (auto const& fixture : body.fixtures) {
-        Vec2 const center = rotate(fixture.offset, body.angle);
-        float halfX = fixture.radius > 0.f ? fixture.radius : fixture.halfSize.x;
-        float halfY = fixture.radius > 0.f ? fixture.radius : fixture.halfSize.y;
-        if (fixture.radius <= 0.f) {
-            float const c = std::abs(std::cos(body.angle));
-            float const s = std::abs(std::sin(body.angle));
-            float const rotatedX = c * halfX + s * halfY;
-            float const rotatedY = s * halfX + c * halfY;
-            halfX = rotatedX;
-            halfY = rotatedY;
-        }
-        include(
-            body.position.x + center.x - halfX,
-            body.position.x + center.x + halfX,
-            body.position.y + center.y - halfY,
-            body.position.y + center.y + halfY
-        );
-    }
-    if (!result.valid) {
-        include(
-            body.position.x - 15.f, body.position.x + 15.f,
-            body.position.y - 15.f, body.position.y + 15.f
-        );
-    }
-    return result;
-}
-
 float directionOf(Vec2 velocity) {
     if (std::abs(velocity.x) < 0.0001f && std::abs(velocity.y) < 0.0001f) return 0.f;
     // Advanced Follow uses 0 = up, 90 = right, 180 = down, 270 = left.
@@ -129,6 +80,47 @@ bool validID(int id) {
 
 } // namespace
 
+NativeBounds nativeBounds(BodySpec const& body) {
+    NativeBounds result;
+    auto include = [&](float minX, float maxX, float minY, float maxY) {
+        if (!result.valid) {
+            result = {minX, maxX, minY, maxY, true};
+            return;
+        }
+        result.minX = std::min(result.minX, minX);
+        result.maxX = std::max(result.maxX, maxX);
+        result.minY = std::min(result.minY, minY);
+        result.maxY = std::max(result.maxY, maxY);
+    };
+
+    for (auto const& fixture : body.fixtures) {
+        Vec2 const center = rotate(fixture.offset, body.angle);
+        float halfX = fixture.radius > 0.f ? fixture.radius : fixture.halfSize.x;
+        float halfY = fixture.radius > 0.f ? fixture.radius : fixture.halfSize.y;
+        if (fixture.radius <= 0.f) {
+            float const c = std::abs(std::cos(body.angle));
+            float const s = std::abs(std::sin(body.angle));
+            float const rotatedX = c * halfX + s * halfY;
+            float const rotatedY = s * halfX + c * halfY;
+            halfX = rotatedX;
+            halfY = rotatedY;
+        }
+        include(
+            body.position.x + center.x - halfX,
+            body.position.x + center.x + halfX,
+            body.position.y + center.y - halfY,
+            body.position.y + center.y + halfY
+        );
+    }
+    if (!result.valid) {
+        include(
+            body.position.x - 15.f, body.position.x + 15.f,
+            body.position.y - 15.f, body.position.y + 15.f
+        );
+    }
+    return result;
+}
+
 char const* backendName(PhysicsBackend backend) {
     return backend == PhysicsBackend::Reactive ? "triggers" : "keyframes";
 }
@@ -168,9 +160,10 @@ NativeProfile nativeProfile(
         std::sqrt(std::max(0.1f, body.mass)), 0.5f, 4.f
     );
     NativeProfile profile;
-    profile.gravityImpulse = std::clamp(gravity * profile.tick / 30.f, 0.f, 8.f) * strength;
+    profile.gravityImpulse =
+        std::clamp(gravity * profile.tick / kPixelsPerSpeedUnit, 0.f, 8.f) * strength;
     profile.pushImpulse = 28.f * strength * massResponse;
-    profile.bounceImpulse = std::max(4.f, 32.f * body.restitution) * strength;
+    profile.bounceImpulse = 3.f * strength;
     profile.explosionImpulse = 65.f * strength * massResponse;
     profile.maxSpeed = 110.f * strength;
     profile.friction = std::clamp(
@@ -185,7 +178,7 @@ NativeProfile nativeProfile(
             break;
         case NativePreset::Bouncy:
             profile.pushImpulse = 38.f * strength * massResponse;
-            profile.bounceImpulse = 48.f * strength;
+            profile.bounceImpulse = 6.f * strength;
             profile.maxSpeed = 145.f * strength;
             profile.friction *= 0.45f;
             profile.rotateToDirection = true;
@@ -200,7 +193,7 @@ NativeProfile nativeProfile(
         case NativePreset::Floating:
             profile.gravityImpulse *= 0.12f;
             profile.pushImpulse = 18.f * strength * massResponse;
-            profile.bounceImpulse = 12.f * strength;
+            profile.bounceImpulse = 2.f * strength;
             profile.maxSpeed = 48.f * strength;
             profile.friction *= 0.2f;
             break;
@@ -406,7 +399,7 @@ TriggerGraph buildNativeTriggerGraph(
             follow.followPlayer2 = profile.followPlayer && !follow.followPlayer1 &&
                 body.settings.targetPlayer2;
             follow.centerGroup = profile.useAnchor ? ids.anchorGroup : 0;
-            follow.startSpeed = lengthOf(body.spec.velocity);
+            follow.startSpeed = lengthOf(body.spec.velocity) / kPixelsPerSpeedUnit;
             follow.startDirection = directionOf(body.spec.velocity);
             follow.maxSpeed = profile.maxSpeed;
             follow.maxRange = profile.useAnchor ? profile.anchorDistance : 0.f;
@@ -436,17 +429,20 @@ TriggerGraph buildNativeTriggerGraph(
             (body.settings.targetPlayer1 || body.settings.targetPlayer2);
         bool const worldSensors = profile.collideWithWorld && layout.staticWorldBlockID > 0;
         if (playerSensors || worldSensors) {
-            Bounds const bounds = bodyBounds(body.spec);
+            NativeBounds const bounds = nativeBounds(body.spec);
             float const padding = std::clamp(body.settings.sensorPadding, 2.f, 30.f);
             float const width = std::max(6.f, bounds.maxX - bounds.minX);
             float const height = std::max(6.f, bounds.maxY - bounds.minY);
             float const centerX = (bounds.minX + bounds.maxX) * 0.5f;
             float const centerY = (bounds.minY + bounds.maxY) * 0.5f;
+            // The sensors straddle the body's own edge instead of hanging off
+            // it: hung outside, the whole padding became the gap the body kept
+            // between itself and the floor it was supposed to rest on.
             std::array<Vec2, 4> positions{{
-                {bounds.minX - padding * 0.5f, centerY},
-                {bounds.maxX + padding * 0.5f, centerY},
-                {centerX, bounds.minY - padding * 0.5f},
-                {centerX, bounds.maxY + padding * 0.5f},
+                {bounds.minX, centerY},
+                {bounds.maxX, centerY},
+                {centerX, bounds.minY},
+                {centerX, bounds.maxY},
             }};
             std::array<Vec2, 4> sizes{{
                 {padding, std::max(4.f, height - padding)},

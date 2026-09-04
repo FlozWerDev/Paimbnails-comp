@@ -4,6 +4,7 @@
 #include "../../smooth-scroll/services/SmoothScrollController.hpp"
 #include "../../../utils/PaimonNotification.hpp"
 #include "../../../utils/SpriteHelper.hpp"
+#include "../services/NativePreview.hpp"
 #include "../services/PhysicsObjectArt.hpp"
 #include "../services/PhysicsTriggerEmitter.hpp"
 #include "PhysicsBodyPopup.hpp"
@@ -462,12 +463,24 @@ void PhysicsPopup::preview() {
         shapes.rounds += body.shapes.rounds;
         shapes.hulls += body.shapes.hulls;
     }
+    // A body on the trigger backend is drawn with the graph's own model, and a
+    // preset that waits for the player has nothing to move it in the lab.
+    std::size_t const waiting = std::ranges::count_if(m_resolved, [&](auto const& body) {
+        return body.spec.motion == Motion::Dynamic &&
+            body.native.backend == PhysicsBackend::Reactive &&
+            nativeNeedsPlayer(body.native, body.spec, m_config.gravity);
+    });
+    std::string backends;
+    if (reactiveDynamics > 0) {
+        backends = fmt::format(" | {} con triggers", reactiveDynamics);
+        if (waiting > 0) backends += fmt::format(", {} esperan al jugador", waiting);
+    }
     setStatus(
         fmt::format(
             "{} cuerpos | {} bloques + {} rampas + {} redondos + {} siluetas | {} impactos | "
-            "impulso pico {:.1f} | {} frames | hasta {} objetos GD ({} baked + ~{} nativos)",
+            "impulso pico {:.1f} | {} frames{} | hasta {} objetos GD ({} baked + ~{} nativos)",
             m_resolved.size(), shapes.boxes, shapes.ramps, shapes.rounds, shapes.hulls,
-            m_trace.impacts, m_trace.peakImpulse, m_trace.frames.size(),
+            m_trace.impacts, m_trace.peakImpulse, m_trace.frames.size(), backends,
             bakedEstimate + nativeEstimate, bakedEstimate, nativeEstimate
         ),
         {170, 225, 185}
@@ -533,9 +546,14 @@ bool PhysicsPopup::runSimulation() {
     }
     m_resolved = result.unwrap();
     std::vector<BodySpec> specs;
+    std::vector<NativeBodySettings> settings;
     specs.reserve(m_resolved.size());
-    for (auto const& body : m_resolved) specs.push_back(body.spec);
-    m_trace = simulate(specs, simulationOptions(m_config));
+    settings.reserve(m_resolved.size());
+    for (auto const& body : m_resolved) {
+        specs.push_back(body.spec);
+        settings.push_back(body.native);
+    }
+    m_trace = simulateWorkspace(specs, settings, simulationOptions(m_config));
     if (m_trace.frames.size() < 2) {
         setStatus("El solver no produjo suficientes frames.", {255, 120, 120});
         return false;

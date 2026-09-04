@@ -1,5 +1,7 @@
 #include "IconPalettes.hpp"
 
+#include <algorithm>
+
 using namespace geode::prelude;
 
 namespace paimon::icon_maker {
@@ -12,6 +14,21 @@ GradientSpec linearOf(float angle, std::vector<GradientStop> stops) {
     spec.angleDeg = angle;
     spec.stops = std::move(stops);
     return spec;
+}
+
+std::vector<cocos2d::ccColor3B>& recentList() {
+    static std::vector<cocos2d::ccColor3B> colors;
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        auto packed = Mod::get()->getSavedValue<std::vector<int>>("icon-maker.recent-colors");
+        for (int value : packed) {
+            colors.push_back({static_cast<GLubyte>((value >> 16) & 0xFF),
+                              static_cast<GLubyte>((value >> 8) & 0xFF),
+                              static_cast<GLubyte>(value & 0xFF)});
+        }
+    }
+    return colors;
 }
 
 GradientSpec radialOf(std::vector<GradientStop> stops) {
@@ -74,6 +91,27 @@ std::vector<cocos2d::ccColor3B> playerColors() {
     out.push_back(gm->colorForIdx(gm->getPlayerColor2()));
     out.push_back(gm->colorForIdx(gm->getPlayerGlowColor()));
     return out;
+}
+
+std::vector<cocos2d::ccColor3B> const& recentColors() {
+    return recentList();
+}
+
+void rememberColor(cocos2d::ccColor3B color) {
+    auto& list = recentList();
+    std::erase_if(list, [color](cocos2d::ccColor3B c) {
+        return c.r == color.r && c.g == color.g && c.b == color.b;
+    });
+    list.insert(list.begin(), color);
+    if (list.size() > kRecentColorCount) list.resize(kRecentColorCount);
+
+    std::vector<int> packed;
+    packed.reserve(list.size());
+    for (auto const& c : list) {
+        packed.push_back((static_cast<int>(c.r) << 16) |
+                         (static_cast<int>(c.g) << 8) | static_cast<int>(c.b));
+    }
+    Mod::get()->setSavedValue("icon-maker.recent-colors", packed);
 }
 
 }  // namespace paimon::icon_maker

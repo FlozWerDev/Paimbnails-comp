@@ -30,6 +30,14 @@ struct ObjectShape {
 // rotated off the axes, and the plain rect for everything else.
 ObjectShape shapeOf(LevelEditorLayer* editor, GameObject* object);
 
+// The footprint the shape really covers, so a slope weighs the half block it
+// fills instead of the whole rect it spans.
+float shapeArea(ObjectShape const& shape);
+
+// Where that footprint's mass sits: the middle of the rect for a box or a
+// circle, and the real centroid for a slope or a traced silhouette.
+Vec2 shapeCentroid(ObjectShape const& shape);
+
 Fixture fixtureFrom(ObjectShape const& shape, Vec2 bodyCenter);
 
 } // namespace paimon::editorphysics

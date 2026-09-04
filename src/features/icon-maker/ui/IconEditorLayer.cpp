@@ -1,24 +1,30 @@
 #include "IconEditorLayer.hpp"
 
+#include "EditorCanvas.hpp"
 #include "GradientEditorPopup.hpp"
 #include "IconActionSheet.hpp"
 #include "IconHelpPopup.hpp"
 #include "IconMakerKit.hpp"
 #include "IconMakerUI.hpp"
 #include "IconNamePopup.hpp"
+#include "IconTryPopup.hpp"
 #include "TemplatePickerPopup.hpp"
 #include "../data/IconAnatomy.hpp"
 #include "../data/IconPalettes.hpp"
+#include "../data/IconThemes.hpp"
 #include "../engine/PieceRenderer.hpp"
 #include "../engine/TemplateExtractor.hpp"
 #include "../persist/IconPaths.hpp"
 #include "../persist/IconProjectStore.hpp"
+#include "../persist/StyleStore.hpp"
 #include "../services/IconBuildService.hpp"
+#include "../services/IconShare.hpp"
 #include "../services/IconThumbs.hpp"
 #include "../../texture-studio/engine/SpritePreviewRenderer.hpp"
 #include "../../../core/RuntimeLifecycle.hpp"
 #include "../../../ui/PaiConfigKit.hpp"
 #include "../../../utils/FileDialog.hpp"
+#include "../../../utils/PaimonDrawNode.hpp"
 #include "../../../utils/SpriteHelper.hpp"
 #include "../../../utils/ThreadTracker.hpp"
 
@@ -30,6 +36,7 @@
 #include <Geode/ui/ScrollLayer.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <system_error>
 
 using namespace geode::prelude;
@@ -39,185 +46,6 @@ namespace mkui = paimon::icon_maker::ui;
 
 namespace paimon::icon_maker {
 
-// Each zone is a separate sprite for hit-testing and selection fades.
-class EditorCanvas : public CCLayer {
-public:
-    using DragCallback = std::function<void(float dxFraction, float dyFraction)>;
-    using PickCallback = std::function<void(std::string const& zoneKey)>;
-
-    struct Zone {
-        std::string key;
-        ts::ImageBuffer pixels;
-    };
-
-    static EditorCanvas* create(float side, DragCallback onDrag, PickCallback onPick) {
-        auto* ret = new EditorCanvas();
-        if (ret->init(side, std::move(onDrag), std::move(onPick))) {
-            ret->autorelease();
-            return ret;
-        }
-        delete ret;
-        return nullptr;
-    }
-
-    void setZones(std::vector<Zone> zones, std::string const& activeKey) {
-        for (auto* sprite : m_sprites) {
-            if (sprite) sprite->removeFromParent();
-        }
-        m_sprites.clear();
-        m_zones = std::move(zones);
-
-        for (auto const& zone : m_zones) {
-            CCSprite* sprite = nullptr;
-            if (!zone.pixels.empty()) {
-                if (auto* texture = ts::SpritePreviewRenderer::createTexture(zone.pixels)) {
-                    sprite = CCSprite::createWithTexture(texture);
-                }
-            }
-            if (sprite) {
-                sprite->setPosition({m_side / 2.f, m_side / 2.f});
-                sprite->setScale(m_side / static_cast<float>(zone.pixels.width()));
-                addChild(sprite, 1);
-            }
-            m_sprites.push_back(sprite);
-        }
-        setActiveZone(activeKey);
-    }
-
-    void setActiveZone(std::string const& key) {
-        m_activeKey = key;
-        for (std::size_t i = 0; i < m_sprites.size(); ++i) {
-            if (!m_sprites[i]) continue;
-            bool active = m_zones[i].key == key;
-            m_sprites[i]->setVisible(!m_isolate || active);
-            m_sprites[i]->setOpacity(active ? 255 : 78);
-        }
-    }
-
-    void setIsolate(bool isolate) {
-        m_isolate = isolate;
-        setActiveZone(m_activeKey);
-    }
-
-    void setBackgroundMode(int mode) {
-        m_backgroundMode = mode;
-        if (m_flatBg) {
-            m_flatBg->setVisible(mode != 2);
-            m_flatBg->setColor(mode == 1 ? ccColor3B{226, 229, 238} : ccColor3B{18, 26, 52});
-        }
-        if (m_checkerBg) m_checkerBg->setVisible(mode == 2);
-    }
-
-    void setGuideVisible(bool visible) {
-        if (m_guide) m_guide->setVisible(visible);
-    }
-
-protected:
-    bool init(float side, DragCallback onDrag, PickCallback onPick) {
-        if (!CCLayer::init()) return false;
-        m_side = side;
-        m_onDrag = std::move(onDrag);
-        m_onPick = std::move(onPick);
-
-        setContentSize({side, side});
-        setAnchorPoint({0.5f, 0.5f});
-        ignoreAnchorPointForPosition(false);
-
-        m_flatBg = CCLayerColor::create(ccc4(18, 26, 52, 255));
-        m_flatBg->setContentSize({side, side});
-        addChild(m_flatBg, -4);
-
-        if (auto* checker = mkui::checkerTexture()) {
-            m_checkerBg = CCSprite::createWithTexture(checker);
-            if (m_checkerBg) {
-                ccTexParams params{GL_LINEAR, GL_LINEAR, GL_REPEAT, GL_REPEAT};
-                checker->setTexParameters(&params);
-                m_checkerBg->setTextureRect({0.f, 0.f, side, side});
-                m_checkerBg->setAnchorPoint({0.f, 0.f});
-                m_checkerBg->setPosition({0.f, 0.f});
-                m_checkerBg->setVisible(false);
-                addChild(m_checkerBg, -3);
-            }
-        }
-
-        // Art inside this box uses vanilla in-game proportions.
-        m_guide = CCLayerColor::create(ccc4(255, 255, 255, 16));
-        float guideSide = side * 0.5f;
-        m_guide->setContentSize({guideSide, guideSide});
-        m_guide->setPosition({(side - guideSide) / 2.f, (side - guideSide) / 2.f});
-        addChild(m_guide, -2);
-
-        setTouchEnabled(true);
-        setTouchMode(kCCTouchesOneByOne);
-        return true;
-    }
-
-    bool ccTouchBegan(CCTouch* touch, CCEvent*) override {
-        auto local = convertTouchToNodeSpace(touch);
-        if (local.x < 0.f || local.y < 0.f || local.x > m_side || local.y > m_side) {
-            return false;
-        }
-        m_startTouch = local;
-        m_lastTouch = local;
-        m_moved = 0.f;
-        return true;
-    }
-
-    void ccTouchMoved(CCTouch* touch, CCEvent*) override {
-        auto local = convertTouchToNodeSpace(touch);
-        float dx = local.x - m_lastTouch.x;
-        float dy = local.y - m_lastTouch.y;
-        m_lastTouch = local;
-        m_moved += std::fabs(dx) + std::fabs(dy);
-        // Below this threshold the gesture may still become a tap.
-        if (m_moved > kTapSlop && m_onDrag) {
-            m_onDrag(dx / (m_side / 2.f), dy / (m_side / 2.f));
-        }
-    }
-
-    void ccTouchEnded(CCTouch*, CCEvent*) override {
-        if (m_moved > kTapSlop) return;
-        auto key = zoneAt(m_startTouch);
-        if (!key.empty() && m_onPick) m_onPick(key);
-    }
-
-private:
-    static constexpr float kTapSlop = 6.f;
-
-    // Select the topmost zone with a solid pixel under the point.
-    std::string zoneAt(CCPoint const& local) const {
-        for (int i = static_cast<int>(m_zones.size()) - 1; i >= 0; --i) {
-            auto const& pixels = m_zones[static_cast<std::size_t>(i)].pixels;
-            if (pixels.empty()) continue;
-            int px = static_cast<int>(local.x / m_side * static_cast<float>(pixels.width()));
-            // Image rows run top-down; node space runs bottom-up.
-            int py = static_cast<int>((1.f - local.y / m_side) * static_cast<float>(pixels.height()));
-            if (px < 0 || py < 0 || px >= pixels.width() || py >= pixels.height()) continue;
-            if (pixels.at(px, py).a > 40) return m_zones[static_cast<std::size_t>(i)].key;
-        }
-        return {};
-    }
-
-    float m_side = 200.f;
-    int m_backgroundMode = 0;
-    bool m_isolate = false;
-    std::string m_activeKey;
-
-    std::vector<Zone> m_zones;
-    std::vector<CCSprite*> m_sprites;
-
-    CCLayerColor* m_flatBg = nullptr;
-    CCSprite* m_checkerBg = nullptr;
-    CCLayerColor* m_guide = nullptr;
-
-    CCPoint m_startTouch{};
-    CCPoint m_lastTouch{};
-    float m_moved = 0.f;
-
-    DragCallback m_onDrag;
-    PickCallback m_onPick;
-};
-
 namespace {
 
 constexpr float kMargin = 7.f;
@@ -225,8 +53,14 @@ constexpr float kTopBarH = 30.f;
 constexpr float kPanelGap = 7.f;
 constexpr float kPanelInset = 8.f;
 constexpr float kMinWorkspaceW = 170.f;
-constexpr float kMinInspectorW = 235.f;
-constexpr float kMaxInspectorW = 326.f;
+constexpr float kMinInspectorW = 240.f;
+constexpr float kMaxInspectorW = 330.f;
+constexpr float kStripH = 30.f;
+
+// Acertar la capa por toque no necesita la resolucion entera del lienzo, y a
+// este tamano una mascara ocupa 14 KB en vez de 230.
+constexpr int kHitMaskSize = 120;
+constexpr int kThumbSize = 44;
 
 struct Layout {
     float bodyTop;
@@ -242,13 +76,15 @@ struct Layout {
     float statusY;
     float partsY;
     float chipsY;
+    float tabsY;
+    float stripY;
     float scrollX;
     float scrollY;
     float scrollW;
     float scrollH;
 };
 
-Layout layoutFor(CCSize const& win, bool hasParts, int zoneCount) {
+Layout layoutFor(CCSize const& win, bool hasParts, int zoneCount, bool showStrip) {
     Layout out{};
     out.bodyTop = std::max(kMargin + 1.f, win.height - kTopBarH);
     out.workspaceX = kMargin;
@@ -269,19 +105,27 @@ Layout layoutFor(CCSize const& win, bool hasParts, int zoneCount) {
     out.partsY = out.bodyTop - 6.f - partsH / 2.f;
 
     float const canvasTop = out.bodyTop - (hasParts ? 10.f : 8.f) - partsH;
-    float const canvasBottom = kMargin + 46.f;
+    float const canvasBottom = kMargin + 44.f;
     float const availableH = std::max(1.f, canvasTop - canvasBottom);
     float const availableW = std::max(1.f, out.workspaceW - 18.f);
     out.canvasSide = std::min(availableW, availableH);
     out.canvasCY = canvasBottom + availableH / 2.f;
-    out.toolsY = kMargin + 30.f;
-    out.statusY = kMargin + 11.f;
+    out.toolsY = kMargin + 28.f;
+    out.statusY = kMargin + 10.f;
 
     out.scrollX = out.panelX + kPanelInset;
     out.scrollW = std::max(1.f, out.panelW - kPanelInset * 2.f);
-    out.chipsY = out.bodyTop - 6.f - mkui::zoneChipsHeight(out.scrollW, zoneCount);
+
+    float top = out.bodyTop - 6.f;
+    out.chipsY = top - mkui::zoneChipsHeight(out.scrollW, zoneCount);
+    top = out.chipsY - 6.f;
+    out.tabsY = top - kit::kTabBarHeight;
+    top = out.tabsY - 5.f;
+    out.stripY = showStrip ? top - kStripH : top;
+    if (showStrip) top = out.stripY - 5.f;
+
     out.scrollY = kMargin + kPanelInset;
-    out.scrollH = std::max(1.f, out.chipsY - 6.f - out.scrollY);
+    out.scrollH = std::max(1.f, top - out.scrollY);
     return out;
 }
 
@@ -295,26 +139,27 @@ char const* fillTypeName(FillSpec const& fill) {
     }
 }
 
-// Representative paint color for the list swatch.
-ccColor3B layerSwatch(IconPiece const& piece) {
-    if (piece.fill.chroma) return {255, 255, 255};
-    switch (piece.fill.type) {
+// Representative paint color for list swatches and theme chips.
+ccColor3B fillSwatch(FillSpec const& fill) {
+    if (fill.chroma) return {255, 255, 255};
+    switch (fill.type) {
         case FillType::Gradient: {
-            if (piece.fill.gradient.stops.empty()) return {255, 255, 255};
-            auto const& c = piece.fill.gradient.stops.front().color;
+            if (fill.gradient.stops.empty()) return {255, 255, 255};
+            auto const& c = fill.gradient.stops.front().color;
             return {c.r, c.g, c.b};
         }
         case FillType::Image:
             return {150, 200, 255};
         case FillType::Flat:
         default:
-            return {piece.fill.flat.r, piece.fill.flat.g, piece.fill.flat.b};
+            return {fill.flat.r, fill.flat.g, fill.flat.b};
     }
 }
 
 std::string layerSubtitle(IconPiece const& piece) {
     std::string text = fillTypeName(piece.fill);
     if (piece.fill.outline.enabled) text += " + borde";
+    if (piece.locked) text += "  (bloqueada)";
     if (!piece.visible) text += "  (oculta)";
     return text;
 }
@@ -339,18 +184,24 @@ geode::Result<std::string> importImageFile(std::string const& slotId,
     return Ok(fileName);
 }
 
-// Extract one vanilla frame for the selected zone.
+std::string suffixForZone(AnatomyDef const& def, std::string const& zoneKey, int part) {
+    std::string suffix;
+    for (auto const& slot : def.slots) {
+        if (slot.key == zoneKey) { suffix = slot.suffix; break; }
+    }
+    if (suffix.empty()) return {};
+    if (def.partCount > 1) suffix = fmt::format("_{:02}{}", part, suffix);
+    return suffix;
+}
+
+// Extract one vanilla frame for the given zone.
 geode::Result<> fillPieceFromTemplate(IconProject const& project, IconPiece& piece,
                                       int iconId, int part, std::string const& zoneKey) {
     auto const* def = anatomyFor(project.type);
     if (!def) return Err("Gamemode no soportado");
 
-    std::string suffix;
-    for (auto const& slot : def->slots) {
-        if (slot.key == zoneKey) { suffix = slot.suffix; break; }
-    }
+    auto suffix = suffixForZone(*def, zoneKey, part);
     if (suffix.empty()) return Err("Zona desconocida");
-    if (def->partCount > 1) suffix = fmt::format("_{:02}{}", part, suffix);
 
     auto extracted = TemplateExtractor::extractFrame(
         project.type, iconId, suffix, def->canvasUhd);
@@ -369,7 +220,78 @@ geode::Result<> fillPieceFromTemplate(IconProject const& project, IconPiece& pie
     return Ok();
 }
 
+// Rejilla de temas; cada uno ensena los dos colores con los que va a pintar.
+CCNode* makeThemeGrid(float width, std::vector<IconTheme> const& themes,
+                      std::function<void(IconTheme const&)> onPick) {
+    constexpr float kChipH = 34.f;
+    constexpr float kGap = 5.f;
+    constexpr int kPerRow = 3;
+
+    int const rows = std::max(1,
+        (static_cast<int>(themes.size()) + kPerRow - 1) / kPerRow);
+    float const chipW = (width - kGap * static_cast<float>(kPerRow - 1))
+        / static_cast<float>(kPerRow);
+    float const height = static_cast<float>(rows) * kChipH
+        + static_cast<float>(rows - 1) * kGap;
+
+    auto* grid = CCNode::create();
+    grid->setAnchorPoint({0.f, 0.f});
+    grid->setContentSize({width, height});
+
+    auto* menu = CCMenu::create();
+    menu->setPosition({0.f, 0.f});
+    menu->setTouchPriority(
+        CCDirector::get()->getTouchDispatcher()->getTargetPrio() - 2);
+    grid->addChild(menu, 5);
+
+    auto cb = std::make_shared<std::function<void(IconTheme const&)>>(std::move(onPick));
+
+    for (std::size_t i = 0; i < themes.size(); ++i) {
+        auto const& theme = themes[i];
+
+        auto* holder = CCNode::create();
+        holder->setAnchorPoint({0.5f, 0.5f});
+        holder->setContentSize({chipW, kChipH});
+
+        if (auto* plate = paimon::SpriteHelper::createColorPanel(
+                chipW, kChipH, {14, 24, 52}, 210, 4.f)) {
+            plate->setAnchorPoint({0.f, 0.f});
+            holder->addChild(plate, -1);
+        }
+
+        float const barW = (chipW - 10.f) / 2.f;
+        auto addBar = [&](float x, ccColor3B color) {
+            if (auto* bar = paimon::SpriteHelper::createColorPanel(
+                    barW, 9.f, color, 255, 2.f)) {
+                bar->setAnchorPoint({0.f, 0.f});
+                bar->setPosition({x, kChipH - 13.f});
+                holder->addChild(bar);
+            }
+        };
+        addBar(5.f, fillSwatch(theme.main));
+        addBar(5.f + barW, fillSwatch(theme.secondary));
+
+        auto* label = CCLabelBMFont::create(theme.name.c_str(), "bigFont.fnt");
+        label->setAnchorPoint({0.5f, 0.5f});
+        label->limitLabelWidth(chipW - 8.f, 0.32f, 0.12f);
+        label->setPosition({chipW / 2.f, 9.f});
+        holder->addChild(label);
+
+        auto* btn = CCMenuItemExt::createSpriteExtra(holder,
+            [cb, theme](CCMenuItemSpriteExtra*) { if (*cb) (*cb)(theme); });
+        int const col = static_cast<int>(i) % kPerRow;
+        int const line = static_cast<int>(i) / kPerRow;
+        btn->setPosition({
+            chipW / 2.f + static_cast<float>(col) * (chipW + kGap),
+            height - kChipH / 2.f - static_cast<float>(line) * (kChipH + kGap),
+        });
+        menu->addChild(btn);
+    }
+
+    return grid;
 }
+
+}  // anonymous namespace
 
 
 void IconEditorLayer::open(std::string const& slotId) {
@@ -405,6 +327,7 @@ bool IconEditorLayer::init(std::string const& slotId) {
     m_zoneIndex = 0;
     selectDefaultPiece();
     m_history.reset(m_project);
+    StyleStore::get().load();
 
     setKeypadEnabled(true);
     setID("icon-maker-editor"_spr);
@@ -414,9 +337,9 @@ bool IconEditorLayer::init(std::string const& slotId) {
     buildWorkspace();
     buildInspector();
 
-    rebuildInspector();
     scheduleUpdate();
-    schedulePreview();
+    schedulePreview(false);
+    maybeShowTour();
     return true;
 }
 
@@ -485,7 +408,7 @@ void IconEditorLayer::buildTopBar() {
 
     m_titleLabel = CCLabelBMFont::create(heading.c_str(), "goldFont.fnt");
     m_titleLabel->setAnchorPoint({0.f, 0.5f});
-    m_titleLabel->limitLabelWidth(win.width * 0.36f, 0.52f, 0.2f);
+    m_titleLabel->limitLabelWidth(win.width * 0.30f, 0.52f, 0.2f);
 
     auto* titleHit = CCNode::create();
     titleHit->setAnchorPoint({0.f, 0.5f});
@@ -501,15 +424,21 @@ void IconEditorLayer::buildTopBar() {
 
     float x = win.width - 16.f;
 
-    if (auto* spr = ButtonSprite::create("Usar", "goldFont.fnt", "GJ_button_01.png", 0.8f)) {
+    auto addWideButton = [&](char const* text, char const* sprite,
+                             std::function<void()> action) {
+        auto* spr = ButtonSprite::create(text, "goldFont.fnt", sprite, 0.8f);
+        if (!spr) return;
         spr->setScale(0.62f);
         auto* btn = CCMenuItemExt::createSpriteExtra(spr,
-            [this](CCMenuItemSpriteExtra*) { this->onApply(); });
+            [action](CCMenuItemSpriteExtra*) { if (action) action(); });
         x -= btn->getScaledContentSize().width / 2.f;
         btn->setPosition({x, cy});
         menu->addChild(btn);
-        x -= btn->getScaledContentSize().width / 2.f + 6.f;
-    }
+        x -= btn->getScaledContentSize().width / 2.f + 5.f;
+    };
+
+    addWideButton("Usar", "GJ_button_01.png", [this] { this->onApply(); });
+    addWideButton("Probar", "GJ_button_02.png", [this] { this->onTry(); });
 
     auto addCircle = [&](char const* frame, float glyphScale, CircleBaseColor color,
                          bool flipX, std::function<void()> action, CCSprite** outGlyph) {
@@ -534,8 +463,6 @@ void IconEditorLayer::buildTopBar() {
 
     addCircle("GJ_optionsBtn_001.png", 0.9f, CircleBaseColor::Gray, false,
               [this] { this->onProjectMenu(); }, nullptr);
-    addCircle("GJ_infoIcon_001.png", 1.f, CircleBaseColor::Cyan, false,
-              [] { if (auto* p = IconHelpPopup::create()) p->show(); }, nullptr);
     addCircle("GJ_arrow_03_001.png", 1.f, CircleBaseColor::Blue, true,
               [this] { this->onRedo(); }, &m_redoGlyph);
     addCircle("GJ_arrow_03_001.png", 1.f, CircleBaseColor::Blue, false,
@@ -554,24 +481,69 @@ void IconEditorLayer::refreshTopBar() {
             ? fmt::format("{}  -  {}", m_project.name, def->displayName).c_str()
             : m_project.name.c_str());
         m_titleLabel->limitLabelWidth(
-            CCDirector::get()->getWinSize().width * 0.36f, 0.52f, 0.2f);
+            CCDirector::get()->getWinSize().width * 0.30f, 0.52f, 0.2f);
     }
 }
 
 void IconEditorLayer::buildWorkspace() {
     auto win = CCDirector::get()->getWinSize();
     auto const* def = anatomyFor(m_project.type);
-    bool hasParts = def && def->partCount > 1;
-    auto layout = layoutFor(win, hasParts, static_cast<int>(visibleZones().size()));
+    bool const hasParts = def && def->partCount > 1;
+    auto layout = layoutFor(win, hasParts,
+        static_cast<int>(visibleZones().size()), m_tab != Tab::Layers);
 
     if (auto* window = kit::makeWindow({layout.workspaceW, layout.panelH})) {
         window->setPosition({layout.workspaceX, kMargin});
         addChild(window, 2);
     }
 
-    m_canvas = EditorCanvas::create(layout.canvasSide,
-        [this](float dx, float dy) { this->onCanvasDrag(dx, dy); },
-        [this](std::string const& zoneKey) { this->selectZoneByKey(zoneKey); });
+    EditorCanvas::Callbacks callbacks;
+    callbacks.onSelect = [this](std::string const& zoneKey, int pieceIndex) {
+        this->selectFromCanvas(zoneKey, pieceIndex);
+    };
+    callbacks.onMove = [this](float dx, float dy) {
+        m_gestureActive = true;
+        edit("canvas-move", [&] {
+            auto* piece = selectedPiece();
+            if (!piece) return;
+            piece->transform.offsetX = std::clamp(piece->transform.offsetX + dx, -1.f, 1.f);
+            piece->transform.offsetY = std::clamp(piece->transform.offsetY + dy, -1.f, 1.f);
+        });
+    };
+    callbacks.onScale = [this](float factorX, float factorY) {
+        m_gestureActive = true;
+        edit("canvas-scale", [&] {
+            auto* piece = selectedPiece();
+            if (!piece) return;
+            // La parte comun del estiron va al tamano general y lo que sobra a
+            // cada eje, para que arrastrar en diagonal no tope enseguida.
+            float const uniform = std::sqrt(std::max(0.0001f, factorX * factorY));
+            piece->transform.scale = std::clamp(piece->transform.scale * uniform, 0.05f, 3.f);
+            piece->scaleX = std::clamp(piece->scaleX * (factorX / uniform), 0.25f, 4.f);
+            piece->scaleY = std::clamp(piece->scaleY * (factorY / uniform), 0.25f, 4.f);
+        });
+    };
+    callbacks.onRotate = [this](float deltaDeg) {
+        m_gestureActive = true;
+        edit("canvas-rotate", [&] {
+            auto* piece = selectedPiece();
+            if (!piece) return;
+            float angle = piece->transform.rotationDeg + deltaDeg;
+            while (angle > 180.f) angle -= 360.f;
+            while (angle < -180.f) angle += 360.f;
+            piece->transform.rotationDeg = angle;
+        });
+    };
+    callbacks.onPick = [this](ccColor3B color) { this->pickColor(color); };
+    callbacks.onHint = [this](std::string const& text) { this->setStatus(text, false); };
+    callbacks.onGestureEnd = [this] {
+        m_gestureActive = false;
+        m_history.breakCoalescing();
+        schedulePreview(false);
+        scheduleInspectorRebuild();
+    };
+
+    m_canvas = EditorCanvas::create(layout.canvasSide, std::move(callbacks));
     if (m_canvas) {
         m_canvas->setPosition({layout.workspaceCX, layout.canvasCY});
         m_canvas->setBackgroundMode(m_backgroundMode);
@@ -579,7 +551,7 @@ void IconEditorLayer::buildWorkspace() {
         addChild(m_canvas, 5);
     }
 
-    // Robot and spider sheets contain four independently edited drawings.
+    // Robot y spider llevan cuatro dibujos que se editan por separado.
     if (hasParts) {
         m_partsHost = CCNode::create();
         m_partsHost->setPosition({layout.workspaceCX, layout.partsY});
@@ -610,20 +582,20 @@ void IconEditorLayer::buildWorkspace() {
         addChild(frame, 4);
     }
 
-    // View tools affect only the preview, not the icon data.
+    // Estas herramientas solo cambian como se ve, nunca el icono.
     auto* toolMenu = CCMenu::create();
     toolMenu->setPosition({0.f, 0.f});
     addChild(toolMenu, 6);
 
-    float const toolW = layout.canvasSide / 3.f;
+    float const toolW = layout.canvasSide / 4.f;
     float const toolLeft = layout.workspaceCX - layout.canvasSide / 2.f;
-    m_toolLabelW = std::max(8.f, toolW - 14.f);
+    m_toolLabelW = std::max(8.f, toolW - 12.f);
 
-    // ButtonSprite owns the art, so state is shown in its label.
+    // ButtonSprite es dueno de su arte, asi que el estado va en el texto.
     auto makeToolButton = [&](float cx, cocos2d::CCLabelBMFont** out,
                               std::function<void(CCMenuItemSpriteExtra*)> action) {
-        float const btnW = std::max(12.f, toolW - 6.f);
-        constexpr float btnH = 22.f;
+        float const btnW = std::max(12.f, toolW - 5.f);
+        constexpr float btnH = 21.f;
 
         auto* holder = CCNode::create();
         holder->setAnchorPoint({0.5f, 0.5f});
@@ -665,10 +637,22 @@ void IconEditorLayer::buildWorkspace() {
             setStatus(m_isolateZone ? "Viendo solo esta zona." : "Viendo el icono entero.");
             refreshViewTools();
         });
+    makeToolButton(toolLeft + toolW * 3.5f, &m_pickToolLabel,
+        [this](CCMenuItemSpriteExtra*) {
+            m_eyedropper = !m_eyedropper;
+            if (m_canvas) m_canvas->setEyedropper(m_eyedropper);
+            // Los pixeles del icono solo se llevan al lienzo con el
+            // cuentagotas puesto, asi que hay que volver a dibujarlo.
+            if (m_eyedropper) schedulePreview(false);
+            setStatus(m_eyedropper
+                ? "Toca el icono para copiar ese color."
+                : "Cuentagotas apagado.");
+            refreshViewTools();
+        });
     refreshViewTools();
 
     m_statusLabel = CCLabelBMFont::create(
-        "Toca una zona del icono o arrastra para mover.", "chatFont.fnt");
+        "Toca una capa para elegirla; arrastrala para moverla.", "chatFont.fnt");
     if (m_statusLabel) {
         m_statusLabel->setScale(0.45f);
         m_statusLabel->setColor(kit::kDescColor);
@@ -680,11 +664,11 @@ void IconEditorLayer::buildWorkspace() {
 
 void IconEditorLayer::refreshViewTools() {
     float const maxW = m_toolLabelW;
-    bool const compact = maxW < 48.f;
+    bool const compact = maxW < 46.f;
     auto setLabel = [maxW](CCLabelBMFont* label, char const* text) {
         if (!label) return;
         label->setString(text);
-        label->limitLabelWidth(maxW, 0.4f, 0.1f);
+        label->limitLabelWidth(maxW, 0.38f, 0.1f);
     };
 
     setLabel(m_bgToolLabel, m_backgroundMode == 1
@@ -698,13 +682,17 @@ void IconEditorLayer::refreshViewTools() {
     setLabel(m_isolateToolLabel, m_isolateZone
         ? (compact ? "Solo" : "Solo esta zona")
         : (compact ? "Todo" : "Ver todo"));
+    setLabel(m_pickToolLabel, m_eyedropper
+        ? (compact ? "Copiando" : "Copiando color")
+        : (compact ? "Pipeta" : "Cuentagotas"));
 }
+
 
 void IconEditorLayer::buildInspector() {
     auto win = CCDirector::get()->getWinSize();
     auto const* def = anatomyFor(m_project.type);
     auto layout = layoutFor(win, def && def->partCount > 1,
-                            static_cast<int>(visibleZones().size()));
+        static_cast<int>(visibleZones().size()), m_tab != Tab::Layers);
 
     if (auto* window = kit::makeWindow({layout.panelW, layout.panelH})) {
         window->setPosition({layout.panelX, kMargin});
@@ -715,37 +703,58 @@ void IconEditorLayer::buildInspector() {
     m_zoneChipsHost->setPosition({layout.scrollX, layout.chipsY});
     addChild(m_zoneChipsHost, 6);
 
+    // Cuelga de la tira para que la separacion siga a las chips cuando el
+    // numero de zonas cambia entre las partes del robot.
     if (auto* line = paimon::SpriteHelper::createColorPanel(
             layout.scrollW, 1.f, {255, 255, 255}, 60, 0.f)) {
         line->setAnchorPoint({0.f, 0.f});
-        line->setPosition({layout.scrollX, layout.chipsY - 4.f});
-        addChild(line, 6);
+        line->setPosition({0.f, -4.f});
+        m_zoneChipsHost->addChild(line);
     }
 
+    m_tabsHost = CCNode::create();
+    addChild(m_tabsHost, 6);
+
+    m_stripHost = CCNode::create();
+    addChild(m_stripHost, 6);
+
     m_inspectorHost = CCNode::create();
-    m_inspectorHost->setPosition({layout.scrollX, layout.scrollY});
     addChild(m_inspectorHost, 6);
 
     refreshZoneChips();
+    rebuildInspector();
 }
 
 void IconEditorLayer::refreshZoneChips() {
     if (!m_zoneChipsHost) return;
-    m_zoneChipsHost->removeAllChildren();
 
     auto win = CCDirector::get()->getWinSize();
     auto const* def = anatomyFor(m_project.type);
     auto layout = layoutFor(win, def && def->partCount > 1,
-                            static_cast<int>(visibleZones().size()));
+        static_cast<int>(visibleZones().size()), m_tab != Tab::Layers);
+    m_zoneChipsHost->setPosition({layout.scrollX, layout.chipsY});
 
     std::vector<mkui::ZoneChip> chips;
     for (auto const& zone : visibleZones()) {
         auto key = slotStorageKey(m_currentPart, zone.key);
-        int count = 0;
+        mkui::ZoneChip chip;
+        chip.label = std::string(zone.label);
+        chip.accent = zone.accent;
         if (auto it = m_project.slots.find(key); it != m_project.slots.end()) {
-            count = static_cast<int>(it->second.pieces.size());
+            chip.layerCount = static_cast<int>(it->second.pieces.size());
         }
-        chips.push_back({std::string(zone.label), zone.accent, count});
+        if (auto it = m_zoneTextures.find(key); it != m_zoneTextures.end()) {
+            chip.preview = it->second;
+        }
+        chips.push_back(std::move(chip));
+    }
+
+    m_zoneChipsHost->removeAllChildren();
+    if (auto* line = paimon::SpriteHelper::createColorPanel(
+            layout.scrollW, 1.f, {255, 255, 255}, 60, 0.f)) {
+        line->setAnchorPoint({0.f, 0.f});
+        line->setPosition({0.f, -4.f});
+        m_zoneChipsHost->addChild(line);
     }
 
     auto* strip = mkui::makeZoneChips(layout.scrollW, chips, m_zoneIndex,
@@ -757,6 +766,78 @@ void IconEditorLayer::refreshZoneChips() {
             });
         });
     if (strip) m_zoneChipsHost->addChild(strip);
+}
+
+void IconEditorLayer::refreshSelectionStrip() {
+    if (!m_stripHost) return;
+    m_stripHost->removeAllChildren();
+    if (m_tab == Tab::Layers) return;
+
+    auto win = CCDirector::get()->getWinSize();
+    auto const* def = anatomyFor(m_project.type);
+    auto layout = layoutFor(win, def && def->partCount > 1,
+        static_cast<int>(visibleZones().size()), true);
+    m_stripHost->setPosition({layout.scrollX, layout.stripY});
+
+    auto zones = visibleZones();
+    if (zones.empty()) return;
+    auto const& zone = zones[static_cast<std::size_t>(
+        std::clamp(m_zoneIndex, 0, static_cast<int>(zones.size()) - 1))];
+
+    auto* piece = selectedPiece();
+    float const width = layout.scrollW;
+
+    auto* holder = CCNode::create();
+    holder->setAnchorPoint({0.f, 0.f});
+    holder->setContentSize({width, kStripH});
+    if (auto* plate = kit::makePlate(width, kStripH, {255, 255, 255}, 190)) {
+        plate->setPosition({0.f, 0.f});
+        holder->addChild(plate, -1);
+    }
+
+    CCTexture2D* thumb = nullptr;
+    if (piece) {
+        if (auto it = m_pieceThumbs.find(piece->id); it != m_pieceThumbs.end()) {
+            thumb = it->second;
+        }
+    }
+    if (auto* mini = mkui::makeThumb(22.f, thumb,
+            piece ? fillSwatch(piece->fill) : ccColor3B{90, 100, 120})) {
+        mini->setPosition({16.f, kStripH / 2.f});
+        holder->addChild(mini);
+    }
+
+    auto* name = CCLabelBMFont::create(
+        piece ? piece->name.c_str() : "Ninguna capa elegida", "bigFont.fnt");
+    name->setAnchorPoint({0.f, 0.f});
+    name->limitLabelWidth(width - 96.f, 0.36f, 0.12f);
+    name->setPosition({31.f, kStripH / 2.f + 1.f});
+    holder->addChild(name);
+
+    auto* where = CCLabelBMFont::create(
+        fmt::format("{}  -  toca para ver las capas", zone.label).c_str(), "chatFont.fnt");
+    where->setAnchorPoint({0.f, 1.f});
+    where->setScale(0.34f);
+    where->setColor(kit::kDescColor);
+    where->limitLabelWidth((width - 96.f) / 0.34f, 0.34f, 0.14f);
+    where->setPosition({31.f, kStripH / 2.f});
+    holder->addChild(where);
+
+    auto* menu = CCMenu::create();
+    menu->setPosition({0.f, 0.f});
+    menu->setTouchPriority(
+        CCDirector::get()->getTouchDispatcher()->getTargetPrio() - 2);
+    holder->addChild(menu, 5);
+
+    auto* hit = CCNode::create();
+    hit->setAnchorPoint({0.5f, 0.5f});
+    hit->setContentSize({width, kStripH});
+    auto* btn = CCMenuItemExt::createSpriteExtra(hit,
+        [this](CCMenuItemSpriteExtra*) { this->selectTab(Tab::Layers); });
+    btn->setPosition({width / 2.f, kStripH / 2.f});
+    menu->addChild(btn);
+
+    m_stripHost->addChild(holder);
 }
 
 void IconEditorLayer::scheduleInspectorRebuild() {
@@ -771,10 +852,10 @@ void IconEditorLayer::scheduleInspectorRebuild() {
 }
 
 void IconEditorLayer::rebuildInspector() {
-    if (!m_inspectorHost) return;
+    if (!m_inspectorHost || !m_tabsHost) return;
 
     if (m_inspector) {
-        // Preserve scroll position across list rebuilds.
+        // Guardar el desplazamiento para que rehacer la lista no salte arriba.
         if (auto* content = m_inspector->m_contentLayer) {
             m_inspectorScrollY = content->getPositionY();
         }
@@ -785,27 +866,39 @@ void IconEditorLayer::rebuildInspector() {
 
     auto win = CCDirector::get()->getWinSize();
     auto const* def = anatomyFor(m_project.type);
+    bool const showStrip = m_tab != Tab::Layers;
     auto layout = layoutFor(win, def && def->partCount > 1,
-                            static_cast<int>(visibleZones().size()));
+        static_cast<int>(visibleZones().size()), showStrip);
+
+    m_tabsHost->removeAllChildren();
+    m_tabsHost->setPosition({layout.scrollX, layout.tabsY});
+    if (auto* tabs = kit::makeTabBar(layout.scrollW,
+            {"Capas", "Pintura", "Forma", "Icono"}, static_cast<int>(m_tab),
+            [this](int index) { this->selectTab(static_cast<Tab>(index)); })) {
+        m_tabsHost->addChild(tabs);
+    }
+
+    refreshSelectionStrip();
 
     float const cardW = layout.scrollW;
-    float const scrollH = layout.scrollH;
+    std::vector<CCNode*> rows;
+    switch (m_tab) {
+        case Tab::Paint: rows = buildPaintTab(cardW);  break;
+        case Tab::Shape: rows = buildShapeTab(cardW);  break;
+        case Tab::Icon:  rows = buildIconTab(cardW);   break;
+        case Tab::Layers:
+        default:         rows = buildLayersTab(cardW); break;
+    }
+    rows.erase(std::remove(rows.begin(), rows.end(), nullptr), rows.end());
 
-    std::vector<CCNode*> cards{
-        buildLayersCard(cardW),
-        buildPaintCard(cardW),
-        buildShapeCard(cardW),
-        buildProjectCard(cardW),
-    };
-    cards.erase(std::remove(cards.begin(), cards.end(), nullptr), cards.end());
-
-    m_inspector = kit::makeScrollStack({cardW, scrollH}, cards, 6.f);
+    m_inspectorHost->setPosition({layout.scrollX, layout.scrollY});
+    m_inspector = kit::makeScrollStack({cardW, layout.scrollH}, rows, 6.f);
     if (m_inspector) {
         m_inspector->setPosition({0.f, 0.f});
         m_inspectorHost->addChild(m_inspector);
 
         if (auto* content = m_inspector->m_contentLayer) {
-            float minY = scrollH - content->getContentSize().height;
+            float const minY = layout.scrollH - content->getContentSize().height;
             content->setPositionY(std::clamp(m_inspectorScrollY, std::min(minY, 0.f), 0.f));
         }
     }
@@ -814,34 +907,37 @@ void IconEditorLayer::rebuildInspector() {
 }
 
 
-CCNode* IconEditorLayer::buildLayersCard(float width) {
-    float const innerW = kit::cardInnerWidth(width);
+std::vector<CCNode*> IconEditorLayer::buildLayersTab(float width) {
+    std::vector<CCNode*> rows;
     auto zones = visibleZones();
-    if (zones.empty()) return nullptr;
+    if (zones.empty()) return rows;
 
     auto& slot = currentSlot();
     auto const& zone = zones[static_cast<std::size_t>(
         std::clamp(m_zoneIndex, 0, static_cast<int>(zones.size()) - 1))];
 
-    std::vector<CCNode*> rows;
-    rows.push_back(kit::makeHint(innerW, std::string(zone.hint).c_str()));
+    rows.push_back(kit::makeHint(width, std::string(zone.hint).c_str()));
 
     if (slot.pieces.empty()) {
-        rows.push_back(mkui::makeEmptyState(innerW, "Zona vacia",
+        rows.push_back(mkui::makeEmptyState(width, "Zona vacia",
             "Agrega una capa: una imagen tuya, o la forma de un icono oficial "
             "para pintarla a tu gusto."));
     }
 
     int const count = static_cast<int>(slot.pieces.size());
     for (int display = 0; display < count; ++display) {
-        int index = count - 1 - display;
+        int const index = count - 1 - display;
         auto const& piece = slot.pieces[static_cast<std::size_t>(index)];
 
         mkui::LayerRowSpec spec;
         spec.name = piece.name;
         spec.subtitle = layerSubtitle(piece);
-        spec.swatch = layerSwatch(piece);
+        spec.swatch = fillSwatch(piece.fill);
+        if (auto it = m_pieceThumbs.find(piece.id); it != m_pieceThumbs.end()) {
+            spec.thumb = it->second;
+        }
         spec.visible = piece.visible;
+        spec.locked = piece.locked;
         spec.selected = index == m_selectedPiece;
         spec.canMoveUp = index + 1 < count;
         spec.canMoveDown = index > 0;
@@ -855,6 +951,17 @@ CCNode* IconEditorLayer::buildLayersCard(float width) {
                         !pieces[static_cast<std::size_t>(index)].visible;
                 }
             });
+            scheduleInspectorRebuild();
+        };
+        spec.onToggleLock = [this, index] {
+            edit({}, [&] {
+                auto& pieces = currentSlot().pieces;
+                if (index < static_cast<int>(pieces.size())) {
+                    pieces[static_cast<std::size_t>(index)].locked =
+                        !pieces[static_cast<std::size_t>(index)].locked;
+                }
+            });
+            pushCanvasSelection();
             scheduleInspectorRebuild();
         };
         spec.onMoveUp = [this, index] {
@@ -881,35 +988,30 @@ CCNode* IconEditorLayer::buildLayersCard(float width) {
         };
         spec.onMore = [this, index] { this->onLayerMenu(index); };
 
-        rows.push_back(mkui::makeLayerRow(innerW, std::move(spec)));
+        rows.push_back(mkui::makeLayerRow(width, std::move(spec)));
     }
 
-    rows.push_back(mkui::makeDualButtonRow(innerW,
+    rows.push_back(mkui::makeDualButtonRow(width,
         "+ Imagen", [this] { this->onAddImportLayer(); },
         "+ Forma oficial", [this] { this->onAddTemplateLayer(); }));
 
-    std::string const heading = count == 0
-        ? fmt::format("Capas de {} (vacia)", zone.label)
-        : fmt::format("Capas de {} ({})", zone.label, count);
-    return kit::makeCard(width, heading.c_str(), zone.accent, rows);
+    return rows;
 }
 
 
-CCNode* IconEditorLayer::buildPaintCard(float width) {
-    float const innerW = kit::cardInnerWidth(width);
+std::vector<CCNode*> IconEditorLayer::buildPaintTab(float width) {
+    std::vector<CCNode*> rows;
     auto* piece = selectedPiece();
 
     if (!piece) {
-        return kit::makeCard(width, "Pintura", mkui::kAccentPaint,
-            {mkui::makeEmptyState(innerW, "Ninguna capa elegida",
-                "Toca una capa de la lista de arriba para pintarla.")});
+        rows.push_back(mkui::makeEmptyState(width, "Ninguna capa elegida",
+            "Toca una capa en el icono, o abre la pestana Capas y elige una."));
+        return rows;
     }
 
-    std::vector<CCNode*> rows;
-
-    int typeIndex = piece->fill.type == FillType::Gradient ? 1
-                  : piece->fill.type == FillType::Image ? 2 : 0;
-    rows.push_back(kit::makeTabBar(innerW, {"Color", "Degradado", "Imagen"}, typeIndex,
+    int const typeIndex = piece->fill.type == FillType::Gradient ? 1
+                        : piece->fill.type == FillType::Image ? 2 : 0;
+    rows.push_back(kit::makeTabBar(width, {"Color", "Degradado", "Imagen"}, typeIndex,
         [this](int index) {
             edit({}, [&] {
                 if (auto* p = selectedPiece()) {
@@ -922,16 +1024,8 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
 
     switch (piece->fill.type) {
         case FillType::Flat: {
-            rows.push_back(mkui::makeSwatchGrid(innerW, quickColors(), piece->fill.flat,
-                [this](ccColor3B color) {
-                    edit({}, [&] {
-                        if (auto* p = selectedPiece()) {
-                            p->fill.flat = {color.r, color.g, color.b, 255};
-                            p->fill.chroma = false;
-                        }
-                    });
-                    scheduleInspectorRebuild();
-                },
+            rows.push_back(mkui::makeSwatchGrid(width, quickColors(), piece->fill.flat,
+                [this](ccColor3B color) { this->pickColor(color); },
                 [this] {
                     auto* p = selectedPiece();
                     if (!p) return;
@@ -943,31 +1037,40 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
                         self->edit("flat-color", [&] {
                             if (auto* p2 = self->selectedPiece()) p2->fill.flat = picked;
                         });
+                        rememberColor({picked.r, picked.g, picked.b});
                         self->scheduleInspectorRebuild();
                     });
                     picker->show();
                 }));
 
-            auto mine = playerColors();
-            if (!mine.empty()) {
-                rows.push_back(kit::makeHint(innerW,
-                    "Abajo estan tus colores de jugador, por si quieres que el "
+            rows.push_back(mkui::makeHexRow(width, piece->fill.flat,
+                [this](ccColor3B color) {
+                    edit("hex-color", [&] {
+                        if (auto* p = selectedPiece()) {
+                            p->fill.flat = {color.r, color.g, color.b, 255};
+                            p->fill.chroma = false;
+                        }
+                    });
+                }));
+
+            if (auto const& recent = recentColors(); !recent.empty()) {
+                rows.push_back(kit::makeHint(width, "Los ultimos colores que usaste."));
+                rows.push_back(mkui::makeSwatchGrid(width, recent, piece->fill.flat,
+                    [this](ccColor3B color) { this->pickColor(color); }, nullptr));
+            }
+
+            if (auto mine = playerColors(); !mine.empty()) {
+                rows.push_back(kit::makeHint(width,
+                    "Y estos son tus colores de jugador, por si quieres que el "
                     "icono combine con tu kit."));
-                rows.push_back(mkui::makeSwatchGrid(innerW, mine, piece->fill.flat,
-                    [this](ccColor3B color) {
-                        edit({}, [&] {
-                            if (auto* p = selectedPiece()) {
-                                p->fill.flat = {color.r, color.g, color.b, 255};
-                            }
-                        });
-                        scheduleInspectorRebuild();
-                    }, nullptr));
+                rows.push_back(mkui::makeSwatchGrid(width, mine, piece->fill.flat,
+                    [this](ccColor3B color) { this->pickColor(color); }, nullptr));
             }
             break;
         }
 
         case FillType::Gradient: {
-            rows.push_back(mkui::makeGradientRow(innerW, piece->fill.gradient, "Editar",
+            rows.push_back(mkui::makeGradientRow(width, piece->fill.gradient, "Editar",
                 [this] {
                     auto* p = selectedPiece();
                     if (!p) return;
@@ -982,7 +1085,7 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
                     if (popup) popup->show();
                 }));
 
-            rows.push_back(kit::makeButtonRow(innerW, "Combinaciones listas",
+            rows.push_back(kit::makeButtonRow(width, "Combinaciones listas",
                 "Fuego, hielo, arcoiris... una y ya esta.",
                 "Elegir", [this] {
                     Ref<IconEditorLayer> self = this;
@@ -1010,7 +1113,7 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
             std::string current = piece->fill.image.file.empty()
                 ? std::string("Sin imagen todavia")
                 : piece->fill.image.file;
-            rows.push_back(kit::makeButtonRow(innerW, "Imagen de relleno",
+            rows.push_back(kit::makeButtonRow(width, "Imagen de relleno",
                 current.c_str(),
                 piece->fill.image.file.empty() ? "Elegir" : "Cambiar",
                 [this] {
@@ -1038,7 +1141,7 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
                 }));
 
             std::vector<std::string> fits{"Entera", "Cubrir", "Estirar", "Mosaico"};
-            rows.push_back(kit::makeSelectRow(innerW, "Encaje",
+            rows.push_back(kit::makeSelectRow(width, "Encaje",
                 "Como se acomoda la imagen dentro de la forma.",
                 fits, static_cast<int>(piece->fill.image.fit),
                 [this](int index) {
@@ -1049,17 +1152,15 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
                     });
                 }));
 
-            rows.push_back(kit::makeSliderRow(innerW, "Zoom", nullptr,
-                piece->fill.image.scale, 0.05, 6.0,
-                [](double v) { return fmt::format("x{:.2f}", v); },
+            rows.push_back(kit::makeNumberRow(width, "Zoom de la imagen", nullptr,
+                piece->fill.image.scale, 0.05, 6.0, 0.05, 2,
                 [this](double v) {
                     edit("fill-scale", [&] {
                         if (auto* p = selectedPiece()) p->fill.image.scale = static_cast<float>(v);
                     });
                 }));
-            rows.push_back(kit::makeSliderRow(innerW, "Giro", nullptr,
-                piece->fill.image.rotationDeg, -180.0, 180.0,
-                [](double v) { return fmt::format("{}deg", static_cast<int>(v)); },
+            rows.push_back(kit::makeNumberRow(width, "Giro de la imagen (grados)", nullptr,
+                piece->fill.image.rotationDeg, -180.0, 180.0, 5.0, 0,
                 [this](double v) {
                     edit("fill-rot", [&] {
                         if (auto* p = selectedPiece()) {
@@ -1067,13 +1168,12 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
                         }
                     });
                 }));
-            rows.push_back(kit::makeSliderRow(innerW, "Transparencia", nullptr,
-                piece->fill.image.opacity, 0.0, 255.0,
-                [](double v) { return fmt::format("{}%", static_cast<int>(v / 2.55)); },
+            rows.push_back(kit::makeNumberRow(width, "Opacidad de la imagen (%)", nullptr,
+                piece->fill.image.opacity / 2.55, 0.0, 100.0, 5.0, 0,
                 [this](double v) {
                     edit("fill-opacity", [&] {
                         if (auto* p = selectedPiece()) {
-                            p->fill.image.opacity = static_cast<int>(v);
+                            p->fill.image.opacity = static_cast<int>(std::lround(v * 2.55));
                         }
                     });
                 }));
@@ -1081,7 +1181,7 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
         }
     }
 
-    rows.push_back(kit::makeToggleRow(innerW, "Sombreado 3D",
+    rows.push_back(kit::makeToggleRow(width, "Sombreado 3D",
         "Conserva las sombras del dibujo original bajo el color.",
         piece->fill.keepLuminance,
         [this](bool value) {
@@ -1090,7 +1190,7 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
             });
         }));
 
-    rows.push_back(kit::makeToggleRow(innerW, "Arcoiris animado",
+    rows.push_back(kit::makeToggleRow(width, "Arcoiris animado",
         "La capa cambia de color sola. Solo se anima en el garaje.",
         piece->fill.chroma,
         [this](bool value) {
@@ -1100,8 +1200,8 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
             scheduleInspectorRebuild();
         }));
 
-    // Outline is stored with paint because it is another color pass on the shape.
-    rows.push_back(kit::makeToggleRow(innerW, "Borde",
+    // El borde vive con la pintura porque es otra pasada de color sobre la forma.
+    rows.push_back(kit::makeToggleRow(width, "Borde",
         "Un contorno alrededor de la capa. Ayuda a que el icono se vea "
         "nitido en el juego.",
         piece->fill.outline.enabled,
@@ -1113,15 +1213,14 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
         }));
 
     if (piece->fill.outline.enabled) {
-        rows.push_back(kit::makeSliderRow(innerW, "Grosor del borde", nullptr,
-            piece->fill.outline.width, 1.0, 20.0,
-            [](double v) { return fmt::format("{}", static_cast<int>(v)); },
+        rows.push_back(kit::makeNumberRow(width, "Grosor del borde", nullptr,
+            piece->fill.outline.width, 1.0, 20.0, 1.0, 0,
             [this](double v) {
                 edit("outline-width", [&] {
                     if (auto* p = selectedPiece()) p->fill.outline.width = static_cast<float>(v);
                 });
             }));
-        rows.push_back(mkui::makeColorRow(innerW, "Color del borde", nullptr,
+        rows.push_back(mkui::makeColorRow(width, "Color del borde", nullptr,
             piece->fill.outline.color,
             [this] {
                 auto* p = selectedPiece();
@@ -1134,73 +1233,115 @@ CCNode* IconEditorLayer::buildPaintCard(float width) {
                     self->edit("outline-color", [&] {
                         if (auto* p2 = self->selectedPiece()) p2->fill.outline.color = picked;
                     });
+                    rememberColor({picked.r, picked.g, picked.b});
                     self->scheduleInspectorRebuild();
                 });
                 picker->show();
             }));
     }
 
-    return kit::makeCard(width,
-        fmt::format("Pintura de {}", piece->name).c_str(),
-        mkui::kAccentPaint, rows);
+    rows.push_back(mkui::makeDualButtonRow(width,
+        "Guardar pintura", [this] { this->onSaveStyle(); },
+        "Usar guardada", [this] { this->onApplyStyle(); }));
+
+    rows.push_back(kit::makeButtonRow(width, "Pintar toda la zona",
+        "Deja el resto de capas de esta zona con la misma pintura.",
+        "Pintar", [this] {
+            auto* p = selectedPiece();
+            if (!p) return;
+            auto fill = p->fill;
+            applyFillToZone(fill, currentSlotKey());
+            setStatus("Zona pintada igual.");
+        }));
+
+    return rows;
 }
 
 
-CCNode* IconEditorLayer::buildShapeCard(float width) {
-    auto* piece = selectedPiece();
-    if (!piece) return nullptr;
-
-    float const innerW = kit::cardInnerWidth(width);
+std::vector<CCNode*> IconEditorLayer::buildShapeTab(float width) {
     std::vector<CCNode*> rows;
+    auto* piece = selectedPiece();
 
-    rows.push_back(kit::makeSliderRow(innerW, "Tamano", nullptr,
-        piece->transform.scale, 0.05, 3.0,
-        [](double v) { return fmt::format("x{:.2f}", v); },
+    if (!piece) {
+        rows.push_back(mkui::makeEmptyState(width, "Ninguna capa elegida",
+            "Toca una capa en el icono para moverla, estirarla o girarla."));
+        return rows;
+    }
+
+    rows.push_back(kit::makeHint(width,
+        "En el icono puedes arrastrar la capa, estirarla por las esquinas y "
+        "girarla con el tirador de arriba. Aqui pones los numeros exactos."));
+
+    rows.push_back(kit::makeNumberRow(width, "Tamano", nullptr,
+        piece->transform.scale, 0.05, 3.0, 0.05, 2,
         [this](double v) {
             edit("scale", [&] {
                 if (auto* p = selectedPiece()) p->transform.scale = static_cast<float>(v);
             });
         }));
 
-    rows.push_back(kit::makeSliderRow(innerW, "Giro", nullptr,
-        piece->transform.rotationDeg, -180.0, 180.0,
-        [](double v) { return fmt::format("{}deg", static_cast<int>(v)); },
+    rows.push_back(kit::makeNumberRow(width, "Ancho", "Estira solo a lo ancho.",
+        piece->scaleX, 0.25, 4.0, 0.05, 2,
+        [this](double v) {
+            edit("scale-x", [&] {
+                if (auto* p = selectedPiece()) p->scaleX = static_cast<float>(v);
+            });
+        }));
+
+    rows.push_back(kit::makeNumberRow(width, "Alto", "Estira solo a lo alto.",
+        piece->scaleY, 0.25, 4.0, 0.05, 2,
+        [this](double v) {
+            edit("scale-y", [&] {
+                if (auto* p = selectedPiece()) p->scaleY = static_cast<float>(v);
+            });
+        }));
+
+    rows.push_back(kit::makeNumberRow(width, "Giro (grados)", nullptr,
+        piece->transform.rotationDeg, -180.0, 180.0, 5.0, 0,
         [this](double v) {
             edit("rotation", [&] {
                 if (auto* p = selectedPiece()) p->transform.rotationDeg = static_cast<float>(v);
             });
         }));
 
-    rows.push_back(kit::makeSliderRow(innerW, "Transparencia", nullptr,
-        piece->transform.opacity, 0.0, 255.0,
-        [](double v) { return fmt::format("{}%", static_cast<int>(v / 2.55)); },
+    rows.push_back(kit::makeNumberRow(width, "Opacidad (%)", nullptr,
+        piece->transform.opacity / 2.55, 0.0, 100.0, 5.0, 0,
         [this](double v) {
             edit("opacity", [&] {
-                if (auto* p = selectedPiece()) p->transform.opacity = static_cast<int>(v);
-            });
-        }));
-
-    rows.push_back(mkui::makeNudgePad(innerW, "Posicion",
-        "Arrastra en la vista previa, o afina con las flechas.",
-        [this](float dx, float dy) { this->nudgeSelected(dx, dy); },
-        [this] {
-            edit({}, [&] {
                 if (auto* p = selectedPiece()) {
-                    p->transform.offsetX = 0.f;
-                    p->transform.offsetY = 0.f;
+                    p->transform.opacity = static_cast<int>(std::lround(v * 2.55));
                 }
             });
-            setStatus("Capa centrada.");
         }));
 
-    rows.push_back(kit::makeToggleRow(innerW, "Espejo horizontal", nullptr,
+    rows.push_back(kit::makeNumberRow(width, "Posicion horizontal", nullptr,
+        piece->transform.offsetX, -1.0, 1.0, 0.02, 2,
+        [this](double v) {
+            edit("offset-x", [&] {
+                if (auto* p = selectedPiece()) p->transform.offsetX = static_cast<float>(v);
+            });
+        }));
+
+    rows.push_back(kit::makeNumberRow(width, "Posicion vertical", nullptr,
+        piece->transform.offsetY, -1.0, 1.0, 0.02, 2,
+        [this](double v) {
+            edit("offset-y", [&] {
+                if (auto* p = selectedPiece()) p->transform.offsetY = static_cast<float>(v);
+            });
+        }));
+
+    rows.push_back(mkui::makeAlignRow(width, "Alinear",
+        "Pega la capa a un lado del cuadro recomendado, o la centra.",
+        [this](mkui::AlignMode mode) { this->alignSelected(mode); }));
+
+    rows.push_back(kit::makeToggleRow(width, "Espejo horizontal", nullptr,
         piece->transform.flipX,
         [this](bool value) {
             edit({}, [&] {
                 if (auto* p = selectedPiece()) p->transform.flipX = value;
             });
         }));
-    rows.push_back(kit::makeToggleRow(innerW, "Espejo vertical", nullptr,
+    rows.push_back(kit::makeToggleRow(width, "Espejo vertical", nullptr,
         piece->transform.flipY,
         [this](bool value) {
             edit({}, [&] {
@@ -1208,31 +1349,56 @@ CCNode* IconEditorLayer::buildShapeCard(float width) {
             });
         }));
 
-    rows.push_back(kit::makeButtonRow(innerW, "Cambiar el dibujo",
+    rows.push_back(kit::makeToggleRow(width, "Bloquear",
+        "Una capa bloqueada no se mueve ni se estira desde el icono.",
+        piece->locked,
+        [this](bool value) {
+            edit({}, [&] {
+                if (auto* p = selectedPiece()) p->locked = value;
+            });
+            pushCanvasSelection();
+            scheduleInspectorRebuild();
+        }));
+
+    rows.push_back(kit::makeButtonRow(width, "Cambiar el dibujo",
         "Sustituye la forma de esta capa sin perder como esta pintada.",
         "Cambiar", [this] { this->onReplaceShape(); }));
 
-    rows.push_back(kit::makeButtonRow(innerW, "Restablecer",
+    rows.push_back(kit::makeButtonRow(width, "Restablecer",
         "Devuelve tamano, giro y posicion a como estaban al empezar.",
         "Reiniciar", [this] {
             edit({}, [&] {
-                if (auto* p = selectedPiece()) p->transform = ts::ImageTransform{};
+                if (auto* p = selectedPiece()) {
+                    p->transform = ts::ImageTransform{};
+                    p->scaleX = 1.f;
+                    p->scaleY = 1.f;
+                }
             });
             scheduleInspectorRebuild();
             setStatus("Forma restablecida.");
         }));
 
-    return kit::makeCard(width, "Forma y posicion", mkui::kAccentShape, rows);
+    return rows;
 }
 
 
-CCNode* IconEditorLayer::buildProjectCard(float width) {
-    float const innerW = kit::cardInnerWidth(width);
+std::vector<CCNode*> IconEditorLayer::buildIconTab(float width) {
+    std::vector<CCNode*> rows;
     auto const* def = anatomyFor(m_project.type);
 
-    std::vector<CCNode*> rows;
+    rows.push_back(kit::makeHint(width,
+        "Un tema pinta el icono entero de una vez: cuerpo, detalle, cupula y "
+        "brillo. El blanco se queda como esta."));
 
-    rows.push_back(kit::makeToggleRow(innerW, "Colores reales",
+    std::vector<IconTheme> themes;
+    if (IconTheme mine; currentKitTheme(mine)) themes.push_back(std::move(mine));
+    for (auto const& theme : iconThemes()) themes.push_back(theme);
+
+    rows.push_back(makeThemeGrid(width, themes, [this](IconTheme const& theme) {
+        this->applyTheme(theme, true);
+    }));
+
+    rows.push_back(kit::makeToggleRow(width, "Colores reales",
         "Muestra los colores que pintaste en vez de dejar que el juego los "
         "cambie por tus colores de jugador.",
         m_project.exactColors,
@@ -1240,21 +1406,41 @@ CCNode* IconEditorLayer::buildProjectCard(float width) {
             edit({}, [&] { m_project.exactColors = value; });
         }));
 
+    rows.push_back(kit::makeButtonRow(width, "Partir de un icono oficial",
+        "Rellena todas las zonas con el dibujo de un icono del juego.",
+        "Cargar", [this] { this->onLoadWholeIcon(); }));
+
     if (def && def->partCount > 1) {
-        rows.push_back(kit::makeButtonRow(innerW, "Copiar esta parte",
+        rows.push_back(kit::makeButtonRow(width, "Copiar esta parte",
             "Deja las otras tres partes iguales a la que estas editando.",
             "Copiar", [this] { this->onCopyPartToOthers(); }));
     }
 
-    rows.push_back(kit::makeButtonRow(innerW, "Exportar",
+    rows.push_back(kit::makeButtonRow(width, "Probar el icono",
+        "Lo ves como se vera en el juego, con tus colores.",
+        "Probar", [this] { this->onTry(); }));
+
+    rows.push_back(kit::makeButtonRow(width, "Exportar",
         "Genera los archivos del icono o instalalo en More Icons.",
         "Exportar", [this] { this->onExport(); }));
 
-    rows.push_back(kit::makeButtonRow(innerW, "Como funciona",
+    rows.push_back(kit::makeButtonRow(width, "Compartir",
+        "Empaqueta el icono en un archivo para pasarselo a alguien.",
+        "Compartir", [this] {
+            auto exported = IconShare::exportProject(m_project.id);
+            if (!exported) {
+                setStatus("No se pudo compartir: " + exported.unwrapErr(), false);
+                return;
+            }
+            geode::utils::file::openFolder(exported.unwrap().parent_path());
+            setStatus("Archivo listo para compartir.");
+        }));
+
+    rows.push_back(kit::makeButtonRow(width, "Como funciona",
         "Que es una zona, que es una capa y que hace cada ajuste.",
         "Ayuda", [] { if (auto* p = IconHelpPopup::create()) p->show(); }));
 
-    return kit::makeCard(width, "Este icono", mkui::kAccentProject, rows);
+    return rows;
 }
 
 
@@ -1263,7 +1449,7 @@ std::vector<SlotDef> IconEditorLayer::visibleZones() const {
     auto const* def = anatomyFor(m_project.type);
     if (!def) return out;
     for (auto const& slot : def->slots) {
-        // "Extra" exists only on the first robot/spider part.
+        // "Extra" solo existe en la primera parte del robot/spider.
         if (def->partCount > 1 && m_currentPart > 1 && slot.key == "extra") continue;
         out.push_back(slot);
     }
@@ -1273,7 +1459,7 @@ std::vector<SlotDef> IconEditorLayer::visibleZones() const {
 std::string IconEditorLayer::currentSlotKey() const {
     auto zones = visibleZones();
     if (zones.empty()) return slotStorageKey(m_currentPart, "main");
-    int index = std::clamp(m_zoneIndex, 0, static_cast<int>(zones.size()) - 1);
+    int const index = std::clamp(m_zoneIndex, 0, static_cast<int>(zones.size()) - 1);
     return slotStorageKey(m_currentPart, zones[static_cast<std::size_t>(index)].key);
 }
 
@@ -1307,7 +1493,8 @@ void IconEditorLayer::selectPart(int part) {
 
     refreshZoneChips();
     rebuildInspector();
-    schedulePreview();
+    pushCanvasSelection();
+    schedulePreview(false);
 }
 
 void IconEditorLayer::selectZone(int zoneIndex) {
@@ -1323,23 +1510,55 @@ void IconEditorLayer::selectZone(int zoneIndex) {
     refreshZoneChips();
     rebuildInspector();
     if (m_canvas) m_canvas->setActiveZone(currentSlotKey());
+    pushCanvasSelection();
     setStatus(fmt::format("Editando: {}", zones[static_cast<std::size_t>(zoneIndex)].label));
-}
-
-void IconEditorLayer::selectZoneByKey(std::string const& storageKey) {
-    auto zones = visibleZones();
-    for (std::size_t i = 0; i < zones.size(); ++i) {
-        if (slotStorageKey(m_currentPart, zones[i].key) == storageKey) {
-            selectZone(static_cast<int>(i));
-            return;
-        }
-    }
 }
 
 void IconEditorLayer::selectPiece(int index) {
     if (index == m_selectedPiece) return;
     m_selectedPiece = index;
+    pushCanvasSelection();
     scheduleInspectorRebuild();
+}
+
+void IconEditorLayer::selectTab(Tab tab) {
+    if (tab == m_tab) return;
+    m_tab = tab;
+    m_inspectorScrollY = 0.f;
+    // Llega desde el propio boton de la barra, asi que la barra se rehace en
+    // el siguiente frame y no debajo del despachador de toques.
+    scheduleInspectorRebuild();
+}
+
+void IconEditorLayer::selectFromCanvas(std::string const& zoneKey, int pieceIndex) {
+    auto zones = visibleZones();
+    for (std::size_t i = 0; i < zones.size(); ++i) {
+        if (slotStorageKey(m_currentPart, zones[i].key) != zoneKey) continue;
+        m_zoneIndex = static_cast<int>(i);
+        break;
+    }
+    m_selectedPiece = pieceIndex;
+    m_inspectorScrollY = 0.f;
+
+    if (m_canvas) m_canvas->setActiveZone(currentSlotKey());
+    pushCanvasSelection();
+
+    if (auto* piece = selectedPiece()) {
+        setStatus(fmt::format("Elegida: {}", piece->name));
+    }
+    scheduleInspectorRebuild();
+
+    Ref<IconEditorLayer> self = this;
+    Loader::get()->queueInMainThread([self] {
+        if (paimon::isRuntimeShuttingDown() || !self || !self->getParent()) return;
+        self->refreshZoneChips();
+    });
+}
+
+void IconEditorLayer::pushCanvasSelection() {
+    if (!m_canvas) return;
+    auto* piece = selectedPiece();
+    m_canvas->setSelection(currentSlotKey(), m_selectedPiece, piece && piece->locked);
 }
 
 void IconEditorLayer::edit(std::string coalesceKey, std::function<void()> mutate) {
@@ -1350,7 +1569,7 @@ void IconEditorLayer::edit(std::string coalesceKey, std::function<void()> mutate
 
     m_dirty = true;
     m_autosaveCountdown = 2.f;
-    schedulePreview();
+    schedulePreview(m_gestureActive);
     refreshTopBar();
 }
 
@@ -1359,14 +1578,15 @@ void IconEditorLayer::applyRestoredProject() {
     m_zoneIndex = std::clamp(m_zoneIndex, 0,
         std::max(0, static_cast<int>(zones.size()) - 1));
 
-    int pieceCount = static_cast<int>(currentSlot().pieces.size());
+    int const pieceCount = static_cast<int>(currentSlot().pieces.size());
     if (m_selectedPiece >= pieceCount) m_selectedPiece = pieceCount - 1;
 
     m_dirty = true;
     m_autosaveCountdown = 2.f;
     refreshZoneChips();
     rebuildInspector();
-    schedulePreview();
+    pushCanvasSelection();
+    schedulePreview(false);
 }
 
 void IconEditorLayer::onUndo() {
@@ -1389,6 +1609,126 @@ void IconEditorLayer::onRedo() {
     m_project = *restored;
     applyRestoredProject();
     setStatus("Rehecho.");
+}
+
+void IconEditorLayer::pickColor(ccColor3B color) {
+    auto* piece = selectedPiece();
+    if (!piece) {
+        setStatus("Elige una capa para pintarla.", false);
+        return;
+    }
+    edit({}, [&] {
+        if (auto* p = selectedPiece()) {
+            p->fill.type = FillType::Flat;
+            p->fill.flat = {color.r, color.g, color.b, 255};
+            p->fill.chroma = false;
+        }
+    });
+    rememberColor(color);
+    scheduleInspectorRebuild();
+}
+
+void IconEditorLayer::alignSelected(mkui::AlignMode mode) {
+    if (!selectedPiece()) {
+        setStatus("Elige una capa primero.", false);
+        return;
+    }
+
+    auto const* def = anatomyFor(m_project.type);
+    auto it = m_slotRenders.find(currentSlotKey());
+    if (!def || it == m_slotRenders.end()) return;
+
+    PieceRender const* render = nullptr;
+    for (auto const& entry : it->second.pieces) {
+        if (entry.index == m_selectedPiece) { render = &entry; break; }
+    }
+    if (!render || !render->hasBounds) {
+        setStatus("Esa capa todavia no dibuja nada.", false);
+        return;
+    }
+
+    float const canvas = static_cast<float>(def->canvasUhd);
+    float const guide = static_cast<float>(def->guideUhd);
+    float const guideMin = (canvas - guide) / 2.f;
+    float const guideMax = guideMin + guide;
+    float const half = canvas / 2.f;
+
+    float dx = 0.f;
+    float dy = 0.f;
+    switch (mode) {
+        case mkui::AlignMode::Left:
+            dx = guideMin - static_cast<float>(render->boundsX); break;
+        case mkui::AlignMode::Right:
+            dx = guideMax - static_cast<float>(render->boundsX + render->boundsW); break;
+        case mkui::AlignMode::CenterH:
+            dx = half - (static_cast<float>(render->boundsX) + render->boundsW / 2.f); break;
+        case mkui::AlignMode::Top:
+            dy = guideMin - static_cast<float>(render->boundsY); break;
+        case mkui::AlignMode::Bottom:
+            dy = guideMax - static_cast<float>(render->boundsY + render->boundsH); break;
+        case mkui::AlignMode::CenterV:
+            dy = half - (static_cast<float>(render->boundsY) + render->boundsH / 2.f); break;
+    }
+
+    edit({}, [&] {
+        auto* piece = selectedPiece();
+        if (!piece) return;
+        piece->transform.offsetX =
+            std::clamp(piece->transform.offsetX + dx / half, -1.f, 1.f);
+        // Las filas del render van de arriba abajo y el offset al reves.
+        piece->transform.offsetY =
+            std::clamp(piece->transform.offsetY - dy / half, -1.f, 1.f);
+    });
+    scheduleInspectorRebuild();
+}
+
+void IconEditorLayer::applyFillToZone(FillSpec const& fill, std::string const& storageKey) {
+    edit({}, [&] {
+        auto it = m_project.slots.find(storageKey);
+        if (it == m_project.slots.end()) return;
+        for (auto& piece : it->second.pieces) {
+            // El contorno lo decide el usuario por capa, no la pintura copiada.
+            auto outline = piece.fill.outline;
+            piece.fill = fill;
+            piece.fill.outline = outline;
+        }
+    });
+    refreshZoneChips();
+    scheduleInspectorRebuild();
+}
+
+void IconEditorLayer::applyTheme(IconTheme const& theme, bool wholeIcon) {
+    auto const* def = anatomyFor(m_project.type);
+    if (!def) return;
+
+    int touched = 0;
+    edit({}, [&] {
+        int const firstPart = def->partCount > 1 ? 1 : 0;
+        int const lastPart = def->partCount > 1 ? def->partCount : 0;
+        for (int part = firstPart; part <= lastPart; ++part) {
+            if (!wholeIcon && part != m_currentPart) continue;
+            for (auto const& slot : def->slots) {
+                if (def->partCount > 1 && part > 1 && slot.key == "extra") continue;
+                FillSpec fill;
+                if (!themeFillFor(theme, slot.key, fill)) continue;
+
+                auto it = m_project.slots.find(slotStorageKey(part, slot.key));
+                if (it == m_project.slots.end()) continue;
+                for (auto& piece : it->second.pieces) {
+                    auto outline = piece.fill.outline;
+                    piece.fill = fill;
+                    piece.fill.outline = outline;
+                    ++touched;
+                }
+            }
+        }
+    });
+
+    refreshZoneChips();
+    scheduleInspectorRebuild();
+    setStatus(touched > 0
+        ? fmt::format("Icono pintado con \"{}\".", theme.name)
+        : std::string("Todavia no hay capas que pintar."), touched > 0);
 }
 
 
@@ -1434,6 +1774,7 @@ void IconEditorLayer::onAddImportLayer() {
             self->m_selectedPiece = static_cast<int>(pieces.size()) - 1;
         });
         self->refreshZoneChips();
+        self->pushCanvasSelection();
         self->scheduleInspectorRebuild();
         self->setStatus("Capa agregada.");
     });
@@ -1466,10 +1807,50 @@ void IconEditorLayer::onAddTemplateLayer() {
             self->m_selectedPiece = static_cast<int>(pieces.size()) - 1;
         });
         self->refreshZoneChips();
+        self->pushCanvasSelection();
         self->scheduleInspectorRebuild();
         self->setStatus("Forma agregada.");
     });
     if (popup) popup->show();
+}
+
+void IconEditorLayer::onLoadWholeIcon() {
+    Ref<IconEditorLayer> self = this;
+    auto* picker = TemplatePickerPopup::create(m_project.type, [self](int iconId) {
+        if (paimon::isRuntimeShuttingDown() || !self) return;
+        auto const* def = anatomyFor(self->m_project.type);
+        if (!def) return;
+
+        int loaded = 0;
+        self->edit({}, [&] {
+            for (auto const& slot : def->slots) {
+                if (def->partCount > 1 && self->m_currentPart > 1 && slot.key == "extra") {
+                    continue;
+                }
+                IconPiece piece;
+                piece.id = self->m_project.makePieceId();
+                piece.name = std::string(slot.label);
+                if (auto r = fillPieceFromTemplate(self->m_project, piece, iconId,
+                        self->m_currentPart, std::string(slot.key)); !r) {
+                    continue;
+                }
+                auto key = slotStorageKey(self->m_currentPart, slot.key);
+                // Partir de un icono oficial es empezar de cero en esa zona.
+                self->m_project.slots[key].pieces.clear();
+                self->m_project.slots[key].pieces.push_back(std::move(piece));
+                ++loaded;
+            }
+            self->m_selectedPiece = 0;
+        });
+
+        self->refreshZoneChips();
+        self->pushCanvasSelection();
+        self->scheduleInspectorRebuild();
+        self->setStatus(loaded > 0
+            ? fmt::format("Cargado el icono {}.", iconId)
+            : std::string("No se pudo sacar ese icono."), loaded > 0);
+    });
+    if (picker) picker->show();
 }
 
 void IconEditorLayer::onReplaceShape() {
@@ -1504,7 +1885,7 @@ void IconEditorLayer::onReplaceShape() {
                  self->scheduleInspectorRebuild();
              });
          }, false},
-        {"Usar la forma de un icono oficial", "El dibujo del juego, para pintarlo tu.",
+        {"Elegir una forma", "Un icono oficial del juego, o uno de los tuyos.",
          [self] {
              if (!self) return;
              auto* picker = TemplatePickerPopup::create(self->m_project.type,
@@ -1528,6 +1909,10 @@ void IconEditorLayer::onReplaceShape() {
                          if (auto* p = self->selectedPiece()) p->shape = updated.shape;
                      });
                      self->scheduleInspectorRebuild();
+                 },
+                 [self](std::string const& projectId) {
+                     if (paimon::isRuntimeShuttingDown() || !self) return;
+                     self->adoptShapeFromProject(projectId);
                  });
              if (picker) picker->show();
          }, false},
@@ -1536,6 +1921,57 @@ void IconEditorLayer::onReplaceShape() {
     if (auto* sheet = IconActionSheet::create("Cambiar el dibujo", std::move(actions))) {
         sheet->show();
     }
+}
+
+void IconEditorLayer::adoptShapeFromProject(std::string const& projectId) {
+    if (!selectedPiece()) return;
+
+    auto loaded = IconProjectStore::get().loadProject(projectId);
+    if (!loaded) {
+        setStatus("No se pudo abrir ese icono: " + loaded.unwrapErr(), false);
+        return;
+    }
+    auto const source = loaded.unwrap();
+
+    auto zones = visibleZones();
+    if (zones.empty()) return;
+    auto const zoneKey = std::string(
+        zones[static_cast<std::size_t>(m_zoneIndex)].key);
+
+    auto it = source.slots.find(slotStorageKey(m_currentPart, zoneKey));
+    if (it == source.slots.end() || it->second.pieces.empty()) {
+        setStatus("Ese icono no tiene nada en esta zona.", false);
+        return;
+    }
+
+    auto const& sourcePiece = it->second.pieces.back();
+    if (sourcePiece.shape.file.empty()) {
+        setStatus("Esa capa no tiene dibujo que copiar.", false);
+        return;
+    }
+
+    // El PNG se copia al proyecto para que siga abriendose aunque el otro
+    // icono se borre.
+    auto const name = IconPaths::sanitizeFilename(
+        fmt::format("prestada_{}_{}", selectedPiece()->id, sourcePiece.shape.file));
+    std::error_code ec;
+    std::filesystem::create_directories(IconPaths::imagesDir(m_project.id), ec);
+    std::filesystem::copy_file(
+        IconPaths::imageFile(projectId, sourcePiece.shape.file),
+        IconPaths::imageFile(m_project.id, name),
+        std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        setStatus("No se pudo copiar el dibujo: " + ec.message(), false);
+        return;
+    }
+
+    auto shape = sourcePiece.shape;
+    shape.file = name;
+    edit({}, [&] {
+        if (auto* p = selectedPiece()) p->shape = shape;
+    });
+    scheduleInspectorRebuild();
+    setStatus(fmt::format("Forma copiada de \"{}\".", source.name));
 }
 
 void IconEditorLayer::onLayerMenu(int pieceIndex) {
@@ -1575,6 +2011,7 @@ void IconEditorLayer::onLayerMenu(int pieceIndex) {
                 self->m_selectedPiece = pieceIndex + 1;
             });
             self->refreshZoneChips();
+            self->pushCanvasSelection();
             self->scheduleInspectorRebuild();
         }, false},
         {"Copiar a otras zonas", "Repite esta capa en el resto de las zonas.",
@@ -1590,6 +2027,7 @@ void IconEditorLayer::onLayerMenu(int pieceIndex) {
                      ? -1 : std::min<int>(pieceIndex, static_cast<int>(list.size()) - 1);
              });
              self->refreshZoneChips();
+             self->pushCanvasSelection();
              self->scheduleInspectorRebuild();
              self->setStatus("Capa borrada.");
          }, true},
@@ -1656,12 +2094,94 @@ void IconEditorLayer::onCopyPartToOthers() {
         }).showInstant();
 }
 
+void IconEditorLayer::onSaveStyle() {
+    auto* piece = selectedPiece();
+    if (!piece) {
+        setStatus("Elige una capa para guardar su pintura.", false);
+        return;
+    }
+
+    auto fill = piece->fill;
+    Ref<IconEditorLayer> self = this;
+    auto* popup = IconNamePopup::create("Nombre de la pintura", "Mi pintura",
+        fillTypeName(fill), [self, fill](std::string const& name) {
+            if (paimon::isRuntimeShuttingDown() || !self) return;
+            if (auto r = StyleStore::get().add(name, fill); !r) {
+                self->setStatus(r.unwrapErr(), false);
+                return;
+            }
+            self->setStatus("Pintura guardada.");
+        });
+    if (popup) popup->show();
+}
+
+void IconEditorLayer::onApplyStyle() {
+    auto const& styles = StyleStore::get().list();
+    if (styles.empty()) {
+        setStatus("Todavia no has guardado ninguna pintura.", false);
+        return;
+    }
+    if (!selectedPiece()) {
+        setStatus("Elige una capa primero.", false);
+        return;
+    }
+
+    Ref<IconEditorLayer> self = this;
+    std::vector<IconActionSheet::Action> actions;
+    for (auto const& style : styles) {
+        auto fill = style.fill;
+        actions.push_back({style.name, fillTypeName(fill), [self, fill] {
+            if (paimon::isRuntimeShuttingDown() || !self) return;
+            self->edit({}, [&] {
+                if (auto* p = self->selectedPiece()) {
+                    auto outline = p->fill.outline;
+                    p->fill = fill;
+                    p->fill.outline = outline;
+                }
+            });
+            self->scheduleInspectorRebuild();
+            self->setStatus("Pintura aplicada.");
+        }, false});
+    }
+
+    actions.push_back({"Borrar una guardada", "", [self] {
+        if (!self) return;
+        std::vector<IconActionSheet::Action> removals;
+        for (auto const& style : StyleStore::get().list()) {
+            auto id = style.id;
+            removals.push_back({style.name, "", [self, id] {
+                if (paimon::isRuntimeShuttingDown() || !self) return;
+                if (auto r = StyleStore::get().remove(id); !r) {
+                    self->setStatus(r.unwrapErr(), false);
+                    return;
+                }
+                self->setStatus("Pintura borrada.");
+            }, true});
+        }
+        if (auto* sheet = IconActionSheet::create(
+                "Borrar pintura guardada", std::move(removals))) {
+            sheet->show();
+        }
+    }, true});
+
+    if (auto* sheet = IconActionSheet::create(
+            "Pinturas guardadas", std::move(actions))) {
+        sheet->show();
+    }
+}
+
 void IconEditorLayer::onProjectMenu() {
     Ref<IconEditorLayer> self = this;
     std::vector<IconActionSheet::Action> actions{
         {"Guardar ahora", "El icono se guarda solo, esto es por si acaso.",
          [self] { if (self) self->saveProject(true); }, false},
         {"Renombrar icono", "", [self] { if (self) self->onRename(); }, false},
+        {"Ajustar la vista", "Devuelve el zoom y el encuadre a como estaban.",
+         [self] {
+             if (!self || !self->m_canvas) return;
+             self->m_canvas->resetView();
+             self->setStatus("Vista ajustada.");
+         }, false},
         {"Exportar o instalar", "Archivos del icono y copia a More Icons.",
          [self] { if (self) self->onExport(); }, false},
         {"Como funciona", "Guia rapida del creador.",
@@ -1672,29 +2192,89 @@ void IconEditorLayer::onProjectMenu() {
     }
 }
 
-void IconEditorLayer::onCanvasDrag(float dxFraction, float dyFraction) {
-    if (!selectedPiece()) {
-        setStatus("Elige una capa para poder moverla.", false);
-        return;
-    }
-    edit("drag", [&] {
-        auto* piece = selectedPiece();
-        piece->transform.offsetX =
-            std::clamp(piece->transform.offsetX + dxFraction, -1.f, 1.f);
-        piece->transform.offsetY =
-            std::clamp(piece->transform.offsetY + dyFraction, -1.f, 1.f);
-    });
-}
+void IconEditorLayer::maybeShowTour() {
+    if (Mod::get()->getSavedValue<bool>("icon-maker.editor-tour-seen")) return;
+    Mod::get()->setSavedValue("icon-maker.editor-tour-seen", true);
 
-void IconEditorLayer::nudgeSelected(float dxFraction, float dyFraction) {
-    if (!selectedPiece()) return;
-    edit("nudge", [&] {
-        auto* piece = selectedPiece();
-        piece->transform.offsetX =
-            std::clamp(piece->transform.offsetX + dxFraction, -1.f, 1.f);
-        piece->transform.offsetY =
-            std::clamp(piece->transform.offsetY + dyFraction, -1.f, 1.f);
-    });
+    auto const win = CCDirector::get()->getWinSize();
+    auto const* def = anatomyFor(m_project.type);
+    auto layout = layoutFor(win, def && def->partCount > 1,
+        static_cast<int>(visibleZones().size()), m_tab != Tab::Layers);
+
+    auto* host = CCNode::create();
+    host->setContentSize(win);
+    addChild(host, 40);
+
+    auto* dim = CCLayerColor::create(ccc4(0, 0, 0, 148));
+    dim->setContentSize(win);
+    host->addChild(dim, -1);
+
+    auto* outlines = PaimonDrawNode::create();
+    host->addChild(outlines, 1);
+
+    // Un recuadro y una linea por sitio, sacados del mismo layout que dibuja
+    // el editor, para que no se descoloquen si cambia el tamano de ventana.
+    auto highlight = [&](CCRect const& rect, char const* text, bool labelBelow) {
+        ccColor4F const accent{0.42f, 0.80f, 1.f, 1.f};
+        CCPoint const bl{rect.origin.x, rect.origin.y};
+        CCPoint const br{rect.origin.x + rect.size.width, rect.origin.y};
+        CCPoint const tr{br.x, rect.origin.y + rect.size.height};
+        CCPoint const tl{bl.x, tr.y};
+        outlines->drawSegment(bl, br, 0.8f, accent);
+        outlines->drawSegment(br, tr, 0.8f, accent);
+        outlines->drawSegment(tr, tl, 0.8f, accent);
+        outlines->drawSegment(tl, bl, 0.8f, accent);
+
+        auto* label = CCLabelBMFont::create(text, "chatFont.fnt",
+            rect.size.width / 0.42f, kCCTextAlignmentCenter);
+        label->setScale(0.42f);
+        label->setAnchorPoint({0.5f, labelBelow ? 1.f : 0.f});
+        label->setPosition({rect.getMidX(),
+            labelBelow ? rect.origin.y - 5.f : tr.y + 5.f});
+        host->addChild(label, 2);
+    };
+
+    highlight({layout.workspaceCX - layout.canvasSide / 2.f,
+               layout.canvasCY - layout.canvasSide / 2.f,
+               layout.canvasSide, layout.canvasSide},
+              "Toca una capa para elegirla. Arrastra para moverla, las esquinas "
+              "la estiran y el tirador de arriba la gira.", true);
+
+    highlight({layout.scrollX, layout.chipsY, layout.scrollW,
+               mkui::zoneChipsHeight(layout.scrollW,
+                   static_cast<int>(visibleZones().size()))},
+              "Las zonas del icono.", true);
+
+    highlight({layout.scrollX, layout.tabsY, layout.scrollW, kit::kTabBarHeight},
+              "Capas, pintura, forma y ajustes del icono.", true);
+
+    auto* menu = CCMenu::create();
+    menu->setPosition({0.f, 0.f});
+    host->addChild(menu, 3);
+
+    Ref<CCNode> hostRef = host;
+    auto* swallow = CCNode::create();
+    swallow->setAnchorPoint({0.5f, 0.5f});
+    swallow->setContentSize(win);
+    if (auto* btn = CCMenuItemExt::createSpriteExtra(swallow,
+            [hostRef](CCMenuItemSpriteExtra*) {
+                if (hostRef) hostRef->removeFromParent();
+            })) {
+        btn->setPosition({win.width / 2.f, win.height / 2.f});
+        menu->addChild(btn);
+    }
+
+    if (auto* spr = ButtonSprite::create("Entendido", "goldFont.fnt",
+                                         "GJ_button_01.png", 0.8f)) {
+        spr->setScale(0.7f);
+        if (auto* btn = CCMenuItemExt::createSpriteExtra(spr,
+                [hostRef](CCMenuItemSpriteExtra*) {
+                    if (hostRef) hostRef->removeFromParent();
+                })) {
+            btn->setPosition({win.width / 2.f, 26.f});
+            menu->addChild(btn);
+        }
+    }
 }
 
 void IconEditorLayer::saveProject(bool notify) {
@@ -1719,8 +2299,13 @@ void IconEditorLayer::setStatus(std::string const& text, bool good) {
 }
 
 
-void IconEditorLayer::schedulePreview() {
-    m_previewCountdown = 0.28f;
+void IconEditorLayer::schedulePreview(bool fast) {
+    if (!fast) {
+        m_previewFast = false;
+    } else if (m_previewCountdown < 0.f) {
+        m_previewFast = true;
+    }
+    m_previewCountdown = fast ? 0.05f : 0.24f;
 }
 
 void IconEditorLayer::update(float dt) {
@@ -1736,33 +2321,35 @@ void IconEditorLayer::update(float dt) {
     if (m_previewCountdown > 0.f) return;
     m_previewCountdown = -1.f;
     if (m_compileBusy) {
-        m_previewCountdown = 0.15f;
+        m_previewCountdown = 0.1f;
         return;
     }
     kickPreviewJob();
 }
 
 void IconEditorLayer::scrollWheel(float x, float y) {
+    // Sobre el lienzo la rueda acerca; fuera desplaza el panel.
+    if (m_canvas) {
+        auto const local = m_canvas->viewportFromScreen(geode::cocos::getMousePos());
+        auto const size = m_canvas->getContentSize();
+        if (local.x >= 0.f && local.y >= 0.f &&
+            local.x <= size.width && local.y <= size.height) {
+            m_canvas->zoomAt(y < 0.f ? 1.12f : 1.f / 1.12f, local);
+            return;
+        }
+    }
     if (kit::queueWheelScroll(m_inspector, x, y, m_wheelTargetY, m_wheelTargetSet)) {
         return;
     }
     CCLayer::scrollWheel(x, y);
 }
 
-void IconEditorLayer::kickPreviewJob() {
-    auto const* def = anatomyFor(m_project.type);
-    if (!def || !m_canvas) return;
-
-    m_compileBusy = true;
-    int generation = m_generation->fetch_add(1) + 1;
-
-    IconProject snapshot = m_project;
-    int canvasSize = def->canvasUhd;
-    auto imagesDir = IconPaths::imagesDir(snapshot.id);
-    std::string activeKey = currentSlotKey();
-
-    // Draw back-to-front so glow stays behind white details.
+std::vector<std::string> IconEditorLayer::drawOrderKeys() const {
     std::vector<std::string> keys;
+    auto const* def = anatomyFor(m_project.type);
+    if (!def) return keys;
+
+    // De atras hacia delante, para que el brillo quede detras del blanco.
     for (char const* key : {"glow", "tertiary", "secondary", "main", "extra"}) {
         for (auto const& slot : def->slots) {
             if (slot.key != key) continue;
@@ -1770,36 +2357,113 @@ void IconEditorLayer::kickPreviewJob() {
             keys.push_back(slotStorageKey(m_currentPart, key));
         }
     }
+    return keys;
+}
+
+void IconEditorLayer::kickPreviewJob() {
+    auto const* def = anatomyFor(m_project.type);
+    if (!def || !m_canvas) return;
+
+    m_compileBusy = true;
+    int const generation = m_generation->fetch_add(1) + 1;
+
+    IconProject snapshot = m_project;
+    int const canvasSize = def->canvasUhd;
+    auto imagesDir = IconPaths::imagesDir(snapshot.id);
+    std::string const activeKey = currentSlotKey();
+
+    std::vector<std::string> keys;
+    if (m_previewFast) {
+        // Arrastrando solo cambia la zona activa, y re-dibujar las cinco a
+        // quince veces por segundo se nota.
+        keys.push_back(activeKey);
+    } else {
+        keys = drawOrderKeys();
+    }
+    m_previewFast = false;
 
     Ref<IconEditorLayer> self = this;
     auto generationBox = m_generation;
 
     paimon::ThreadTracker::get().spawn(
         [self, generationBox, generation, snapshot, keys, canvasSize, imagesDir, activeKey]() {
-            std::vector<EditorCanvas::Zone> zones;
-            zones.reserve(keys.size());
+            geode::utils::thread::setName("icon-maker-preview");
+
+            std::vector<std::pair<std::string, SlotRender>> rendered;
+            rendered.reserve(keys.size());
             for (auto const& key : keys) {
-                ts::ImageBuffer pixels;
-                if (auto r = PieceRenderer::renderSlot(snapshot, key, canvasSize, imagesDir)) {
-                    pixels = r.unwrap();
-                }
-                zones.push_back({key, std::move(pixels)});
+                rendered.emplace_back(key, PieceRenderer::renderSlotDetailed(
+                    snapshot, key, canvasSize, kHitMaskSize, imagesDir));
             }
 
             Loader::get()->queueInMainThread(
                 [self, generationBox, generation, activeKey,
-                 zones = std::move(zones)]() mutable {
+                 rendered = std::move(rendered)]() mutable {
                     if (paimon::isRuntimeShuttingDown() || !self) return;
                     self->m_compileBusy = false;
                     if (generationBox->load() != generation) return;
-                    if (self->m_canvas) {
-                        self->m_canvas->setZones(std::move(zones), activeKey);
-                        self->m_canvas->setIsolate(self->m_isolateZone);
-                    }
+                    self->applyPreview(std::move(rendered), activeKey);
                 });
         });
 }
 
+void IconEditorLayer::applyPreview(std::vector<std::pair<std::string, SlotRender>> rendered,
+                                   std::string const& activeKey) {
+    if (!m_canvas) return;
+
+    for (auto& [key, slot] : rendered) {
+        if (auto* texture = ts::SpritePreviewRenderer::createTexture(slot.composite)) {
+            m_zoneTextures[key] = texture;
+        } else {
+            m_zoneTextures.erase(key);
+        }
+
+        for (auto& piece : slot.pieces) {
+            auto thumb = piece.pixels.resizedBilinear(kThumbSize, kThumbSize);
+            if (auto* texture = ts::SpritePreviewRenderer::createTexture(thumb)) {
+                m_pieceThumbs[piece.pieceId] = texture;
+            }
+            // Una vez hecha la miniatura los pixeles a tamano completo solo
+            // ocuparian memoria: lo que se usa despues es la mascara.
+            piece.pixels = ts::ImageBuffer{};
+        }
+        m_slotRenders[key] = std::move(slot);
+    }
+
+    std::vector<EditorCanvas::Zone> zones;
+    for (auto const& key : drawOrderKeys()) {
+        EditorCanvas::Zone zone;
+        zone.key = key;
+        if (auto it = m_slotRenders.find(key); it != m_slotRenders.end()) {
+            // El lienzo solo necesita los pixeles para el cuentagotas, y
+            // copiarlos en cada re-dibujado de un arrastre no sale gratis.
+            if (m_eyedropper) zone.composite = it->second.composite;
+            zone.pieces = it->second.pieces;
+        }
+        if (auto it = m_zoneTextures.find(key); it != m_zoneTextures.end()) {
+            zone.texture = it->second;
+        }
+        zones.push_back(std::move(zone));
+    }
+
+    m_canvas->setZones(std::move(zones), activeKey);
+    m_canvas->setIsolate(m_isolateZone);
+    m_canvas->setEyedropper(m_eyedropper);
+    pushCanvasSelection();
+
+    // Mientras se arrastra no se tocan chips ni lista: se reconstruyen al
+    // soltar, en onGestureEnd.
+    if (m_gestureActive) return;
+    refreshZoneChips();
+    if (m_tab == Tab::Layers) scheduleInspectorRebuild();
+    else refreshSelectionStrip();
+}
+
+
+void IconEditorLayer::onTry() {
+    if (m_dirty) saveProject(false);
+    if (auto* popup = IconTryPopup::create(m_project)) popup->show();
+}
 
 void IconEditorLayer::onApply() {
     if (m_compileBusy) {
@@ -1894,4 +2558,4 @@ void IconEditorLayer::onExport() {
     });
 }
 
-}
+}  // namespace paimon::icon_maker

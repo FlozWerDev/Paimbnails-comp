@@ -23,6 +23,7 @@ matjson::Value indexEntryToJson(IconIndexEntry const& e) {
     obj["modifiedAt"]   = e.modifiedAt;
     obj["createdAt"]    = e.createdAt;
     obj["hasBuiltOnce"] = e.hasBuiltOnce;
+    obj["favorite"]     = e.favorite;
     return obj;
 }
 
@@ -36,6 +37,7 @@ IconIndexEntry indexEntryFromJson(matjson::Value const& v) {
     e.modifiedAt   = v["modifiedAt"].asInt().unwrapOr(0);
     e.createdAt    = v["createdAt"].asInt().unwrapOr(0);
     e.hasBuiltOnce = v["hasBuiltOnce"].asBool().unwrapOr(false);
+    e.favorite     = v["favorite"].asBool().unwrapOr(false);
     return e;
 }
 
@@ -93,6 +95,15 @@ geode::Result<> IconProjectStore::saveIndex() {
         return Err("writeString icons.json: {}", wr.unwrapErr());
     }
     return Ok();
+}
+
+geode::Result<> IconProjectStore::setFavorite(std::string_view id, bool favorite) {
+    for (auto& entry : m_index) {
+        if (entry.id != id) continue;
+        entry.favorite = favorite;
+        return saveIndex();
+    }
+    return Err("No existe ese icono");
 }
 
 bool IconProjectStore::exists(std::string_view id) const {

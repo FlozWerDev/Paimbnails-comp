@@ -14,7 +14,7 @@ namespace paimon::rtx {
 
 // Sube cuando cambia el significado de un campo guardado, no cuando se anade
 // uno nuevo (los nuevos ya entran con su valor por defecto).
-constexpr int kConfigSchema = 2;
+constexpr int kConfigSchema = 3;
 
 void applyPreset(RTXConfig& cfg, Preset preset) {
     // El escalon de arriba sube muestras Y filtrado a la vez. Al reves (mas
@@ -129,6 +129,8 @@ void RTXManager::loadConfig() {
     c.targetFps        = getInt("targetFps", c.targetFps);
     c.frameSkip        = getInt("frameSkip", c.frameSkip);
 
+    c.hdrRange         = getFlt("hdrRange", c.hdrRange);
+
     c.giStrength       = getFlt("giStrength", c.giStrength);
     c.giSaturation     = getFlt("giSaturation", c.giSaturation);
     c.lightThreshold   = getFlt("lightThreshold", c.lightThreshold);
@@ -148,7 +150,10 @@ void RTXManager::loadConfig() {
 
     c.bloomStrength    = getFlt("bloomStrength", c.bloomStrength);
     c.bloomThreshold   = getFlt("bloomThreshold", c.bloomThreshold);
+    c.bloomSoftKnee    = getFlt("bloomSoftKnee", c.bloomSoftKnee);
     c.bloomRadius      = getFlt("bloomRadius", c.bloomRadius);
+    c.bloomBlend       = getFlt("bloomBlend", c.bloomBlend);
+    c.bloomAnamorphic  = getFlt("bloomAnamorphic", c.bloomAnamorphic);
     c.bloomPasses      = getInt("bloomPasses", c.bloomPasses);
 
     c.godRayStrength   = getFlt("godRayStrength", c.godRayStrength);
@@ -171,6 +176,10 @@ void RTXManager::loadConfig() {
     c.tint             = getFlt("tint", c.tint);
     c.gamma            = getFlt("gamma", c.gamma);
 
+    c.adaptEnabled     = getBool("adaptEnabled", c.adaptEnabled);
+    c.adaptKey         = getFlt("adaptKey", c.adaptKey);
+    c.adaptSpeed       = getFlt("adaptSpeed", c.adaptSpeed);
+
     c.chromatic        = getFlt("chromatic", c.chromatic);
     c.vignette         = getFlt("vignette", c.vignette);
     c.grain            = getFlt("grain", c.grain);
@@ -183,16 +192,45 @@ void RTXManager::loadConfig() {
 
     sanitize();
 
+    int const schema = getInt("schema", 1);
+
     // El esquema 1 guardaba presets con realimentacion temporal baja y casi sin
     // filtro espacial, que es de donde salia el ruido; ahora significan lo
     // contrario. Se reaplica el preset guardado salvo en Personalizado, donde
     // los valores son eleccion del usuario y no se tocan.
-    if (getInt("schema", 1) < kConfigSchema
-        && c.preset != static_cast<int>(Preset::Custom)) {
+    if (schema < 2 && c.preset != static_cast<int>(Preset::Custom)) {
         applyPreset(c, static_cast<Preset>(c.preset));
+    }
+
+    // El esquema 3 movio la cadena entera a luz lineal con expansion de rango,
+    // y el bloom dejo de acumular niveles para interpolarlos. Las fuerzas y el
+    // color guardados eran numeros de otro espacio: reusarlos deja la imagen
+    // lavada o el halo cinco veces mas fuerte. Se vuelve al look por defecto y
+    // se conservan coste, ruido y ambito, que siguen queriendo decir lo mismo.
+    if (schema < 3) {
+        RTXConfig const fresh{};
+        c.giStrength      = fresh.giStrength;
+        c.aoStrength      = fresh.aoStrength;
+        c.reflectStrength = fresh.reflectStrength;
+        c.bloomStrength   = fresh.bloomStrength;
+        c.bloomThreshold  = fresh.bloomThreshold;
+        c.bloomRadius     = fresh.bloomRadius;
+        c.godRayStrength  = fresh.godRayStrength;
+        c.exposure        = fresh.exposure;
+        c.contrast        = fresh.contrast;
+        c.saturation      = fresh.saturation;
+        c.temperature     = fresh.temperature;
+        c.gamma           = fresh.gamma;
+        c.chromatic       = fresh.chromatic;
+        c.vignette        = fresh.vignette;
+        c.grain           = fresh.grain;
+        c.sharpen         = fresh.sharpen;
+    }
+
+    if (schema < kConfigSchema) {
         saveConfig();
-        log::info("[PaimonRTX] Config migrada al esquema {} (preset {})",
-                  kConfigSchema, presetName(c.preset));
+        log::info("[PaimonRTX] Config migrada del esquema {} al {} (preset {})",
+                  schema, kConfigSchema, presetName(c.preset));
     }
 }
 
@@ -215,6 +253,8 @@ void RTXManager::saveConfig() {
     j["targetFps"]        = c.targetFps;
     j["frameSkip"]        = c.frameSkip;
 
+    j["hdrRange"]         = c.hdrRange;
+
     j["giStrength"]       = c.giStrength;
     j["giSaturation"]     = c.giSaturation;
     j["lightThreshold"]   = c.lightThreshold;
@@ -234,7 +274,10 @@ void RTXManager::saveConfig() {
 
     j["bloomStrength"]    = c.bloomStrength;
     j["bloomThreshold"]   = c.bloomThreshold;
+    j["bloomSoftKnee"]    = c.bloomSoftKnee;
     j["bloomRadius"]      = c.bloomRadius;
+    j["bloomBlend"]       = c.bloomBlend;
+    j["bloomAnamorphic"]  = c.bloomAnamorphic;
     j["bloomPasses"]      = c.bloomPasses;
 
     j["godRayStrength"]   = c.godRayStrength;
@@ -256,6 +299,10 @@ void RTXManager::saveConfig() {
     j["temperature"]      = c.temperature;
     j["tint"]             = c.tint;
     j["gamma"]            = c.gamma;
+
+    j["adaptEnabled"]     = c.adaptEnabled;
+    j["adaptKey"]         = c.adaptKey;
+    j["adaptSpeed"]       = c.adaptSpeed;
 
     j["chromatic"]        = c.chromatic;
     j["vignette"]         = c.vignette;
@@ -300,6 +347,8 @@ void RTXManager::sanitize() {
     c.targetFps        = std::clamp(c.targetFps, 30, 360);
     c.frameSkip        = std::clamp(c.frameSkip, 0, 3);
 
+    c.hdrRange         = std::clamp(c.hdrRange, 1.f, 16.f);
+
     c.giStrength       = std::clamp(c.giStrength, 0.f, 4.f);
     c.giSaturation     = std::clamp(c.giSaturation, 0.f, 2.f);
     c.lightThreshold   = std::clamp(c.lightThreshold, 0.f, 1.f);
@@ -319,7 +368,10 @@ void RTXManager::sanitize() {
 
     c.bloomStrength    = std::clamp(c.bloomStrength, 0.f, 3.f);
     c.bloomThreshold   = std::clamp(c.bloomThreshold, 0.f, 1.f);
+    c.bloomSoftKnee    = std::clamp(c.bloomSoftKnee, 0.f, 1.f);
     c.bloomRadius      = std::clamp(c.bloomRadius, 0.5f, 6.f);
+    c.bloomBlend       = std::clamp(c.bloomBlend, 0.f, 1.f);
+    c.bloomAnamorphic  = std::clamp(c.bloomAnamorphic, 0.f, 1.f);
     c.bloomPasses      = std::clamp(c.bloomPasses, 1, 5);
 
     c.godRayStrength   = std::clamp(c.godRayStrength, 0.f, 2.f);
@@ -340,6 +392,9 @@ void RTXManager::sanitize() {
     c.temperature      = std::clamp(c.temperature, -1.f, 1.f);
     c.tint             = std::clamp(c.tint, -1.f, 1.f);
     c.gamma            = std::clamp(c.gamma, 0.5f, 2.f);
+
+    c.adaptKey         = std::clamp(c.adaptKey, 0.04f, 0.60f);
+    c.adaptSpeed       = std::clamp(c.adaptSpeed, 0.1f, 6.f);
 
     c.chromatic        = std::clamp(c.chromatic, 0.f, 2.f);
     c.vignette         = std::clamp(c.vignette, 0.f, 2.f);

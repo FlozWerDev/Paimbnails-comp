@@ -12,6 +12,10 @@
 #include <cmath>
 #include <string>
 
+#ifndef GL_RGBA16F
+    #define GL_RGBA16F 0x881A
+#endif
+
 using namespace cocos2d;
 using namespace geode::prelude;
 
@@ -95,6 +99,36 @@ void bindSampler(GLuint prog, char const* name, int unit) {
     if (loc != -1) glUniform1i(loc, unit);
 }
 
+// Un objetivo de prueba de 4x4 en coma flotante. Sin el, la unica forma de
+// enterarse de que el driver no los soporta es que la cadena de bloom salga
+// recortada en 1.0 sin ningun error de GL, que es peor de depurar.
+bool probeHdrTargets() {
+    GLuint tex = 0;
+    GLuint fbo = 0;
+    glGenTextures(1, &tex);
+    ccGLBindTexture2DN(0, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, 4, 4, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    GLint prevFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    bool const ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    // La cache de cocos se queda con el nombre que acabamos de liberar: si el
+    // siguiente glGenTextures lo reutiliza, se saltaria el bind por creer que ya
+    // estaba puesto y el glTexImage2D iria contra la textura 0.
+    ccGLBindTexture2DN(0, 0);
+    while (glGetError() != GL_NO_ERROR) {}
+    return ok;
+}
+
 } // namespace
 
 RTXRenderer& RTXRenderer::get() {
@@ -106,23 +140,26 @@ bool RTXRenderer::ensurePrograms() {
     if (m_trace.id && glIsProgram(m_trace.id) == GL_TRUE) return true;
 
     auto vert = paimon::shaders::readShaderFile("rtx_fullscreen.vert");
+    // GLSL no tiene include: el preambulo se pega delante de cada fragmento para
+    // que los cinco pases usen exactamente las mismas curvas de espacio.
+    auto common = paimon::shaders::readShaderFile("rtx_common.glsl");
     auto traceSrc = paimon::shaders::readShaderFile("rtx_trace.glsl");
     auto temporalSrc = paimon::shaders::readShaderFile("rtx_temporal.glsl");
     auto atrousSrc = paimon::shaders::readShaderFile("rtx_atrous.glsl");
     auto bloomSrc = paimon::shaders::readShaderFile("rtx_bloom.glsl");
     auto compositeSrc = paimon::shaders::readShaderFile("rtx_composite.glsl");
 
-    if (vert.empty() || traceSrc.empty() || temporalSrc.empty() || atrousSrc.empty()
-        || bloomSrc.empty() || compositeSrc.empty()) {
+    if (vert.empty() || common.empty() || traceSrc.empty() || temporalSrc.empty()
+        || atrousSrc.empty() || bloomSrc.empty() || compositeSrc.empty()) {
         log::warn("[PaimonRTX] faltan shaders en resources/shaders - RTX desactivado");
         return false;
     }
 
-    GLuint trace = linkProgram("trace", vert, traceSrc);
-    GLuint temporal = linkProgram("temporal", vert, temporalSrc);
-    GLuint atrous = linkProgram("atrous", vert, atrousSrc);
-    GLuint bloom = linkProgram("bloom", vert, bloomSrc);
-    GLuint composite = linkProgram("composite", vert, compositeSrc);
+    GLuint trace = linkProgram("trace", vert, common + traceSrc);
+    GLuint temporal = linkProgram("temporal", vert, common + temporalSrc);
+    GLuint atrous = linkProgram("atrous", vert, common + atrousSrc);
+    GLuint bloom = linkProgram("bloom", vert, common + bloomSrc);
+    GLuint composite = linkProgram("composite", vert, common + compositeSrc);
 
     if (!trace || !temporal || !atrous || !bloom || !composite) {
         if (trace) glDeleteProgram(trace);
@@ -178,14 +215,21 @@ bool RTXRenderer::ensurePrograms() {
     bindSampler(atrous, "u_guide", 1);
 
     m_bloom = BloomProgram{};
-    m_bloom.id        = bloom;
-    m_bloom.texel     = glGetUniformLocation(bloom, "u_texel");
-    m_bloom.mode      = glGetUniformLocation(bloom, "u_mode");
-    m_bloom.threshold = glGetUniformLocation(bloom, "u_threshold");
-    m_bloom.radius    = glGetUniformLocation(bloom, "u_radius");
-    m_bloom.lightPos  = glGetUniformLocation(bloom, "u_lightPos");
-    m_bloom.decay     = glGetUniformLocation(bloom, "u_decay");
-    m_bloom.density   = glGetUniformLocation(bloom, "u_density");
+    m_bloom.id         = bloom;
+    m_bloom.texel      = glGetUniformLocation(bloom, "u_texel");
+    m_bloom.mode       = glGetUniformLocation(bloom, "u_mode");
+    m_bloom.threshold  = glGetUniformLocation(bloom, "u_threshold");
+    m_bloom.softKnee   = glGetUniformLocation(bloom, "u_softKnee");
+    m_bloom.radius     = glGetUniformLocation(bloom, "u_radius");
+    m_bloom.blend      = glGetUniformLocation(bloom, "u_blend");
+    m_bloom.anamorphic = glGetUniformLocation(bloom, "u_anamorphic");
+    m_bloom.lightPos   = glGetUniformLocation(bloom, "u_lightPos");
+    m_bloom.decay      = glGetUniformLocation(bloom, "u_decay");
+    m_bloom.density    = glGetUniformLocation(bloom, "u_density");
+    m_bloom.tonemap    = glGetUniformLocation(bloom, "u_tonemap");
+    m_bloom.hdrRange   = glGetUniformLocation(bloom, "u_hdrRange");
+    m_bloom.giMix      = glGetUniformLocation(bloom, "u_giMix");
+    m_bloom.adaptRate  = glGetUniformLocation(bloom, "u_adaptRate");
     ccGLUseProgram(bloom);
     bindSampler(bloom, "u_src", 0);
     bindSampler(bloom, "u_add", 1);
@@ -201,6 +245,7 @@ bool RTXRenderer::ensurePrograms() {
     m_composite.rayStrength   = glGetUniformLocation(composite, "u_rayStrength");
     m_composite.tonemap       = glGetUniformLocation(composite, "u_tonemap");
     m_composite.exposure      = glGetUniformLocation(composite, "u_exposure");
+    m_composite.adaptKey      = glGetUniformLocation(composite, "u_adaptKey");
     m_composite.contrast      = glGetUniformLocation(composite, "u_contrast");
     m_composite.saturation    = glGetUniformLocation(composite, "u_saturation");
     m_composite.temperature   = glGetUniformLocation(composite, "u_temperature");
@@ -215,6 +260,7 @@ bool RTXRenderer::ensurePrograms() {
     bindSampler(composite, "u_gi", 1);
     bindSampler(composite, "u_bloom", 2);
     bindSampler(composite, "u_rays", 3);
+    bindSampler(composite, "u_adapt", 4);
 
     if (!m_vbo) {
         glGenBuffers(1, &m_vbo);
@@ -235,20 +281,24 @@ bool RTXRenderer::ensurePrograms() {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
 
-    log::info("[PaimonRTX] programas compilados");
+    m_hdr = probeHdrTargets();
+    log::info("[PaimonRTX] programas compilados (rango alto {})",
+              m_hdr ? "disponible" : "no soportado");
     return true;
 }
 
-bool RTXRenderer::makeTarget(Target& t, int w, int h) {
+bool RTXRenderer::makeTarget(Target& t, int w, int h, bool hdr) {
     w = std::max(1, w);
     h = std::max(1, h);
+    hdr = hdr && m_hdr;
     if (t.fbo && t.w == w && t.h == h) return true;
 
     dropTarget(t);
 
     glGenTextures(1, &t.tex);
     ccGLBindTexture2DN(0, t.tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, hdr ? GL_RGBA16F : GL_RGBA, w, h, 0, GL_RGBA,
+                 hdr ? GL_FLOAT : GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -300,15 +350,24 @@ bool RTXRenderer::ensureFullTargets(int srcW, int srcH) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    // Toda la cadena de bloom va en coma flotante: es donde vive la imagen
+    // expandida, y en 8 bits la expansion se recortaria en 1.0 justo antes de
+    // servir para algo.
     for (int i = 0; i < kBloomLevels; ++i) {
         int const w = std::max(1, srcW >> (i + 1));
         int const h = std::max(1, srcH >> (i + 1));
-        if (!makeTarget(m_bloomDown[i], w, h)) return false;
-        if (!makeTarget(m_bloomUp[i], w, h)) return false;
+        if (!makeTarget(m_bloomDown[i], w, h, true)) return false;
+        if (!makeTarget(m_bloomUp[i], w, h, true)) return false;
     }
 
     int const rayLevel = std::min(kBloomLevels - 1, 2);
-    if (!makeTarget(m_rays, m_bloomDown[rayLevel].w, m_bloomDown[rayLevel].h)) return false;
+    if (!makeTarget(m_rays, m_bloomDown[rayLevel].w, m_bloomDown[rayLevel].h, true)) return false;
+
+    if (m_hdr) {
+        if (!makeTarget(m_exposure[0], 1, 1, true)) return false;
+        if (!makeTarget(m_exposure[1], 1, 1, true)) return false;
+    }
+    m_hasExposure = false;
 
     m_sceneW = srcW;
     m_sceneH = srcH;
@@ -357,6 +416,8 @@ void RTXRenderer::releaseAll() {
         dropTarget(m_bloomUp[i]);
     }
     dropTarget(m_rays);
+    dropTarget(m_exposure[0]);
+    dropTarget(m_exposure[1]);
 
     if (m_sceneTex) {
         glDeleteTextures(1, &m_sceneTex);
@@ -369,6 +430,7 @@ void RTXRenderer::releaseAll() {
     m_bloomResultTex = 0;
     m_giResultTex = 0;
     m_hasPrevCamera = false;
+    m_hasExposure = false;
 }
 
 void RTXRenderer::onGLContextReload() {
@@ -398,6 +460,7 @@ void RTXRenderer::onGLContextReload() {
 
     m_wasActive = false;
     m_broken = false;
+    m_hdr = true;
 }
 
 void RTXRenderer::drawInto(Target const& t) {
@@ -551,13 +614,21 @@ void RTXRenderer::runBloom(RTXConfig const& cfg) {
     int const levels = std::clamp(cfg.bloomPasses, 1, kBloomLevels);
 
     ccGLUseProgram(m_bloom.id);
-    ccGLBindTexture2DN(1, m_blackTex);
+    glUniform1f(m_bloom.tonemap, static_cast<float>(cfg.tonemap));
+    glUniform1f(m_bloom.hdrRange, m_hdr ? cfg.hdrRange : 1.f);
+    glUniform1f(m_bloom.anamorphic, cfg.bloomAnamorphic);
+    glUniform1f(m_bloom.radius, cfg.bloomRadius);
 
+    // La luz trazada entra en la fuente del bloom, no solo en el compuesto: si
+    // no, lo que ilumina RTX es lo unico de la pantalla que no brilla.
     glUniform1f(m_bloom.mode, 0.f);
     glUniform1f(m_bloom.threshold, cfg.bloomThreshold);
+    glUniform1f(m_bloom.softKnee, cfg.bloomSoftKnee);
+    glUniform1f(m_bloom.giMix, m_giResultTex ? cfg.giStrength : 0.f);
     glUniform2f(m_bloom.texel, 1.f / static_cast<float>(m_sceneW),
                                1.f / static_cast<float>(m_sceneH));
     ccGLBindTexture2DN(0, m_sceneTex);
+    ccGLBindTexture2DN(1, m_giResultTex ? m_giResultTex : m_blackTex);
     drawInto(m_bloomDown[0]);
 
     glUniform1f(m_bloom.mode, 1.f);
@@ -569,17 +640,28 @@ void RTXRenderer::runBloom(RTXConfig const& cfg) {
     }
 
     glUniform1f(m_bloom.mode, 2.f);
-    glUniform1f(m_bloom.radius, cfg.bloomRadius);
-    for (int i = levels - 2; i >= 0; --i) {
-        Target const& src = (i == levels - 2) ? m_bloomDown[levels - 1] : m_bloomUp[i + 1];
-        glUniform2f(m_bloom.texel, 1.f / static_cast<float>(src.w),
-                                   1.f / static_cast<float>(src.h));
-        ccGLBindTexture2DN(0, src.tex);
-        ccGLBindTexture2DN(1, m_bloomDown[i].tex);
-        drawInto(m_bloomUp[i]);
+    if (levels == 1) {
+        // Sin niveles que recomponer, la fuente recortada sigue teniendo el
+        // dibujo entero: pasa igual por la carpa o el halo sale nitido.
+        glUniform1f(m_bloom.blend, 1.f);
+        glUniform2f(m_bloom.texel, 1.f / static_cast<float>(m_bloomDown[0].w),
+                                   1.f / static_cast<float>(m_bloomDown[0].h));
+        ccGLBindTexture2DN(0, m_bloomDown[0].tex);
+        ccGLBindTexture2DN(1, m_blackTex);
+        drawInto(m_bloomUp[0]);
+    } else {
+        glUniform1f(m_bloom.blend, cfg.bloomBlend);
+        for (int i = levels - 2; i >= 0; --i) {
+            Target const& src = (i == levels - 2) ? m_bloomDown[levels - 1] : m_bloomUp[i + 1];
+            glUniform2f(m_bloom.texel, 1.f / static_cast<float>(src.w),
+                                       1.f / static_cast<float>(src.h));
+            ccGLBindTexture2DN(0, src.tex);
+            ccGLBindTexture2DN(1, m_bloomDown[i].tex);
+            drawInto(m_bloomUp[i]);
+        }
     }
 
-    m_bloomResultTex = (levels == 1) ? m_bloomDown[0].tex : m_bloomUp[0].tex;
+    m_bloomResultTex = m_bloomUp[0].tex;
 
     if (cfg.godRayStrength > 0.001f) {
         Target const& src = m_bloomDown[std::min(levels - 1, 2)];
@@ -595,6 +677,40 @@ void RTXRenderer::runBloom(RTXConfig const& cfg) {
     }
 }
 
+void RTXRenderer::runAutoExposure(RTXConfig const& cfg) {
+    // El mip mas alto de la escena ya es su brillo medio, asi que la medida sale
+    // gratis; el ping-pong contra el fotograma anterior es la inercia del ojo.
+    // Sin esa inercia la exposicion perseguiria cada destello y la pantalla
+    // entera latiria, que es como se estropea esto en los inyectores de post.
+    // ccGLBindTexture2DN se salta el bind (y con el su glActiveTexture) cuando cree
+    // que la textura ya esta puesta, asi que pasar por 0 es lo unico que garantiza
+    // que la unidad activa sea la 0 antes de tocar los parametros de la escena.
+    ccGLBindTexture2DN(0, 0);
+    ccGLBindTexture2DN(0, m_sceneTex);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+
+    float const dt = std::clamp(m_frameMs * 0.001f, 0.f, 0.1f);
+    float const rate = m_hasExposure ? std::clamp(cfg.adaptSpeed * dt, 0.f, 1.f) : 1.f;
+
+    int const dst = 1 - m_exposureIndex;
+    ccGLUseProgram(m_bloom.id);
+    glUniform1f(m_bloom.mode, 4.f);
+    glUniform1f(m_bloom.adaptRate, rate);
+    ccGLBindTexture2DN(1, m_exposure[m_exposureIndex].tex);
+    drawInto(m_exposure[dst]);
+
+    // El filtro vuelve a plano en el acto: el prefiltro del bloom dibuja a media
+    // resolucion, asi que con los mipmaps puestos leeria el nivel 1 de la escena
+    // y el halo saldria mas blando solo por tener la exposicion automatica.
+    ccGLBindTexture2DN(0, 0);
+    ccGLBindTexture2DN(0, m_sceneTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+
+    m_exposureIndex = dst;
+    m_hasExposure = true;
+}
+
 void RTXRenderer::runComposite(RTXConfig const& cfg, GLint const* viewport, GLuint prevFbo) {
     ccGLUseProgram(m_composite.id);
     glUniform2f(m_composite.texel, 1.f / static_cast<float>(m_sceneW),
@@ -607,6 +723,8 @@ void RTXRenderer::runComposite(RTXConfig const& cfg, GLint const* viewport, GLui
     glUniform1f(m_composite.rayStrength, cfg.godRayStrength);
     glUniform1f(m_composite.tonemap, static_cast<float>(cfg.tonemap));
     glUniform1f(m_composite.exposure, cfg.exposure);
+    bool const hasAuto = cfg.adaptEnabled && m_hdr && m_hasExposure;
+    glUniform1f(m_composite.adaptKey, hasAuto ? cfg.adaptKey : 0.f);
     glUniform1f(m_composite.contrast, cfg.contrast);
     glUniform1f(m_composite.saturation, cfg.saturation);
     glUniform1f(m_composite.temperature, cfg.temperature);
@@ -621,6 +739,7 @@ void RTXRenderer::runComposite(RTXConfig const& cfg, GLint const* viewport, GLui
     ccGLBindTexture2DN(1, m_giResultTex ? m_giResultTex : m_blackTex);
     ccGLBindTexture2DN(2, m_bloomResultTex ? m_bloomResultTex : m_blackTex);
     ccGLBindTexture2DN(3, (cfg.godRayStrength > 0.001f && m_rays.tex) ? m_rays.tex : m_blackTex);
+    ccGLBindTexture2DN(4, hasAuto ? m_exposure[m_exposureIndex].tex : m_blackTex);
 
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
     glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
@@ -694,6 +813,8 @@ void RTXRenderer::renderFrame() {
                              || cfg.reflectStrength > 0.001f;
         bool const wantsBloom = cfg.bloomStrength > 0.001f || cfg.godRayStrength > 0.001f;
 
+        if (cfg.adaptEnabled && m_hdr) runAutoExposure(cfg);
+
         unsigned const cadence = static_cast<unsigned>(std::max(1, cfg.frameSkip + 1));
         if (wantsTrace && m_frameCounter % cadence == 0) runTrace(cfg);
 
@@ -719,6 +840,7 @@ void RTXRenderer::renderFrame() {
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
     glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
+    ccGLBindTexture2DN(4, 0);
     ccGLBindTexture2DN(3, 0);
     ccGLBindTexture2DN(2, 0);
     ccGLBindTexture2DN(1, 0);

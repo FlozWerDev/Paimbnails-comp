@@ -316,6 +316,23 @@ void RTXConfigLayer::rebuild() {
             kit::makeSliderRow(innerW, "Gamma", nullptr,
                 cfg.gamma, 0.5, 2.0, plain,
                 [this](double v) { RTXManager::get().config().gamma = static_cast<float>(v); touched(false); }),
+            kit::makeSliderRow(innerW, "Rango alto",
+                "Cuantas veces mas brillante que el blanco puede pesar un reflejo al calcular la luz.",
+                cfg.hdrRange, 1.0, 16.0, times,
+                [this](double v) { RTXManager::get().config().hdrRange = static_cast<float>(v); touched(false); }),
+        }));
+
+        items.push_back(kit::makeCard(scrollW, "Exposicion automatica", {255, 200, 120}, {
+            kit::makeToggleRow(innerW, "Activada",
+                "Ajusta el brillo segun lo oscura que este la pantalla, como el ojo.",
+                cfg.adaptEnabled,
+                [this](bool v) { RTXManager::get().config().adaptEnabled = v; touched(false); }),
+            kit::makeSliderRow(innerW, "Gris medio", "Brillo al que intenta llevar la escena.",
+                cfg.adaptKey, 0.04, 0.60, plain,
+                [this](double v) { RTXManager::get().config().adaptKey = static_cast<float>(v); touched(false); }),
+            kit::makeSliderRow(innerW, "Velocidad", "Cuanto tarda en acostumbrarse a un cambio de luz.",
+                cfg.adaptSpeed, 0.1, 6.0, plain,
+                [this](double v) { RTXManager::get().config().adaptSpeed = static_cast<float>(v); touched(false); }),
         }));
 
         items.push_back(kit::makeCard(scrollW, "Balance", {160, 220, 255}, {
@@ -334,13 +351,28 @@ void RTXConfigLayer::rebuild() {
             kit::makeSliderRow(innerW, "Umbral", "Brillo minimo que entra al bloom.",
                 cfg.bloomThreshold, 0.0, 1.0, pct,
                 [this](double v) { RTXManager::get().config().bloomThreshold = static_cast<float>(v); touched(false); }),
-            kit::makeSliderRow(innerW, "Radio", "Extension del halo al recomponer la cadena.",
+            kit::makeSliderRow(innerW, "Rodilla",
+                "0 = corte seco en el umbral, 1 = lo que ronda el umbral entra poco a poco.",
+                cfg.bloomSoftKnee, 0.0, 1.0, pct,
+                [this](double v) { RTXManager::get().config().bloomSoftKnee = static_cast<float>(v); touched(false); }),
+            kit::makeSliderRow(innerW, "Radio", "Separacion de las muestras al recomponer la cadena.",
                 cfg.bloomRadius, 0.5, 6.0, plain,
                 [this](double v) { RTXManager::get().config().bloomRadius = static_cast<float>(v); touched(false); }),
+            kit::makeSliderRow(innerW, "Anchura", "Cuanto pesa el nivel ancho frente al fino en cada mezcla.",
+                cfg.bloomBlend, 0.0, 1.0, pct,
+                [this](double v) { RTXManager::get().config().bloomBlend = static_cast<float>(v); touched(false); }),
+            kit::makeSliderRow(innerW, "Anamorfico", "Estira el halo en horizontal, como una lente de cine.",
+                cfg.bloomAnamorphic, 0.0, 1.0, pct,
+                [this](double v) { RTXManager::get().config().bloomAnamorphic = static_cast<float>(v); touched(false); }),
             kit::makeSliderRow(innerW, "Pases", "Niveles de la cadena: mas pases = halo mas ancho.",
                 cfg.bloomPasses, 1.0, 5.0, count,
                 [this](double v) { RTXManager::get().config().bloomPasses = static_cast<int>(std::lround(v)); touched(true); }),
         }));
+
+        items.push_back(kit::makeHint(scrollW,
+            "La luz se suma en <cy>espacio lineal</c> y con el rango expandido, asi que "
+            "con todo a cero la imagen sale <cy>identica</c> a la del juego. Si algo se "
+            "ve lavado, es que se ha subido de mas, no que la cadena tinte."));
     } else {
         items.push_back(kit::makeCard(scrollW, "Lente", {255, 170, 170}, {
             kit::makeSliderRow(innerW, "Aberracion cromatica", "Separacion de canales hacia los bordes.",

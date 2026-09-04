@@ -17,6 +17,30 @@ Cada cuerpo dinamico elige su modo por separado. Esto permite, por ejemplo,
 hornear una pieza decorativa y dejar una caja interactiva en tiempo real dentro
 de la misma compilacion.
 
+## La vista previa dibuja el backend de cada cuerpo
+
+`NativePreview.cpp` corre el mismo modelo que arma el grafo, y `PhysicsPopup`
+mezcla las dos trayectorias en una sola traza: los cuerpos en keyframes salen
+del solver y los cuerpos en triggers salen del modelo nativo. Antes la vista
+previa dibujaba a todos con el solver, asi que un cuerpo reactivo se veia caer
+como un rigid body y en la partida hacia otra cosa.
+
+Lo que el modelo nativo reproduce:
+
+- La gravedad llega como un bucle Spawn cada `tick`, de modo que la caida sale
+  en tramos rectos y no en la curva del solver.
+- El rebote entra al *entrar* el sensor en el bloque, no mientras siga dentro,
+  asi que un cuerpo reactivo nunca se apoya del todo: da saltos cortos.
+- Los cuerpos fijos son rectangulos alineados a ejes, asi que una rampa frena a
+  un cuerpo reactivo con el cuadrado que ocupa y no con su cara.
+- Un cuerpo reactivo no empuja a uno horneado, igual que en el nivel.
+- `Iman`, `Pendulo` y `Explosion` no tienen quien los mueva sin el jugador
+  delante, asi que se quedan quietos y el estado del lab lo dice.
+
+Las unidades de Advanced Follow son bloques por segundo (`kPixelsPerSpeedUnit`).
+La friccion se lee como la parte de la velocidad que se pierde en un segundo;
+es la unica constante del modelo que sigue sin verificarse dentro de GD.
+
 ## Presets reactivos
 
 - **Empujable:** gravedad, roce, rebote contra cuerpos fijos e impulso al tocar
@@ -64,13 +88,27 @@ cuerpo dinamico usa cuatro sensores laterales. El grafo cubre jugador contra
 cuerpo y cuerpo contra capturas fijas; no resuelve contacto entre dos cuerpos
 dinamicos ni entre una salida reactiva y otra horneada. Formas concavas,
 apilamiento estable, torque exacto y contacto continuo no existen como
-primitivas nativas y por tanto no pueden reproducirse con la misma precision
-que la vista previa.
+primitivas nativas: un cuerpo que necesite eso va en keyframes, y la vista
+previa ya ensena la diferencia antes de compilar.
 
-Los parametros numericos de Advanced Follow deben probarse dentro de GD porque
-sus unidades no son las del solver de la vista previa. El compilador conserva
-los valores como presets centralizados para que se puedan calibrar sin cambiar
-el emisor ni el formato del grafo.
+Los parametros numericos de Advanced Follow siguen valiendo la pena probarlos
+dentro de GD. El compilador conserva los valores como presets centralizados
+para que se puedan calibrar sin cambiar el emisor ni el formato del grafo, y el
+modelo de la vista previa lee esos mismos presets, asi que calibrar uno calibra
+los dos.
+
+## Como sale la trayectoria horneada
+
+Las poses del solver son del centro de masa del cuerpo, pero GD mueve un grupo
+alrededor de un solo objeto: su group parent. Por eso el emisor elige ese
+objeto (el que ya fuera parent, o el mas cercano al centro de masa), escribe
+los keyframes sobre su recorrido -- `centro + R(angulo) * brazo` -- y registra
+el parent cuando el cuerpo tiene mas de un objeto. Con el centro de masa a
+secas, un cuerpo que giraba caia en la partida en otro sitio que en la vista.
+
+La animacion se corta en cuanto todos los cuerpos dinamicos se duermen
+(`SimulationTrace::settleTime`), porque los keyframes que siguen no mueven nada
+y solo gastan objetos.
 
 ## Fuentes auditadas
 
@@ -84,8 +122,9 @@ Follow).
 
 ## Verificacion en GitHub y dentro del juego
 
-El workflow de Windows ejecuta primero las regresiones puras del solver y del
-grafo nativo, y despues compila el mod con la accion de Geode. La comprobacion
+El workflow de Windows ejecuta primero las regresiones puras del solver, del
+grafo nativo y de la vista previa, y despues compila el mod con la accion de
+Geode. La comprobacion
 manual recomendada es:
 
 1. Crear una caja dinamica y un suelo fijo; compilar `Empujable` con P1 y P2.

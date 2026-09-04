@@ -48,7 +48,7 @@ private:
     bool ensureFullTargets(int srcW, int srcH);
     bool ensureTraceTargets(int srcW, int srcH, float scale);
 
-    bool makeTarget(Target& t, int w, int h);
+    bool makeTarget(Target& t, int w, int h, bool hdr = false);
     void dropTarget(Target& t);
     void releaseAll();
 
@@ -58,6 +58,7 @@ private:
     void runTrace(RTXConfig const& cfg);
     void runFilter(RTXConfig const& cfg);
     void runBloom(RTXConfig const& cfg);
+    void runAutoExposure(RTXConfig const& cfg);
     void runComposite(RTXConfig const& cfg, GLint const* viewport, GLuint prevFbo);
 
     struct TraceProgram {
@@ -101,13 +102,20 @@ private:
 
     struct BloomProgram {
         GLuint id = 0;
-        GLint texel     = -1;
-        GLint mode      = -1;
-        GLint threshold = -1;
-        GLint radius    = -1;
-        GLint lightPos  = -1;
-        GLint decay     = -1;
-        GLint density   = -1;
+        GLint texel      = -1;
+        GLint mode       = -1;
+        GLint threshold  = -1;
+        GLint softKnee   = -1;
+        GLint radius     = -1;
+        GLint blend      = -1;
+        GLint anamorphic = -1;
+        GLint lightPos   = -1;
+        GLint decay      = -1;
+        GLint density    = -1;
+        GLint tonemap    = -1;
+        GLint hdrRange   = -1;
+        GLint giMix      = -1;
+        GLint adaptRate  = -1;
     };
 
     struct CompositeProgram {
@@ -121,6 +129,7 @@ private:
         GLint rayStrength   = -1;
         GLint tonemap       = -1;
         GLint exposure      = -1;
+        GLint adaptKey      = -1;
         GLint contrast      = -1;
         GLint saturation    = -1;
         GLint temperature   = -1;
@@ -151,12 +160,19 @@ private:
     Target m_bloomDown[kBloomLevels];
     Target m_bloomUp[kBloomLevels];
     Target m_rays;
+    Target m_exposure[2];
 
     int m_traceW = 0;
     int m_traceH = 0;
     int m_historyIndex = 0;
+    int m_exposureIndex = 0;
     GLuint m_bloomResultTex = 0;
     GLuint m_giResultTex = 0;
+
+    // Sin objetivos de coma flotante la expansion a rango alto se recorta en 1 y
+    // el bloom vuelve a ser el de antes, asi que en ese caso se deja plano.
+    bool m_hdr = true;
+    bool m_hasExposure = false;
 
     // Transformada de la capa de objetos del fotograma trazado anterior, para
     // reproyectar el historial. Solo se actualiza en los fotogramas que trazan.

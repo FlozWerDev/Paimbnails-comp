@@ -117,6 +117,10 @@ OutlineSpec outlineFromJson(matjson::Value const& v) {
     return o;
 }
 
+}  // anonymous namespace
+
+namespace paimon::icon_maker {
+
 matjson::Value fillToJson(FillSpec const& f) {
     auto obj = matjson::Value::object();
     obj["type"]     = static_cast<int>(f.type);
@@ -141,6 +145,10 @@ FillSpec fillFromJson(matjson::Value const& v) {
     f.outline       = outlineFromJson(v["outline"]);
     return f;
 }
+
+}  // namespace paimon::icon_maker
+
+namespace {
 
 matjson::Value transformToJson(ts::ImageTransform const& t) {
     auto obj = matjson::Value::object();
@@ -194,7 +202,10 @@ matjson::Value pieceToJson(IconPiece const& p) {
     obj["id"]        = p.id;
     obj["name"]      = p.name;
     obj["visible"]   = p.visible;
+    obj["locked"]    = p.locked;
     obj["transform"] = transformToJson(p.transform);
+    obj["scaleX"]    = p.scaleX;
+    obj["scaleY"]    = p.scaleY;
     obj["shape"]     = shapeToJson(p.shape);
     obj["fill"]      = fillToJson(p.fill);
     return obj;
@@ -205,7 +216,10 @@ IconPiece pieceFromJson(matjson::Value const& v) {
     p.id        = v["id"].asString().unwrapOr("");
     p.name      = v["name"].asString().unwrapOr("Capa");
     p.visible   = v["visible"].asBool().unwrapOr(true);
+    p.locked    = v["locked"].asBool().unwrapOr(false);
     p.transform = transformFromJson(v["transform"]);
+    p.scaleX    = clampedF(v["scaleX"], 1.f, 0.05f, 8.f);
+    p.scaleY    = clampedF(v["scaleY"], 1.f, 0.05f, 8.f);
     p.shape     = shapeFromJson(v["shape"]);
     p.fill      = fillFromJson(v["fill"]);
     return p;

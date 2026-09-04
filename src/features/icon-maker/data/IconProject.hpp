@@ -33,7 +33,17 @@ struct IconPiece {
     std::string id;    // short unique id inside the project
     std::string name;  // user-visible layer name
     bool visible = true;
+    // Editor-only: the canvas refuses to drag or resize a locked layer, so a
+    // finished background piece stops getting nudged by accident.
+    bool locked = false;
     texture_studio::ImageTransform transform{};
+
+    // Non-uniform stretch applied before the transform's uniform scale. Kept
+    // apart from ImageTransform because that struct is shared with
+    // texture-studio, which has no use for per-axis scaling.
+    float scaleX = 1.f;
+    float scaleY = 1.f;
+
     PieceShape shape{};
     FillSpec fill{};
 };
@@ -65,6 +75,11 @@ struct IconProject {
 
     std::string makePieceId() const;
 };
+
+// La biblioteca de estilos guarda pinturas sueltas, asi que estas dos salen
+// del anonimato para no tener dos copias del mismo formato.
+matjson::Value fillToJson(FillSpec const& fill);
+FillSpec fillFromJson(matjson::Value const& value);
 
 inline std::int64_t nowUnixMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(

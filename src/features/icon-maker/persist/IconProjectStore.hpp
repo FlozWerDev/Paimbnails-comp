@@ -25,6 +25,7 @@ struct IconIndexEntry {
     std::int64_t modifiedAt = 0;
     std::int64_t createdAt  = 0;
     bool         hasBuiltOnce = false;
+    bool         favorite = false;
 };
 
 class IconProjectStore final {
@@ -48,6 +49,9 @@ public:
     geode::Result<std::string> duplicateProject(std::string_view id);
 
     geode::Result<> deleteProject(std::string_view id);
+
+    // Marca de la galeria; no toca el project.json.
+    geode::Result<> setFavorite(std::string_view id, bool favorite);
 
     bool exists(std::string_view id) const;
 

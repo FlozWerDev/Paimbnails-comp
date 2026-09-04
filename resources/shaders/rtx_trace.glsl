@@ -22,13 +22,11 @@
 // Los pasos crecen en progresion geometrica en vez de ser uniformes: los
 // primeros caen muy juntos (contacto nitido) y los ultimos se separan (alcance
 // largo barato), que es lo mismo que busca un marchado jerarquico por mips.
-#ifdef GL_ES
-#ifdef GL_FRAGMENT_PRECISION_HIGH
-precision highp float;
-#else
-precision mediump float;
-#endif
-#endif
+//
+// El campo de altura y el umbral de emision se quedan en sRGB porque son
+// proxies perceptuales: lo que se ve como un borde es lo que tiene que frenar
+// un rayo. El color que se lleva el rebote si va a lineal, porque eso ya es una
+// cantidad de luz que se suma al resto de la escena.
 
 varying vec2 v_texCoord;
 
@@ -56,10 +54,6 @@ uniform float u_reflectFade;
 const int   kMaxRays  = 16;
 const int   kMaxSteps = 32;
 const float kTau      = 6.28318531;
-
-float luma(vec3 c) {
-    return dot(c, vec3(0.2126, 0.7152, 0.0722));
-}
 
 float heightOf(vec3 c) {
     float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
@@ -135,7 +129,8 @@ void main() {
             vec3 c = texture2D(u_scene, p).rgb;
             if (heightOf(c) > h0 + n.z * t * u_thickness) {
                 float fall = exp(-t * u_bounceFalloff / max(u_rayDistance, 0.001));
-                vec3 tinted = mix(vec3(luma(c)), c, u_giSaturation);
+                vec3 lit = toLinear(c);
+                vec3 tinted = mix(vec3(luma(lit)), lit, u_giSaturation);
                 gi  += tinted * emissiveOf(c) * fall * w;
                 occ += (1.0 - smoothstep(0.0, u_aoRadius, t)) * w;
                 break;
@@ -173,7 +168,7 @@ void main() {
 
                 vec3 c = texture2D(u_scene, p).rgb;
                 if (heightOf(c) > h0 + n.z * t * u_thickness) {
-                    refl = c * (1.0 - smoothstep(0.0, max(u_reflectFade, 0.01), t));
+                    refl = toLinear(c) * (1.0 - smoothstep(0.0, max(u_reflectFade, 0.01), t));
                     break;
                 }
             }

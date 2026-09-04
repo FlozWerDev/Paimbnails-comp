@@ -18,7 +18,7 @@ public:
     static void open();
 
 protected:
-    enum class Sort { Recent = 0, Name = 1 };
+    enum class Sort { Recent = 0, Name = 1, Created = 2 };
 
     bool init() override;
     void onEnter() override;
@@ -41,6 +41,8 @@ protected:
     void onDuplicateIcon(std::string const& slotId);
     void onRenameIcon(std::string const& slotId);
     void onDeleteIcon(std::string const& slotId);
+    void onFilterMenu();
+    void onToggleFavorite(std::string const& slotId);
 
     void setStatus(std::string const& text);
 
@@ -51,6 +53,11 @@ protected:
 
     std::string m_query;
     Sort m_sort = Sort::Recent;
+    // -1 = todos los gamemodes; si no, indice en supportedTypes().
+    int m_typeFilter = -1;
+    bool m_onlyFavorites = false;
+    cocos2d::CCLabelBMFont* m_filterLabel = nullptr;
+    cocos2d::CCSprite* m_favGlyph = nullptr;
     bool m_enteredOnce = false;
     bool m_busy = false;
 

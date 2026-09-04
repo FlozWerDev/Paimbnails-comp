@@ -27,6 +27,10 @@ jobs:
         shell: pwsh
         run: ./tests/run_editor_physics_native_regression.ps1
 
+      - name: Test physics preview backends
+        shell: pwsh
+        run: ./tests/run_editor_physics_preview_regression.ps1
+
       # Windows is the only target, so there is nothing for the combine action
       # to merge: it would pull the artifact back onto a second runner just to
       # copy the single .geode through. The build already leaves a finished one

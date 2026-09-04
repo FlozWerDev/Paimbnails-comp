@@ -12,6 +12,7 @@ class IconPaths final {
 public:
     static std::filesystem::path rootDir();
     static std::filesystem::path indexFile();
+    static std::filesystem::path stylesFile();
     static std::filesystem::path slotsDir();
     static std::filesystem::path slotDir(std::string_view slotId);
     static std::filesystem::path projectFile(std::string_view slotId);

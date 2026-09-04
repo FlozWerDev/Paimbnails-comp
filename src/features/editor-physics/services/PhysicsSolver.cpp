@@ -11,6 +11,7 @@ namespace paimon::editorphysics {
 
 namespace {
 
+constexpr float kPi = 3.14159265358979323846f;
 constexpr float kSlop = 0.05f;
 constexpr float kCorrection = 0.7f;
 constexpr float kRestingSpeed = 45.f;
@@ -338,22 +339,65 @@ float restitutionOf(BodySpec const& body, Fixture const& fixture) {
     return std::max(0.f, fixture.restitution >= 0.f ? fixture.restitution : body.restitution);
 }
 
+// What the fixture weighs and how hard it is to spin, taken from the shape the
+// solver actually collides with: a disc resists half of what its bounding box
+// would, and a slope holds its mass in the corner it fills.
+struct MassShape {
+    float area = 0.f;
+    Vec2 centroid;
+    float inertia = 0.f;
+};
+
+MassShape massShapeOf(Fixture const& fixture) {
+    MassShape result;
+    if (fixture.radius > 0.f) {
+        result.area = kPi * fixture.radius * fixture.radius;
+        result.inertia = fixture.radius * fixture.radius * 0.5f;
+        return result;
+    }
+    int const count = std::min(fixture.vertexCount, kMaxVertices);
+    if (count >= 3) {
+        float twiceArea = 0.f;
+        float moment = 0.f;
+        Vec2 weighted{};
+        for (int i = 0; i < count; ++i) {
+            Vec2 const current = fixture.vertices[i];
+            Vec2 const next = fixture.vertices[(i + 1) % count];
+            float const step = cross(current, next);
+            twiceArea += step;
+            weighted += (current + next) * step;
+            moment += step *
+                (lengthSquared(current) + dot(current, next) + lengthSquared(next));
+        }
+        if (std::abs(twiceArea) > 0.0001f) {
+            result.area = std::abs(twiceArea) * 0.5f;
+            result.centroid = weighted / (3.f * twiceArea);
+            result.inertia = std::max(
+                moment / (6.f * twiceArea) - lengthSquared(result.centroid), 0.f
+            );
+            return result;
+        }
+    }
+    float const width = fixture.halfSize.x * 2.f;
+    float const height = fixture.halfSize.y * 2.f;
+    result.area = width * height;
+    result.inertia = (width * width + height * height) / 12.f;
+    return result;
+}
+
 float bodyInertia(BodySpec const& body, float mass) {
     float totalArea = 0.f;
     for (auto const& fixture : body.fixtures) {
-        totalArea += std::max(1.f, fixture.halfSize.x * fixture.halfSize.y * 4.f);
+        totalArea += std::max(1.f, massShapeOf(fixture).area);
     }
     if (totalArea <= 0.f) return mass;
 
     float inertia = 0.f;
     for (auto const& fixture : body.fixtures) {
-        float const width = fixture.halfSize.x * 2.f;
-        float const height = fixture.halfSize.y * 2.f;
-        float const area = std::max(1.f, width * height);
-        float const partMass = mass * area / totalArea;
-        inertia += partMass * (
-            (width * width + height * height) / 12.f + lengthSquared(fixture.offset)
-        );
+        auto const shape = massShapeOf(fixture);
+        float const partMass = mass * std::max(1.f, shape.area) / totalArea;
+        Vec2 const arm = fixture.offset + shape.centroid;
+        inertia += partMass * (shape.inertia + lengthSquared(arm));
     }
     return std::max(inertia, 0.001f);
 }
