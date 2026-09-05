@@ -148,11 +148,19 @@ void VersusHistoryPopup::buildRows() {
         rival->setPosition({44.f, y + 7.f});
         m_scroll->m_contentLayer->addChild(rival, 1);
 
+        // Rows written before the duel kept the score have none to show.
+        std::string score;
+        if (record.ownPercent > 0.f || record.rivalPercent > 0.f) {
+            score = fmt::format("{}% / {}% - ", static_cast<int>(record.ownPercent),
+                                static_cast<int>(record.rivalPercent));
+        }
+
         auto* detail = CCLabelBMFont::create(
-            fmt::format("{} - {}", formatName(formatAt(record.format)), agoLabel(record.playedAt)).c_str(),
+            fmt::format("{} - {}{}", formatName(formatAt(record.format)), score,
+                        agoLabel(record.playedAt)).c_str(),
             "chatFont.fnt");
         detail->setAnchorPoint({0.f, 0.5f});
-        detail->setScale(0.4f);
+        detail->setScale(std::min(0.4f, 260.f / std::max(1.f, detail->getContentSize().width)));
         detail->setOpacity(175);
         detail->setPosition({44.f, y - 9.f});
         m_scroll->m_contentLayer->addChild(detail, 1);

@@ -33,7 +33,9 @@ protected:
 
     Mode m_mode = Mode::Classic;
     std::string m_scope = "global";
-    bool m_loading = false;
+    // Only the newest request may paint; the rest answer into a tab that has
+    // already been left.
+    uint32_t m_request = 0;
     std::vector<LeaderboardRow> m_rows;
 
     cocos2d::CCMenu* m_menu = nullptr;

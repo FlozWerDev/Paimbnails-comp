@@ -554,6 +554,16 @@ bool PhysicsPopup::runSimulation() {
         settings.push_back(body.native);
     }
     m_trace = simulateWorkspace(specs, settings, simulationOptions(m_config));
+    if (m_trace.exhausted) {
+        m_trace = {};
+        m_playing = false;
+        setStatus(
+            "La simulacion pesa demasiado para resolverla sin congelar el editor. "
+            "Baja la duracion o la calidad, o captura menos objetos.",
+            {255, 120, 120}
+        );
+        return false;
+    }
     if (m_trace.frames.size() < 2) {
         setStatus("El solver no produjo suficientes frames.", {255, 120, 120});
         return false;

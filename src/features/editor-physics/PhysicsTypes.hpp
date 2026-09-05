@@ -133,6 +133,10 @@ struct SimulationOptions {
     float maxSpeed = 0.f;
     bool allowSleep = true;
     bool warmStarting = true;
+    // Seconds of wall clock the run may spend. The lab solves on the main
+    // thread, so a capture big enough to take seconds reads as the game
+    // hanging; zero leaves the run uncapped for the callers that step by hand.
+    float timeBudget = 0.f;
     std::vector<ForceField> fields;
 };
 
@@ -173,6 +177,8 @@ struct SimulationTrace {
     // When every dynamic body fell asleep, or negative if some never did. A
     // baked trajectory can be cut here without losing any movement.
     float settleTime = -1.f;
+    // The run hit `timeBudget` and the frames stop short of the duration.
+    bool exhausted = false;
 };
 
 struct RayHit {

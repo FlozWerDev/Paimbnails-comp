@@ -55,6 +55,10 @@ uint16_t clampU16(float v, float scale) {
     return static_cast<uint16_t>(std::min(scaled, 65535.f));
 }
 
+CardId cardOrNone(uint8_t raw) {
+    return raw < static_cast<uint8_t>(CardId::Count) ? static_cast<CardId>(raw) : CardId::Count;
+}
+
 #ifdef PAIMON_VERSUS_GLOBED
 
 struct VsTick : globed::ServerEvent<VsTick, globed::EventServer::Game> {
@@ -67,7 +71,7 @@ struct VsTick : globed::ServerEvent<VsTick, globed::EventServer::Game> {
 
     std::vector<uint8_t> encode() const {
         std::vector<uint8_t> out;
-        out.reserve(7);
+        out.reserve(9);
         putU16(out, clampU16(data.percent, 100.f));
         putU16(out, clampU16(data.levelTime, 10.f));
         putU16(out, static_cast<uint16_t>(std::min(data.attempt, 65535)));
@@ -76,6 +80,8 @@ struct VsTick : globed::ServerEvent<VsTick, globed::EventServer::Game> {
         if (data.practice) flags |= 1u << 1;
         if (data.shielded) flags |= 1u << 2;
         out.push_back(flags);
+        out.push_back(static_cast<uint8_t>(data.hand[0]));
+        out.push_back(static_cast<uint8_t>(data.hand[1]));
         return out;
     }
 
@@ -89,6 +95,12 @@ struct VsTick : globed::ServerEvent<VsTick, globed::EventServer::Game> {
         out.data.alive = flags & (1u << 0);
         out.data.practice = flags & (1u << 1);
         out.data.shielded = flags & (1u << 2);
+        // The hand was added after the tick shipped, so a client from before it
+        // simply never shows one.
+        if (data.size() >= 9) {
+            out.data.hand[0] = cardOrNone(data[7]);
+            out.data.hand[1] = cardOrNone(data[8]);
+        }
         return Ok(std::move(out));
     }
 };
@@ -143,7 +155,7 @@ struct VsState : globed::ServerEvent<VsState, globed::EventServer::Game> {
 
     static Result<VsState> decode(std::span<uint8_t const> data) {
         if (data.size() < 6) return Err("short vs-state");
-        if (data[0] > static_cast<uint8_t>(StateKind::Rematch)) return Err("unknown state kind");
+        if (data[0] > static_cast<uint8_t>(StateKind::Spent)) return Err("unknown state kind");
         VsState out;
         out.data.kind = static_cast<StateKind>(data[0]);
         out.data.value = data[1];
@@ -213,9 +225,11 @@ int rival() {
 }
 
 void listen(Handlers handlers) {
+    // stopListening clears the handlers too, so it goes first or it would wipe
+    // the ones we were just given.
+    stopListening();
     s_handlers = std::move(handlers);
 #ifdef PAIMON_VERSUS_GLOBED
-    stopListening();
     s_listeners.push_back(VsTick::listen([](VsTick const& ev, globed::EventOptions const& opts) {
         if (fromRival(opts) && s_handlers.onTick) s_handlers.onTick(opts.sender, ev.data);
     }));

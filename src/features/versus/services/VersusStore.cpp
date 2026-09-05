@@ -82,6 +82,7 @@ void VersusStore::load() {
     }
 
     auto const rawHistory = mod->getSavedValue<std::string>(kHistoryKey, "");
+    m_history.clear();
     if (!rawHistory.empty()) {
         auto parsed = matjson::parse(rawHistory);
         if (parsed.isOk() && parsed.unwrap().isArray()) {
@@ -94,6 +95,8 @@ void VersusStore::load() {
                 record.format = formatFromId(stringField(entry, "format"));
                 record.outcome = static_cast<Outcome>(intField(entry, "outcome"));
                 record.eloDelta = static_cast<int>(intField(entry, "delta"));
+                record.ownPercent = static_cast<float>(intField(entry, "own")) / 100.f;
+                record.rivalPercent = static_cast<float>(intField(entry, "foe")) / 100.f;
                 record.playedAt = intField(entry, "at");
                 m_history.push_back(std::move(record));
             }
@@ -156,6 +159,8 @@ void VersusStore::setHistory(std::vector<MatchRecord> history) {
             {"format", formatId(record.format)},
             {"outcome", static_cast<int>(record.outcome)},
             {"delta", record.eloDelta},
+            {"own", static_cast<int>(record.ownPercent * 100.f)},
+            {"foe", static_cast<int>(record.rivalPercent * 100.f)},
             {"at", record.playedAt},
         }));
     }
@@ -169,7 +174,13 @@ void VersusStore::setPreferredMode(Mode mode) {
 }
 
 Format VersusStore::preferredFormat(Mode mode) const {
-    return mode == Mode::Platformer ? m_platformerFormat : m_classicFormat;
+    Format const stored = mode == Mode::Platformer ? m_platformerFormat : m_classicFormat;
+
+    auto const formats = queueableFormats(mode);
+    for (auto const* def : formats) {
+        if (def->id == stored) return stored;
+    }
+    return formats.empty() ? stored : formats.front()->id;
 }
 
 void VersusStore::setPreferredFormat(Mode mode, Format format) {

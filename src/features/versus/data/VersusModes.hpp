@@ -27,18 +27,27 @@ FormatDef const* findFormat(std::string const& key);
 
 // Formats that can be queued for in this mode, Friendly excluded.
 std::vector<FormatDef const*> rankedFormats(Mode mode);
+// The same list minus the ones a disabled module would turn into a race under
+// another name. Everything that opens a queue asks this, not rankedFormats.
+std::vector<FormatDef const*> queueableFormats(Mode mode);
 
 std::string formatName(FormatDef const& def);
 std::string formatWinCondition(FormatDef const& def);
 std::string formatSprite(FormatDef const& def);
 
 // Ladder cuts the level at 25/50/75/100; the bit for a segment is set once
-// somebody crosses it, and it is never handed to the second one there.
+// somebody crosses it, and it is never handed to the second one there. Relay
+// runs on the same four and is read when all of them are closed.
 inline constexpr int kLadderSegments = 4;
 inline constexpr int kLadderToWin = 3;
 int segmentForPercent(float percent);
 
 // King of the hill: how long the lead has to hold.
 inline constexpr float kHillSeconds = 45.f;
+
+// Tug of war: the rope sits at 0 and is won at 1 or -1. A steady lead of this
+// many points pulls it all the way in kRopeSeconds.
+inline constexpr float kRopeLead = 25.f;
+inline constexpr float kRopeSeconds = 16.f;
 
 } // namespace paimon::versus

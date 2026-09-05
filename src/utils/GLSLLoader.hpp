@@ -61,4 +61,7 @@ cocos2d::CCGLProgram* getYUVBlitShader();
 /// Pre-reduce sRGB→LAB into a small FBO for CPU-side K-means.
 cocos2d::CCGLProgram* getDominantColorsDownsampleShader();
 
+/// Halve a frame with an alpha-weighted box filter for the GIF importer.
+cocos2d::CCGLProgram* getGifDownscaleShader();
+
 }

@@ -28,7 +28,10 @@ class $modify(PaimonVersusPauseLayer, PauseLayer) {
         if (session.hasMutator("no-pause")) {
             PaimonNotify::show(Localization::get().getString("versus.mutator.no-pause").c_str(),
                                NotificationIcon::Warning);
-            paimon::scheduleMainThreadDelay(0.f, [this]() { this->onResume(nullptr); });
+            auto self = Ref<PaimonVersusPauseLayer>(this);
+            paimon::scheduleMainThreadDelay(0.f, [self]() {
+                if (self->isRunning()) self->onResume(nullptr);
+            });
             return;
         }
 

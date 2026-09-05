@@ -1800,6 +1800,10 @@
     "kampwski.level_tags": {
       "version": ">=v0.4.0-alpha",
       "required": false
+    },
+    "dankmeme.globed2": {
+      "version": ">=v2.2.0",
+      "required": false
     }
   }
 }

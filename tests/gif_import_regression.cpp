@@ -9,8 +9,13 @@
 
 #include "../src/features/gif-import/services/GifImportPipeline.hpp"
 #include "../src/features/gif-import/services/ColorSpace.cpp"
+#include "../src/features/gif-import/services/GifParallel.cpp"
+#include "../src/features/gif-import/services/GifShapeRaster.cpp"
 #include "../src/features/gif-import/services/GifVectorMath.cpp"
 #include "../src/features/gif-import/services/GifArtVectorizer.cpp"
+#include "../src/features/gif-import/services/GifCircleVectorizer.cpp"
+#include "../src/features/gif-import/services/GifFreeVectorizer.cpp"
+#include "../src/features/gif-import/services/GifStampCatalog.cpp"
 #include "../src/features/gif-import/services/GifGlowPass.cpp"
 #include "../src/features/gif-import/services/GifMotionPlanner.cpp"
 #include "../src/features/gif-import/services/GifPaintVectorizer.cpp"
@@ -582,7 +587,7 @@ std::size_t hiddenPaintObjects(
         auto const& object = objects[objectIndex];
         for (int y = 0; y < height; ++y) {
             for (int x = 0; x < width; ++x) {
-                if (!contains(object, (x + 0.5f) / scale, (y + 0.5f) / scale)) continue;
+                if (!xformOf(object).contains((x + 0.5f) / scale, (y + 0.5f) / scale)) continue;
                 drawn[objectIndex] = 1;
                 owners[static_cast<std::size_t>(y) * width + x] =
                     static_cast<int>(objectIndex);
@@ -692,7 +697,7 @@ bool paintRepairsMergeLongRuns() {
         for (int x = 0; x < size; ++x) {
             bool const painted = std::any_of(
                 repairs.begin(), repairs.end(), [&](Primitive const& object) {
-                    return contains(object, x + 0.5f, y + 0.5f);
+                    return xformOf(object).contains(x + 0.5f, y + 0.5f);
                 });
             bool const target = x == y && x >= 3 && x < 21;
             if (target && !painted) covered = false;
@@ -937,6 +942,124 @@ bool paintModeBeatsBlocksOnCurves() {
     return pass;
 }
 
+// El modo libre suelta objetos de decoracion donde encajan y pinta el resto como
+// siempre, asi que nunca puede costar mas que el modo de pintura ni dibujar peor.
+// Sin biblioteca del juego lo unico que tiene son las cuatro figuras de siempre,
+// que es justo el caso en el que mas facil seria salirse.
+// Un rombo es un cuadrado girado, o sea el borde en diagonal de cualquier silueta
+// cerrada. Sin buscar el giro por los lados de la envolvente convexa se quedaba en
+// la caja del cuadro, que acierta la mitad, y la mancha acababa en sesenta
+// cuadraditos apilados en escalera.
+bool paintModeFitsRotatedBoxes() {
+    auto source = animation(40, 40, 1, 0, 0, 0, 0);
+    for (int y = 0; y < 40; ++y) {
+        for (int x = 0; x < 40; ++x) {
+            if (std::abs(x - 20) + std::abs(y - 20) > 14) continue;
+            setPixel(source, 0, x, y, 200, 90, 180);
+        }
+    }
+    auto result = buildPlan(source, paintOptions(40));
+    auto const objects = result ? unmarked(result.plan) : std::vector<Primitive>{};
+    bool const tilted = std::any_of(
+        objects.begin(), objects.end(), [](Primitive const& object) {
+            float const quarter = std::fmod(std::abs(object.rotation), 90.f);
+            return std::min(quarter, 90.f - quarter) > 5.f;
+        });
+    std::cout << "paint-rotated-box: objects=" << objects.size()
+              << " girada=" << tilted << '\n';
+    return result && tilted && objects.size() <= 4;
+}
+
+// El modo circulos vive del estilo, asi que lo que hay que vigilar es que no se le
+// cuele ninguna otra figura: un cuadrado entre los circulos se dibuja en otra hoja
+// de sprites y GD lo manda debajo de todos ellos, se le ponga la capa que se le
+// ponga. Y que haya de los dos tipos, discos y husos, que es lo que lo distingue
+// de una trama de puntos.
+bool circleModeOnlyDrawsCircles() {
+    auto source = animation(40, 40, 1, 0, 0, 0, 0);
+    for (int y = 4; y < 36; ++y) {
+        for (int x = 4; x < 36; ++x) {
+            if ((x - 20) * (x - 20) + (y - 13) * (y - 13) <= 49) {
+                setPixel(source, 0, x, y, 90, 200, 240);
+            } else if (y >= 26 && y < 30) {
+                setPixel(source, 0, x, y, 235, 120, 90);
+            }
+        }
+    }
+    auto options = paintOptions(40);
+    options.mode = ImportMode::Circles;
+    auto result = buildPlan(source, options);
+    if (!result) {
+        std::cout << "circle-mode: " << result.error << '\n';
+        return false;
+    }
+    auto const& objects = result.plan.staticObjects;
+    bool const round = std::all_of(
+        objects.begin(), objects.end(), [](Primitive const& object) {
+            return object.kind == PrimitiveKind::Circle;
+        });
+    bool const stretched = std::any_of(
+        objects.begin(), objects.end(), [](Primitive const& object) {
+            return object.width > object.height * 2.f;
+        });
+    bool const plump = std::any_of(
+        objects.begin(), objects.end(), [](Primitive const& object) {
+            return object.width > 4.f && object.height > 4.f;
+        });
+    auto const preview = renderPlanFrame(result.plan, 0, 1);
+    int missing = 0;
+    for (int position = 0; position < result.plan.width * result.plan.height; ++position) {
+        if (result.plan.frames.front().cells[static_cast<std::size_t>(position)] < 0) continue;
+        missing += preview[static_cast<std::size_t>(position) * 4 + 3] == 0;
+    }
+    std::cout << "circle-mode: objects=" << objects.size() << " redondos=" << round
+              << " husos=" << stretched << " discos=" << plump
+              << " huecos=" << missing << '\n';
+    return round && stretched && plump && missing == 0;
+}
+
+bool freeModeNeverCostsMoreThanPaint() {
+    auto const scene = paintAntialiasedScene();
+    auto paint = buildPlan(scene, paintOptions(48));
+    auto freeOptions = paintOptions(48);
+    freeOptions.mode = ImportMode::Free;
+    auto free = buildPlan(scene, freeOptions);
+    bool const pass = paint && free &&
+        free.plan.visualObjects <= paint.plan.visualObjects &&
+        free.plan.similarity >= paint.plan.similarity - 0.5f;
+    std::cout << "free-vs-paint: paint=" << (paint ? paint.plan.visualObjects : 0)
+              << " libre=" << (free ? free.plan.visualObjects : 0)
+              << " moldes=" << (free ? free.plan.stampObjects : 0)
+              << " fidelidad=" << (free ? free.plan.similarity : 0.f)
+              << "% (pintura " << (paint ? paint.plan.similarity : 0.f) << "%)\n";
+    return pass;
+}
+
+// Cada figura de molde tiene que apuntar a una entrada real del plan, porque el
+// emisor saca de ahi el id del objeto y su tamano: un indice suelto pondria en el
+// nivel un objeto que no es.
+bool freeModeStampsResolve() {
+    auto const scene = paintAntialiasedScene();
+    auto options = paintOptions(48);
+    options.mode = ImportMode::Free;
+    auto result = buildPlan(scene, options);
+    bool pass = static_cast<bool>(result);
+    std::size_t stamps = 0;
+    if (result) {
+        for (auto const& object : result.plan.staticObjects) {
+            if (object.kind != PrimitiveKind::Stamp) continue;
+            ++stamps;
+            if (object.stamp >= result.plan.stamps.size()) pass = false;
+            else if (result.plan.stamps[object.stamp].objectId <= 0) pass = false;
+            else if (result.plan.stamps[object.stamp].mask.empty()) pass = false;
+        }
+        pass = pass && stamps == result.plan.stampObjects;
+    }
+    std::cout << "free-stamps: figuras=" << stamps
+              << " entradas=" << (result ? result.plan.stamps.size() : 0) << '\n';
+    return pass;
+}
+
 bool paintAnimationStaysInBudget() {
     auto source = animation(20, 16, 6, 0, 0, 0, 0);
     for (int frame = 0; frame < 6; ++frame) {
@@ -1096,8 +1219,8 @@ bool progressReachesEveryMode() {
     }
 
     bool pass = true;
-    for (auto mode : {ImportMode::Blocks, ImportMode::Art,
-                      ImportMode::Paint, ImportMode::Render}) {
+    for (auto mode : {ImportMode::Blocks, ImportMode::Art, ImportMode::Paint,
+                      ImportMode::Render, ImportMode::Free, ImportMode::Circles}) {
         auto options = exactOptions(12);
         options.mode = mode;
         float previous = 0.f;
@@ -1290,6 +1413,10 @@ int main() {
     bool const paintCurve = paintModeBeatsBlocksOnCurves();
     bool const paintAnimation = paintAnimationStaysInBudget();
     bool const paintSimilarity = paintModeMatchesReferenceImages();
+    bool const paintRotatedBox = paintModeFitsRotatedBoxes();
+    bool const circleMode = circleModeOnlyDrawsCircles();
+    bool const freeCost = freeModeNeverCostsMoreThanPaint();
+    bool const freeStamps = freeModeStampsResolve();
     bool const progress = progressReachesEveryMode();
     bool const render = renderModeRefinesWithoutBlowingTheBudget();
     bool const renderBalance = renderStopsAddingObjectsAfterItIsClear();
@@ -1332,6 +1459,10 @@ int main() {
     if (!paintCurve) std::cerr << "FAIL: paint mode did not beat blocks on a curved shape\n";
     if (!paintAnimation) std::cerr << "FAIL: paint animation exceeded the object budget\n";
     if (!paintSimilarity) std::cerr << "FAIL: paint mode fell below 95% visual similarity\n";
+    if (!paintRotatedBox) std::cerr << "FAIL: paint mode did not fit a rotated box\n";
+    if (!circleMode) std::cerr << "FAIL: circle mode did not draw the image with ellipses only\n";
+    if (!freeCost) std::cerr << "FAIL: free mode cost more than paint mode\n";
+    if (!freeStamps) std::cerr << "FAIL: a free mode stamp pointed outside the plan\n";
     if (!progress) std::cerr << "FAIL: processing progress did not cover every mode\n";
     if (!render) std::cerr << "FAIL: render mode did not refine within its object budget\n";
     if (!renderBalance) std::cerr << "FAIL: render mode kept adding objects after reaching its target\n";
@@ -1343,5 +1474,7 @@ int main() {
         paintDetails && paintRepairRuns &&
         paintJoins && paintSpeckles && paintGaps && paintPinholes && paintSeams &&
         paintSpikes && paintDarkLines && paintLayers && paintCurve && paintAnimation &&
-        paintSimilarity && progress && render && renderBalance && renderAnimation ? 0 : 1;
+        paintSimilarity && paintRotatedBox && circleMode &&
+        freeCost && freeStamps && progress && render &&
+        renderBalance && renderAnimation ? 0 : 1;
 }

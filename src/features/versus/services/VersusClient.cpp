@@ -84,6 +84,7 @@ matjson::Value sideToJson(SideState const& side) {
         {"attempt", side.attempt},
         {"deaths", side.deaths},
         {"finished", side.finished},
+        {"forfeited", side.forfeited},
         {"segments", static_cast<int>(side.segments)},
     });
 }

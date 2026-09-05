@@ -5,6 +5,7 @@
 #include "../../../core/modules/ModuleRegistry.hpp"
 #include "../../../utils/PaimonNotification.hpp"
 #include "../../../utils/SpriteHelper.hpp"
+#include "../../../utils/ThreadTracker.hpp"
 #include "../../collab-editor/CollabManager.hpp"
 
 #include <Geode/binding/ColorAction.hpp>
@@ -14,6 +15,7 @@
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/LevelEditorLayer.hpp>
 #include <Geode/binding/LevelSettingsObject.hpp>
+#include <Geode/utils/general.hpp>
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -25,7 +27,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 using namespace geode::prelude;
@@ -91,6 +92,7 @@ void appendPrimitive(
     std::string& payload,
     Primitive const& object,
     ShapeTable const& shapes,
+    std::vector<PlanStamp> const& stamps,
     std::vector<int> const& colors,
     float pixelSize,
     CCPoint origin,
@@ -100,21 +102,42 @@ void appendPrimitive(
     int zLayer
 ) {
     auto const& shape = shapes[shapeIndex(object.kind)];
-    float const x = origin.x + (object.x + 0.5f) * pixelSize;
-    float const y = origin.y + (imageHeight - object.y - 0.5f) * pixelSize;
-    float const scaleX = object.width * pixelSize / shape.width;
-    float const scaleY = object.height * pixelSize / shape.height;
-    int const color = colors[static_cast<std::size_t>(object.color)];
-    float const rotation = object.rotation +
+    bool const stamped =
+        object.kind == PrimitiveKind::Stamp && object.stamp < stamps.size();
+    auto const& stamp = stamped ? stamps[object.stamp] : PlanStamp{};
+    float const boxWidth = object.width * pixelSize;
+    float const boxHeight = object.height * pixelSize;
+    // El molde va recortado a lo que pinta, asi que el objeto entero se corre
+    // para que ese recorte caiga donde el plan lo dejo.
+    float x = origin.x + (object.x + stamp.offsetX * object.width + 0.5f) * pixelSize;
+    float y = origin.y +
+        (imageHeight - object.y - stamp.offsetY * object.height - 0.5f) * pixelSize;
+    float scaleX = boxWidth / shape.width;
+    float scaleY = boxHeight / shape.height;
+    if (stamped) {
+        // GD escala antes de girar, asi que a un cuarto de vuelta los dos ejes
+        // se cruzan: lo ancho de la caja lo da el alto del arte.
+        bool const quarter =
+            std::abs(std::fmod(std::abs(stamp.rotation), 180.f) - 90.f) < 0.5f;
+        scaleX = (quarter ? boxHeight : boxWidth) /
+            (quarter ? stamp.baseHeight : stamp.baseWidth);
+        scaleY = (quarter ? boxWidth : boxHeight) /
+            (quarter ? stamp.baseWidth : stamp.baseHeight);
+    }
+    // Skipping a stray colour index would desync the object count the import
+    // checks against, so the last channel takes it instead.
+    int const color = colors[std::min<std::size_t>(object.color, colors.size() - 1)];
+    float const rotation = stamped ? stamp.rotation : object.rotation +
         (object.kind == PrimitiveKind::Triangle || object.kind == PrimitiveKind::WideTriangle
             ? 180.f : 0.f);
     payload += fmt::format(
         "1,{},2,{:.3f},3,{:.3f},21,{},64,1,67,1,121,1,134,1,128,{:.4f},129,{:.4f}",
-        shape.id, x, y, color, scaleX, scaleY
+        stamped ? stamp.objectId : shape.id, x, y, color, scaleX, scaleY
     );
     if (std::abs(rotation) > 0.001f) {
         payload += fmt::format(",6,{:.3f}", rotation);
     }
+    if (stamped && stamp.flipX) payload += ",4,1";
     if (layered) {
         payload += fmt::format(",25,{}", std::clamp<int>(object.layer, -999, 999));
         if (zLayer != 0) payload += fmt::format(",24,{}", zLayer);
@@ -220,8 +243,9 @@ bool measureShape(LevelEditorLayer* editor, ObjectShape& shape) {
 // El orden Z (25) solo ordena dentro de una misma capa Z, asi que las figuras
 // que traen otra capa por defecto se dibujarian encima de los cuadrados pase lo
 // que pase. Si alguna no coincide, las mandamos todas a la capa del cuadrado.
-int sharedZLayer(ShapeTable const& shapes) {
+int sharedZLayer(ShapeTable const& shapes, bool stamped) {
     int const block = shapes[shapeIndex(PrimitiveKind::Block)].zLayer;
+    if (stamped) return block != 0 ? block : static_cast<int>(ZLayer::B1);
     for (auto kind : {PrimitiveKind::Stroke, PrimitiveKind::Circle,
                       PrimitiveKind::Triangle, PrimitiveKind::WideTriangle}) {
         if (shapes[shapeIndex(kind)].zLayer == block) continue;
@@ -333,26 +357,26 @@ Result<PreparedImport> prepareImport(
     float const moveScale = plan.motionTracks.empty() ? 3.f : moveUnitScale(editor);
 
     bool const layered = usesPaintGeometry(plan.mode);
-    int const zLayer = layered ? sharedZLayer(shapes) : 0;
+    int const zLayer = layered ? sharedZLayer(shapes, !plan.stamps.empty()) : 0;
     std::string payload;
     payload.reserve(plan.totalObjects * 112);
     for (auto const& object : plan.staticObjects) {
         appendPrimitive(
-            payload, object, shapes, channels, options.pixelSize, origin, plan.height, 0,
-            layered, zLayer);
+            payload, object, shapes, plan.stamps, channels, options.pixelSize, origin,
+            plan.height, 0, layered, zLayer);
     }
     for (std::size_t i = 0; i < plan.tracks.size(); ++i) {
         for (auto const& object : plan.tracks[i].objects) {
             appendPrimitive(
-                payload, object, shapes, channels, options.pixelSize, origin, plan.height,
-                stateGroups[i], layered, zLayer);
+                payload, object, shapes, plan.stamps, channels, options.pixelSize, origin,
+                plan.height, stateGroups[i], layered, zLayer);
         }
     }
     for (std::size_t i = 0; i < plan.motionTracks.size(); ++i) {
         for (auto const& object : plan.motionTracks[i].objects) {
             appendPrimitive(
-                payload, object, shapes, channels, options.pixelSize, origin, plan.height,
-                motionGroups[i], layered, zLayer);
+                payload, object, shapes, plan.stamps, channels, options.pixelSize, origin,
+                plan.height, motionGroups[i], layered, zLayer);
         }
     }
 
@@ -581,16 +605,17 @@ private:
 
         auto const win = CCDirector::get()->getWinSize();
         setPosition({win.width * 0.5f - 115.f, win.height - 43.f});
+        if (!startBuild()) return false;
         schedule(schedule_selector(BackgroundImportJob::tick));
-        startBuild();
         return true;
     }
 
-    void startBuild() {
+    bool startBuild() {
         auto source = m_source;
         auto const options = m_options;
         auto progress = m_progress;
-        std::thread([source, options, progress] {
+        return paimon::ThreadTracker::get().spawn([source, options, progress] {
+            geode::utils::thread::setName("Paimon GIF Background Plan");
             auto result = buildPlan(
                 *source, options, [progress](BuildProgress const& update) {
                     progress->value.store(update.value, std::memory_order_relaxed);
@@ -601,7 +626,7 @@ private:
                 });
             std::lock_guard lock(progress->mutex);
             progress->result = std::move(result);
-        }).detach();
+        });
     }
 
     void beginEmission(BuildResult result) {

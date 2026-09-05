@@ -82,9 +82,13 @@ void VersusMatchPopup::rebuild() {
         Popup::onClose(nullptr);
         return;
     }
-    if (phase == m_drawn && m_page) return;
+    // A veto lands without the phase moving, so the offers are part of what
+    // counts as already drawn.
+    uint32_t const offers = offerStamp();
+    if (phase == m_drawn && offers == m_drawnOffers && m_page) return;
 
     m_drawn = phase;
+    m_drawnOffers = offers;
     if (m_page) m_page->removeFromParent();
     m_menu->removeAllChildren();
 
@@ -97,6 +101,14 @@ void VersusMatchPopup::rebuild() {
         case Phase::Banning: buildBanning(m_page); break;
         default:             buildLoading(m_page); break;
     }
+}
+
+uint32_t VersusMatchPopup::offerStamp() const {
+    uint32_t stamp = 0;
+    for (auto const& offer : VersusSession::get().match().offers) {
+        stamp = stamp * 31u + static_cast<uint32_t>(offer.levelId) + (offer.banned ? 1u : 0u);
+    }
+    return stamp;
 }
 
 void VersusMatchPopup::buildFound(CCNode* page) {

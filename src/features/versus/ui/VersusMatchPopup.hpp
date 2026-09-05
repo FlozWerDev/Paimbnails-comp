@@ -23,6 +23,7 @@ protected:
     void onExit() override;
 
     void rebuild();
+    uint32_t offerStamp() const;
     void buildFound(cocos2d::CCNode* page);
     void buildBanning(cocos2d::CCNode* page);
     void buildLoading(cocos2d::CCNode* page);
@@ -33,6 +34,7 @@ protected:
     void onPlay(cocos2d::CCObject* sender);
 
     Phase m_drawn = Phase::Idle;
+    uint32_t m_drawnOffers = 0;
     cocos2d::CCNode* m_page = nullptr;
     cocos2d::CCMenu* m_menu = nullptr;
 };

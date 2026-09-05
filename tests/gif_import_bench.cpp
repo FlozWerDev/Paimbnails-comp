@@ -6,7 +6,7 @@
 // apilados donde tendria que haber uno gordo.
 //
 //   g++ -std=c++23 -O2 -o bench tests/gif_import_bench.cpp
-//   ./bench <carpeta-o-imagen> [--mode paint|render|art|blocks] [--dim 64]
+//   ./bench <carpeta-o-imagen> [--mode paint|render|art|blocks|free] [--dim 64]
 //           [--colors 16] [--budget 12000] [--dump <carpeta>]
 
 #include <algorithm>
@@ -26,8 +26,13 @@
 
 #include "../src/features/gif-import/services/GifImportPipeline.hpp"
 #include "../src/features/gif-import/services/ColorSpace.cpp"
+#include "../src/features/gif-import/services/GifParallel.cpp"
+#include "../src/features/gif-import/services/GifShapeRaster.cpp"
 #include "../src/features/gif-import/services/GifVectorMath.cpp"
 #include "../src/features/gif-import/services/GifArtVectorizer.cpp"
+#include "../src/features/gif-import/services/GifCircleVectorizer.cpp"
+#include "../src/features/gif-import/services/GifFreeVectorizer.cpp"
+#include "../src/features/gif-import/services/GifStampCatalog.cpp"
 #include "../src/features/gif-import/services/GifGlowPass.cpp"
 #include "../src/features/gif-import/services/GifMotionPlanner.cpp"
 #include "../src/features/gif-import/services/GifPaintVectorizer.cpp"
@@ -258,6 +263,8 @@ ImportMode parseMode(std::string const& name) {
     if (name == "art") return ImportMode::Art;
     if (name == "blocks") return ImportMode::Blocks;
     if (name == "render") return ImportMode::Render;
+    if (name == "free") return ImportMode::Free;
+    if (name == "circles") return ImportMode::Circles;
     return ImportMode::Paint;
 }
 
@@ -267,8 +274,52 @@ char const* modeName(ImportMode mode) {
         case ImportMode::Art: return "art";
         case ImportMode::Paint: return "paint";
         case ImportMode::Render: return "render";
+        case ImportMode::Free: return "free";
+        case ImportMode::Circles: return "circles";
     }
     return "?";
+}
+
+// En el juego la biblioteca del modo libre sale de los objetos de decoracion de
+// GD. Aqui no hay GD, asi que para medir el algoritmo se le da una tanda de
+// siluetas analiticas —cunas, cuartos de circulo, medias lunas, chaflanes— con
+// id 0: el banco no emite nada, solo mide cuanto cubren y a que precio.
+std::vector<CatalogEntry> syntheticCatalog() {
+    constexpr int side = 32;
+    std::vector<CatalogEntry> entries;
+    auto add = [&](auto&& inside) {
+        CatalogEntry entry;
+        entry.baseWidth = 30.f;
+        entry.baseHeight = 30.f;
+        entry.mask.width = side;
+        entry.mask.height = side;
+        entry.mask.coverage.assign(static_cast<std::size_t>(side) * side, 0);
+        for (int y = 0; y < side; ++y) {
+            for (int x = 0; x < side; ++x) {
+                float const u = (x + 0.5f) / side;
+                float const v = (y + 0.5f) / side;
+                entry.mask.coverage[static_cast<std::size_t>(y) * side + x] =
+                    inside(u, v) ? 255 : 0;
+            }
+        }
+        entries.push_back(std::move(entry));
+    };
+
+    add([](float, float) { return true; });
+    add([](float u, float v) { float const dx = u - 0.5f, dy = v - 0.5f;
+                              return dx * dx + dy * dy <= 0.25f; });
+    add([](float u, float v) { return u + v <= 1.f; });
+    add([](float u, float v) { return u + v <= 1.f && u + v >= 0.5f; });
+    add([](float u, float v) { return u * u + v * v <= 1.f; });
+    add([](float u, float v) { return u * u + v * v >= 1.f; });
+    add([](float u, float v) { float const dx = u - 0.5f;
+                               return dx * dx + (v - 1.f) * (v - 1.f) <= 0.25f; });
+    add([](float u, float v) { return v >= u * 0.5f; });
+    add([](float u, float v) { return v >= 1.f - u * u; });
+    add([](float u, float v) { return v <= 1.f - u * u; });
+    add([](float u, float v) { return std::abs(v - 0.5f) <= 0.5f * (1.f - u); });
+    add([](float u, float v) { return u >= 0.25f || v >= 0.25f; });
+    return entries;
 }
 
 } // namespace
@@ -298,6 +349,9 @@ int main(int argc, char** argv) {
         else if (key == "--colors") options.maxColors = std::stoi(value);
         else if (key == "--budget") options.objectBudget = std::stoi(value);
         else if (key == "--dump") dump = value;
+        else if (key == "--stamps" && value == "sinteticos") {
+            setStampCatalog(syntheticCatalog());
+        }
     }
     if (!dump.empty()) fs::create_directories(dump);
 
@@ -332,7 +386,8 @@ int main(int argc, char** argv) {
               << std::setw(9) << "lejos"
               << std::setw(9) << "revision"
               << std::setw(11) << "fusionab."
-              << std::setw(8) << "tiras" << '\n';
+              << std::setw(8) << "tiras"
+              << std::setw(8) << "moldes" << '\n';
 
     double totalNear = 0.0;
     double totalFar = 0.0;
@@ -381,7 +436,8 @@ int main(int argc, char** argv) {
                   << std::setw(9) << far
                   << std::setw(8) << std::setprecision(1) << plan.similarity << "%"
                   << std::setw(9) << strokes.mergeable
-                  << std::setw(8) << strokes.strokes << '\n';
+                  << std::setw(8) << strokes.strokes
+                  << std::setw(8) << plan.stampObjects << '\n';
 
         totalNear += near;
         totalFar += far;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../data/VersusCards.hpp"
+#include "../services/VersusEffects.hpp"
 
 #include <Geode/Geode.hpp>
 
@@ -21,13 +22,20 @@ protected:
     bool init() override;
     void update(float dt) override;
     void rebuildHand();
-    void rebuildEffects();
+    void rebuildRivalHand();
+    // Takes the list refresh() already holds, so the rings line up with the
+    // glyphs they were built from.
+    void rebuildEffects(std::vector<ActiveEffect> const& active);
 
     std::vector<CardId> m_drawn;
+    std::vector<CardId> m_drawnRival;
+    std::vector<ActiveEffect> m_drawnEffects;
     cocos2d::CCNode* m_slots = nullptr;
+    cocos2d::CCNode* m_rivalSlots = nullptr;
     cocos2d::CCNode* m_effects = nullptr;
     cocos2d::CCLabelBMFont* m_locked = nullptr;
-    size_t m_effectCount = 0;
+    // One entry per active effect, null for the ones with no clock.
+    std::vector<cocos2d::CCProgressTimer*> m_rings;
 };
 
 } // namespace paimon::versus

@@ -1,6 +1,7 @@
 ﻿#include "GifPaintVectorizer.hpp"
 
 #include "GifArtVectorizer.hpp"
+#include "GifShapeRaster.hpp"
 #include "GifVectorMath.hpp"
 
 #include <algorithm>
@@ -38,6 +39,10 @@ constexpr float kChainSlenderness = 3.f;
 constexpr float kChainSpill = 0.06f;
 constexpr float kRepairDiameter = 1.f;
 constexpr float kRoundCapDiameter = 1.8f;
+// A partir de que giro vale la pena cambiar el empaquetado recto por una caja
+// girada. Por debajo de siete grados las dos pintan casi lo mismo y la recta gana:
+// su borde cae en la rejilla y ademas se funde con los rectangulos de al lado.
+constexpr float kBoxTilt = 0.12f;
 constexpr int kRepairReach = 3;
 constexpr int kPadding = 2;
 // Cuanto hueco puede tragarse la caja comun de dos rectangulos que se funden,
@@ -48,9 +53,6 @@ constexpr float kAbsorbSlack = 0.6f;
 // es gratis, asi que no salen baratas; las primeras se llevan casi todo y las
 // ultimas rascan una fusion suelta por un rato de trabajo.
 constexpr int kAbsorbRounds = 4;
-// Con cuatro muestras por lado se ve cualquier asomo de mas de un cuarto de celda,
-// que es justo lo que se nota en pantalla.
-constexpr int kFitSamples = 4;
 
 struct Region {
     int width = 0;
@@ -76,74 +78,8 @@ struct Region {
     }
 };
 
-void transformRow(
-    std::vector<float>& source,
-    std::vector<float>& target,
-    std::vector<int>& hull,
-    std::vector<float>& breaks,
-    int count
-) {
-    constexpr float kInfinity = std::numeric_limits<float>::max();
-    int top = 0;
-    hull[0] = 0;
-    breaks[0] = -kInfinity;
-    breaks[1] = kInfinity;
-    for (int q = 1; q < count; ++q) {
-        float split = 0.f;
-        while (true) {
-            int const p = hull[top];
-            split = ((source[static_cast<std::size_t>(q)] + static_cast<float>(q) * q) -
-                     (source[static_cast<std::size_t>(p)] + static_cast<float>(p) * p)) /
-                    (2.f * static_cast<float>(q - p));
-            if (split > breaks[static_cast<std::size_t>(top)] || top == 0) break;
-            --top;
-        }
-        ++top;
-        hull[static_cast<std::size_t>(top)] = q;
-        breaks[static_cast<std::size_t>(top)] = split;
-        breaks[static_cast<std::size_t>(top) + 1] = kInfinity;
-    }
-    top = 0;
-    for (int q = 0; q < count; ++q) {
-        while (breaks[static_cast<std::size_t>(top) + 1] < static_cast<float>(q)) ++top;
-        int const p = hull[static_cast<std::size_t>(top)];
-        float const offset = static_cast<float>(q - p);
-        target[static_cast<std::size_t>(q)] = offset * offset + source[static_cast<std::size_t>(p)];
-    }
-}
-
 void computeDistance(Region& region) {
-    constexpr float kInfinity = 1e18f;
-    std::size_t const total = static_cast<std::size_t>(region.width) * region.height;
-    region.distance.assign(total, 0.f);
-    std::vector<float> work(total, 0.f);
-    for (std::size_t i = 0; i < total; ++i) work[i] = region.cells[i] ? kInfinity : 0.f;
-
-    int const span = std::max(region.width, region.height);
-    std::vector<float> source(static_cast<std::size_t>(span));
-    std::vector<float> target(static_cast<std::size_t>(span));
-    std::vector<int> hull(static_cast<std::size_t>(span));
-    std::vector<float> breaks(static_cast<std::size_t>(span) + 1);
-
-    for (int x = 0; x < region.width; ++x) {
-        for (int y = 0; y < region.height; ++y) {
-            source[static_cast<std::size_t>(y)] = work[static_cast<std::size_t>(y) * region.width + x];
-        }
-        transformRow(source, target, hull, breaks, region.height);
-        for (int y = 0; y < region.height; ++y) {
-            work[static_cast<std::size_t>(y) * region.width + x] = target[static_cast<std::size_t>(y)];
-        }
-    }
-    for (int y = 0; y < region.height; ++y) {
-        for (int x = 0; x < region.width; ++x) {
-            source[static_cast<std::size_t>(x)] = work[static_cast<std::size_t>(y) * region.width + x];
-        }
-        transformRow(source, target, hull, breaks, region.width);
-        for (int x = 0; x < region.width; ++x) {
-            region.distance[static_cast<std::size_t>(y) * region.width + x] =
-                std::sqrt(target[static_cast<std::size_t>(x)]);
-        }
-    }
+    region.distance = distanceField(region.cells, region.width, region.height);
 }
 
 Region buildRegion(std::vector<int> const& component, int sourceWidth) {
@@ -261,104 +197,8 @@ std::vector<std::vector<int>> splitByThickness(
     return pieces;
 }
 
-bool insideShape(Primitive const& object, float x, float y) {
-    if (object.width <= 0.f || object.height <= 0.f) return false;
-    float const angle = object.rotation * kPi / 180.f;
-    float const cosine = std::cos(angle);
-    float const sine = std::sin(angle);
-    float const dx = x - object.x;
-    float const dy = y - object.y;
-    float const localX = dx * cosine + dy * sine;
-    float const localY = -dx * sine + dy * cosine;
-    if (object.kind == PrimitiveKind::Circle) {
-        float const nx = localX / (object.width * 0.5f);
-        float const ny = localY / (object.height * 0.5f);
-        return nx * nx + ny * ny <= 1.f;
-    }
-    if (object.kind == PrimitiveKind::Triangle ||
-        object.kind == PrimitiveKind::WideTriangle) {
-        float const u = localX / object.width + 0.5f;
-        float const v = localY / object.height + 0.5f;
-        return u >= 0.f && v >= 0.f && u <= 1.f && v <= 1.f && u + v <= 1.f;
-    }
-    return std::abs(localX) <= object.width * 0.5f &&
-        std::abs(localY) <= object.height * 0.5f;
-}
-
 std::array<int, 4> shapeBox(Primitive const& shape, int width, int height) {
-    float const angle = shape.rotation * kPi / 180.f;
-    float const extentX = std::abs(std::cos(angle)) * shape.width * 0.5f +
-        std::abs(std::sin(angle)) * shape.height * 0.5f;
-    float const extentY = std::abs(std::sin(angle)) * shape.width * 0.5f +
-        std::abs(std::cos(angle)) * shape.height * 0.5f;
-    return {
-        std::max(0, static_cast<int>(std::floor(shape.x - extentX))),
-        std::max(0, static_cast<int>(std::floor(shape.y - extentY))),
-        std::min(width - 1, static_cast<int>(std::ceil(shape.x + extentX))),
-        std::min(height - 1, static_cast<int>(std::ceil(shape.y + extentY)))
-    };
-}
-
-// Una figura puede asomar de sus celdas solo hacia donde no se nota: celdas del
-// mismo color, celdas que otro color tapa despues, o hueco que ningun frame
-// pinta. Asomando sobre el color que queda debajo es cuando se ve el pico, y
-// medir por el centro de la celda no lo detecta porque el pico entra menos de
-// media celda.
-bool shapeStaysInside(
-    Primitive const& shape,
-    std::vector<std::uint8_t> const& permitted,
-    int width,
-    int height
-) {
-    auto const box = shapeBox(shape, width, height);
-    for (int y = box[1]; y <= box[3]; ++y) {
-        for (int x = box[0]; x <= box[2]; ++x) {
-            if (permitted[static_cast<std::size_t>(y) * width + x]) continue;
-            for (int sampleY = 0; sampleY < kFitSamples; ++sampleY) {
-                for (int sampleX = 0; sampleX < kFitSamples; ++sampleX) {
-                    if (insideShape(
-                            shape,
-                            static_cast<float>(x) + (sampleX + 0.5f) / kFitSamples,
-                            static_cast<float>(y) + (sampleY + 0.5f) / kFitSamples)) {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    return true;
-}
-
-// Que parte de la figura cae fuera de lo permitido. Para una tira, exigir cero es
-// pasarse: el bisel y el remate de una tira buena se salen un pico y no se ve,
-// pero tirarla manda la mancha al contorno, que se pasa mucho mas.
-float shapeSpill(
-    Primitive const& shape,
-    std::vector<std::uint8_t> const& permitted,
-    int width,
-    int height
-) {
-    auto const box = shapeBox(shape, width, height);
-    int covered = 0;
-    int spilled = 0;
-    for (int y = box[1]; y <= box[3]; ++y) {
-        for (int x = box[0]; x <= box[2]; ++x) {
-            bool const allowed = permitted[static_cast<std::size_t>(y) * width + x] != 0;
-            for (int sampleY = 0; sampleY < kFitSamples; ++sampleY) {
-                for (int sampleX = 0; sampleX < kFitSamples; ++sampleX) {
-                    if (!insideShape(
-                            shape,
-                            static_cast<float>(x) + (sampleX + 0.5f) / kFitSamples,
-                            static_cast<float>(y) + (sampleY + 0.5f) / kFitSamples)) {
-                        continue;
-                    }
-                    ++covered;
-                    spilled += !allowed;
-                }
-            }
-        }
-    }
-    return covered > 0 ? static_cast<float>(spilled) / covered : 0.f;
+    return xformBox(xformOf(shape), width, height);
 }
 
 // Un objeto redondo solo puede ir donde nada se pinte encima: GD lo dibuja en
@@ -370,11 +210,12 @@ bool coversBlocked(
     std::vector<std::uint8_t> const& blocked
 ) {
     if (blocked.size() != static_cast<std::size_t>(sourceWidth) * sourceHeight) return false;
-    auto const box = shapeBox(shape, sourceWidth, sourceHeight);
+    auto const placed = xformOf(shape);
+    auto const box = xformBox(placed, sourceWidth, sourceHeight);
     for (int y = box[1]; y <= box[3]; ++y) {
         for (int x = box[0]; x <= box[2]; ++x) {
             if (!blocked[static_cast<std::size_t>(y) * sourceWidth + x]) continue;
-            if (insideShape(shape, x + 0.5f, y + 0.5f)) return true;
+            if (placed.contains(x + 0.5f, y + 0.5f)) return true;
         }
     }
     return false;
@@ -1053,13 +894,14 @@ bool appendCircle(
 
     bool const hasBlocked =
         blocked.size() == static_cast<std::size_t>(sourceWidth) * sourceHeight;
+    auto const placed = xformOf(circle);
     int missing = 0;
     int spilled = 0;
     for (int y = 0; y < region.height; ++y) {
         for (int x = 0; x < region.width; ++x) {
             float const sampleX = static_cast<float>(x + region.offsetX) + 0.5f;
             float const sampleY = static_cast<float>(y + region.offsetY) + 0.5f;
-            if (!insideShape(circle, sampleX, sampleY)) {
+            if (!placed.contains(sampleX, sampleY)) {
                 missing += region.filled(x, y);
                 continue;
             }
@@ -1189,9 +1031,10 @@ float fitSimilarity(
     std::vector<Primitive> const& shapes,
     std::vector<std::uint8_t> const& blocked
 ) {
+    auto const placed = xformsOf(shapes);
     auto covered = [&](float x, float y) {
-        return std::any_of(shapes.begin(), shapes.end(), [&](Primitive const& shape) {
-            return insideShape(shape, x, y);
+        return std::any_of(placed.begin(), placed.end(), [&](ShapeXform const& shape) {
+            return shape.contains(x, y);
         });
     };
 
@@ -1244,11 +1087,18 @@ bool appendCapsule(
     int height,
     int color,
     int layer,
-    std::vector<std::uint8_t> const& blocked
+    std::vector<std::uint8_t> const& blocked,
+    std::vector<std::uint8_t> const& empty
 ) {
     if (positions.size() < 6) return false;
     std::vector<std::uint8_t> target(static_cast<std::size_t>(width) * height, 0);
     for (int position : positions) target[static_cast<std::size_t>(position)] = 1;
+    // La mancha y el hueco de alrededor: lo unico contra lo que un borde recto
+    // puede partir celdas sin que nadie se las reclame despues.
+    std::vector<std::uint8_t> unclaimed = target;
+    if (empty.size() == unclaimed.size()) {
+        for (std::size_t i = 0; i < unclaimed.size(); ++i) unclaimed[i] |= empty[i];
+    }
     float meanX = 0.f;
     float meanY = 0.f;
     for (int position : positions) {
@@ -1273,17 +1123,63 @@ bool appendCapsule(
     constexpr std::array<float, 4> kWidthPadding{0.f, 0.2f, 0.4f, 0.6f};
     float bestSimilarity = 0.f;
     std::vector<Primitive> best;
-    auto consider = [&](std::vector<Primitive> const& shapes) {
+    // La caja de un rombo apoya un lado entero contra el borde en escalera de la
+    // mancha, asi que lo parte celda a celda de punta a punta, y el parecido
+    // apenas lo nota porque cada celda partida es un acierto menos sobre un area
+    // enorme. Contra el hueco esas medias celdas no son de nadie y el borde queda
+    // recto y limpio; contra otro color, ese color se las reclama despues con un
+    // cuadradito por celda y la caja acaba costando mas que la escalera que venia
+    // a quitar. A la capsula larga no se le pide esto: se sale solo por las dos
+    // puntas y el parecido ya la mide bien.
+    auto consider = [&](std::vector<Primitive> const& shapes, bool tight) {
         float const similarity = fitSimilarity(
             positions, target, width, height, shapes, blocked);
         if (similarity <= bestSimilarity) return;
+        if (tight && std::any_of(shapes.begin(), shapes.end(),
+                                 [&](Primitive const& shape) {
+                                     return !shapeStaysInside(
+                                         shape, unclaimed, width, height);
+                                 })) {
+            return;
+        }
         bestSimilarity = similarity;
         best = shapes;
     };
+    // El eje de inercia con seis grados alrededor no basta. Una mancha simetrica
+    // —un rombo, o sea el borde en diagonal de cualquier silueta cerrada— no tiene
+    // eje: el suyo sale recto y la caja que se prueba es la del cuadro, que acierta
+    // la mitad. La caja de area minima siempre apoya un lado en un lado de la
+    // envolvente convexa, asi que ahi estan los giros que faltan.
+    std::vector<float> angles;
     for (int offset = -6; offset <= 6; ++offset) {
-        float const angle = principal + offset * kPi / 180.f;
+        angles.push_back(principal + offset * kPi / 180.f);
+    }
+    auto hull = convexHull(positions, width);
+    for (float tolerance = 0.5f; hull.size() > 12 && tolerance <= 2.f; tolerance += 0.5f) {
+        hull = simplifyLoop(hull, tolerance);
+    }
+    for (std::size_t i = 0; i < hull.size() && hull.size() >= 3; ++i) {
+        auto const& first = hull[i];
+        auto const& second = hull[(i + 1) % hull.size()];
+        float const edge = std::atan2(second.y - first.y, second.x - first.x);
+        // Un rectangulo se repite cada cuarto de vuelta, asi que dos lados
+        // paralelos o en escuadra son el mismo giro y no hay que probarlo dos veces.
+        float folded = std::fmod(edge, kPi * 0.5f);
+        if (folded < 0.f) folded += kPi * 0.5f;
+        if (std::none_of(angles.begin(), angles.end(), [&](float known) {
+                float difference = std::fmod(std::abs(known - folded), kPi * 0.5f);
+                difference = std::min(difference, kPi * 0.5f - difference);
+                return difference < 0.008f;
+            })) {
+            angles.push_back(folded);
+        }
+    }
+
+    for (float angle : angles) {
         float const cosine = std::cos(angle);
         float const sine = std::sin(angle);
+        float const quarter = std::fmod(std::abs(angle), kPi * 0.5f);
+        bool const upright = std::min(quarter, kPi * 0.5f - quarter) < kBoxTilt;
         float minMajor = std::numeric_limits<float>::max();
         float maxMajor = std::numeric_limits<float>::lowest();
         float minMinor = std::numeric_limits<float>::max();
@@ -1303,7 +1199,9 @@ bool appendCapsule(
             for (float widthPadding : kWidthPadding) {
                 float const totalLength = maxMajor - minMajor + support * 2.f * lengthPadding;
                 float const diameter = maxMinor - minMinor + support * 2.f * widthPadding;
-                if (totalLength / std::max(diameter, 0.01f) < 1.6f) continue;
+                // La capsula necesita un eje largo donde poner los dos remates; el
+                // rectangulo pelado no, y es justo el que salva al rombo.
+                bool const slender = totalLength / std::max(diameter, 0.01f) >= 1.6f;
                 float const lineLength = std::max(totalLength - diameter, 0.05f);
                 float const middleMajor = (minMajor + maxMajor) * 0.5f;
                 float const middleMinor = (minMinor + maxMinor) * 0.5f;
@@ -1327,14 +1225,18 @@ bool appendCapsule(
                     angle * 180.f / kPi, static_cast<std::uint16_t>(color),
                     PrimitiveKind::Stroke, static_cast<std::int16_t>(layer)
                 }};
+                // Apenas girado, un rectangulo lo hace mejor el empaquetado: sale
+                // como bloque, con el borde limpio, y ahi si se puede fundir con
+                // los de al lado.
+                if (slender || !upright) consider(squared, !slender);
+                if (!slender) continue;
                 bool const capped = appendRoundCap(
                         rounded, {center.x - extent.x, center.y - extent.y},
                         diameter, color, layer, width, height, blocked) &&
                     appendRoundCap(
                         rounded, {center.x + extent.x, center.y + extent.y},
                         diameter, color, layer, width, height, blocked);
-                consider(squared);
-                if (capped) consider(rounded);
+                if (capped) consider(rounded, false);
             }
         }
     }
@@ -1433,27 +1335,22 @@ std::vector<std::uint8_t> coverageMask(
         static_cast<std::size_t>(region.width) * region.height, 0);
     auto const full = static_cast<std::uint16_t>((1u << sampleCount) - 1u);
     for (auto const& object : objects) {
-        float const angle = object.rotation * kPi / 180.f;
-        float const extentX = std::abs(std::cos(angle)) * object.width * 0.5f +
-            std::abs(std::sin(angle)) * object.height * 0.5f;
-        float const extentY = std::abs(std::sin(angle)) * object.width * 0.5f +
-            std::abs(std::cos(angle)) * object.height * 0.5f;
+        auto const placed = xformOf(object);
         int const minX = std::max(0, static_cast<int>(
-            std::floor(object.x - extentX)) - region.offsetX);
+            std::floor(placed.x - placed.extentX)) - region.offsetX);
         int const minY = std::max(0, static_cast<int>(
-            std::floor(object.y - extentY)) - region.offsetY);
+            std::floor(placed.y - placed.extentY)) - region.offsetY);
         int const maxX = std::min(region.width - 1, static_cast<int>(
-            std::ceil(object.x + extentX)) - region.offsetX);
+            std::ceil(placed.x + placed.extentX)) - region.offsetX);
         int const maxY = std::min(region.height - 1, static_cast<int>(
-            std::ceil(object.y + extentY)) - region.offsetY);
+            std::ceil(placed.y + placed.extentY)) - region.offsetY);
         for (int y = minY; y <= maxY; ++y) {
             for (int x = minX; x <= maxX; ++x) {
                 std::size_t const index = static_cast<std::size_t>(y) * region.width + x;
                 if (samples[index] == full) continue;
                 for (std::size_t sample = 0; sample < sampleCount; ++sample) {
                     Point const point = whole ? kWholeSamples[sample] : Point{0.5f, 0.5f};
-                    if (!insideShape(
-                            object,
+                    if (!placed.contains(
                             static_cast<float>(x + region.offsetX) + point.x,
                             static_cast<float>(y + region.offsetY) + point.y)) {
                         continue;
@@ -1642,21 +1539,14 @@ int coveredRepairs(
     int width,
     int height
 ) {
-    float const angle = object.rotation * kPi / 180.f;
-    float const extentX = std::abs(std::cos(angle)) * object.width * 0.5f +
-        std::abs(std::sin(angle)) * object.height * 0.5f;
-    float const extentY = std::abs(std::sin(angle)) * object.width * 0.5f +
-        std::abs(std::cos(angle)) * object.height * 0.5f;
-    int const minX = std::max(0, static_cast<int>(std::floor(object.x - extentX)));
-    int const minY = std::max(0, static_cast<int>(std::floor(object.y - extentY)));
-    int const maxX = std::min(width - 1, static_cast<int>(std::ceil(object.x + extentX)));
-    int const maxY = std::min(height - 1, static_cast<int>(std::ceil(object.y + extentY)));
+    auto const placed = xformOf(object);
+    auto const box = xformBox(placed, width, height);
     int count = 0;
-    for (int y = minY; y <= maxY; ++y) {
-        for (int x = minX; x <= maxX; ++x) {
+    for (int y = box[1]; y <= box[3]; ++y) {
+        for (int x = box[0]; x <= box[2]; ++x) {
             int const position = y * width + x;
             if (remaining[static_cast<std::size_t>(position)] &&
-                insideShape(object, x + 0.5f, y + 0.5f)) {
+                placed.contains(x + 0.5f, y + 0.5f)) {
                 ++count;
             }
         }
@@ -1670,20 +1560,13 @@ void consumeRepairs(
     int width,
     int height
 ) {
-    float const angle = object.rotation * kPi / 180.f;
-    float const extentX = std::abs(std::cos(angle)) * object.width * 0.5f +
-        std::abs(std::sin(angle)) * object.height * 0.5f;
-    float const extentY = std::abs(std::sin(angle)) * object.width * 0.5f +
-        std::abs(std::cos(angle)) * object.height * 0.5f;
-    int const minX = std::max(0, static_cast<int>(std::floor(object.x - extentX)));
-    int const minY = std::max(0, static_cast<int>(std::floor(object.y - extentY)));
-    int const maxX = std::min(width - 1, static_cast<int>(std::ceil(object.x + extentX)));
-    int const maxY = std::min(height - 1, static_cast<int>(std::ceil(object.y + extentY)));
-    for (int y = minY; y <= maxY; ++y) {
-        for (int x = minX; x <= maxX; ++x) {
+    auto const placed = xformOf(object);
+    auto const box = xformBox(placed, width, height);
+    for (int y = box[1]; y <= box[3]; ++y) {
+        for (int x = box[0]; x <= box[2]; ++x) {
             int const position = y * width + x;
             if (remaining[static_cast<std::size_t>(position)] &&
-                insideShape(object, x + 0.5f, y + 0.5f)) {
+                placed.contains(x + 0.5f, y + 0.5f)) {
                 remaining[static_cast<std::size_t>(position)] = 0;
             }
         }
@@ -1698,18 +1581,15 @@ struct PruneEntry {
 };
 
 template <typename Test>
+bool anySample(ShapeXform const& shape, int width, int height, Test test) {
+    return forEachSample(shape, width, height, kPruneScale, [&](int x, int y) {
+        return test(static_cast<std::size_t>(y) * width * kPruneScale + x);
+    });
+}
+
+template <typename Test>
 bool anySample(Primitive const& object, int width, int height, Test test) {
-    auto const box = shapeBox(object, width, height);
-    for (int y = box[1] * kPruneScale; y < (box[3] + 1) * kPruneScale; ++y) {
-        for (int x = box[0] * kPruneScale; x < (box[2] + 1) * kPruneScale; ++x) {
-            if (!insideShape(
-                    object, (x + 0.5f) / kPruneScale, (y + 0.5f) / kPruneScale)) {
-                continue;
-            }
-            if (test(static_cast<std::size_t>(y) * width * kPruneScale + x)) return true;
-        }
-    }
-    return false;
+    return anySample(xformOf(object), width, height, test);
 }
 
 // Un objeto sobra cuando no cambia el dibujo. De abajo arriba se sabe el color
@@ -2325,35 +2205,12 @@ std::vector<Primitive> paintSeamRepairs(
             return left->layer < right->layer;
         });
         for (auto const* object : ordered) {
-            float const angle = object->rotation * kPi / 180.f;
-            float const extentX = std::abs(std::cos(angle)) * object->width * 0.5f +
-                std::abs(std::sin(angle)) * object->height * 0.5f;
-            float const extentY = std::abs(std::sin(angle)) * object->width * 0.5f +
-                std::abs(std::cos(angle)) * object->height * 0.5f;
-            int const minX = std::clamp(
-                static_cast<int>(std::floor((object->x - extentX) * scale)),
-                0, scaledWidth - 1);
-            int const minY = std::clamp(
-                static_cast<int>(std::floor((object->y - extentY) * scale)),
-                0, scaledHeight - 1);
-            int const maxX = std::clamp(
-                static_cast<int>(std::ceil((object->x + extentX) * scale)),
-                0, scaledWidth - 1);
-            int const maxY = std::clamp(
-                static_cast<int>(std::ceil((object->y + extentY) * scale)),
-                0, scaledHeight - 1);
-            for (int y = minY; y <= maxY; ++y) {
-                for (int x = minX; x <= maxX; ++x) {
-                    if (!insideShape(
-                            *object, (x + 0.5f) / scale, (y + 0.5f) / scale)) {
-                        continue;
-                    }
-                    std::size_t const sample =
-                        static_cast<std::size_t>(y) * scaledWidth + x;
-                    ownerColor[sample] = static_cast<std::int16_t>(object->color);
-                    ownerLayer[sample] = object->layer;
-                }
-            }
+            forEachSample(xformOf(*object), width, height, scale, [&](int x, int y) {
+                std::size_t const sample = static_cast<std::size_t>(y) * scaledWidth + x;
+                ownerColor[sample] = static_cast<std::int16_t>(object->color);
+                ownerLayer[sample] = object->layer;
+                return false;
+            });
         }
 
         std::vector<std::vector<int>> problems(ranks.size());
@@ -2617,7 +2474,9 @@ std::vector<Primitive> vectorizePaint(
                 output, region, positions.size(), color, base,
                 width, height, blocked) ||
             appendTriangle(output, positions, width, height, color, base, blocked) ||
-            appendCapsule(output, positions, width, height, color, base + 1, blocked)) {
+            appendCapsule(
+                output, positions, width, height, color, base + 1,
+                blocked, empty)) {
             appendRepairs(
                 output,
                 selectCells(
@@ -2683,7 +2542,8 @@ std::vector<Primitive> vectorizePaint(
             shapes, region, component.size(), color, base,
             width, height, blocked) ||
             appendTriangle(shapes, component, width, height, color, base, blocked) ||
-            appendCapsule(shapes, component, width, height, color, base + 1, blocked);
+            appendCapsule(
+                shapes, component, width, height, color, base + 1, blocked, empty);
         if (!fitted) {
             // La cadena de tiras solo vale para lo que de verdad es un trazo; si la
             // mancha resulta ser compacta el trazado se echa atras y no dibuja nada,

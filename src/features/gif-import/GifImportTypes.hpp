@@ -22,6 +22,8 @@ enum class ImportMode {
     Art,
     Paint,
     Render,
+    Free,
+    Circles,
 };
 
 enum class GlowMode {
@@ -31,7 +33,17 @@ enum class GlowMode {
 };
 
 inline bool usesPaintGeometry(ImportMode mode) {
-    return mode == ImportMode::Paint || mode == ImportMode::Render;
+    return mode == ImportMode::Paint || mode == ImportMode::Render ||
+        mode == ImportMode::Free || mode == ImportMode::Circles;
+}
+
+// El modo circulos dibuja con la forma, no con la rejilla. No se le rematan las
+// costuras con cuadrados —GD pinta el circulo en otra hoja de sprites y el parche
+// le quedaria debajo por mucho que se le baje la capa— ni se le pide el aprobado
+// de fidelidad de la pintura, que lo unico que conseguiria es mandarlo a bajar la
+// resolucion por algo que es a proposito.
+inline bool matchesGridExactly(ImportMode mode) {
+    return usesPaintGeometry(mode) && mode != ImportMode::Circles;
 }
 
 enum class BuildStage {
@@ -99,6 +111,35 @@ struct GridFrame {
     std::vector<std::int32_t> cells;
 };
 
+// Una figura de la biblioteca de decoracion reducida a lo que el trazado
+// necesita: que parte de su caja pinta. Las filas van de arriba abajo, igual que
+// las de la rejilla.
+struct StampMask {
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> coverage;
+
+    bool empty() const { return coverage.empty(); }
+};
+
+// Un molde ya orientado: el objeto de GD, el giro y el volteo con los que hay
+// que soltarlo, y el tamano de su arte una vez girada. Cada orientacion es su
+// propia entrada para que la figura del plan solo tenga que decir que caja
+// llena, sin arrastrar la trigonometria del emisor.
+struct PlanStamp {
+    int objectId = 0;
+    float baseWidth = 30.f;
+    float baseHeight = 30.f;
+    // El arte de un objeto casi nunca llena su cuadro, asi que la caja del molde
+    // es solo la parte que pinta y esto dice cuanto hay que correr el objeto para
+    // que esa parte caiga donde toca, en fracciones de la caja.
+    float offsetX = 0.f;
+    float offsetY = 0.f;
+    float rotation = 0.f;
+    bool flipX = false;
+    StampMask mask;
+};
+
 enum class PrimitiveKind {
     Block,
     Stroke,
@@ -106,9 +147,10 @@ enum class PrimitiveKind {
     Triangle,
     WideTriangle,
     Glow,
+    Stamp,
 };
 
-inline constexpr std::size_t kPrimitiveKinds = 6;
+inline constexpr std::size_t kPrimitiveKinds = 7;
 
 struct Primitive {
     float x = 0.f;
@@ -119,6 +161,9 @@ struct Primitive {
     std::uint16_t color = 0;
     PrimitiveKind kind = PrimitiveKind::Block;
     std::int16_t layer = 0;
+    // Solo lo miran las figuras Stamp: indice en `ImportPlan::stamps`. Va al
+    // final para no romper las inicializaciones por lista que ya hay.
+    std::uint16_t stamp = 0;
 };
 
 struct VisibilityTrack {
@@ -150,6 +195,7 @@ struct ImportPlan {
     ImportMode mode = ImportMode::Blocks;
     std::string strategy;
     std::vector<Color> palette;
+    std::vector<PlanStamp> stamps;
     std::vector<GridFrame> frames;
     std::vector<Primitive> staticObjects;
     std::vector<VisibilityTrack> tracks;
@@ -165,6 +211,7 @@ struct ImportPlan {
     std::size_t circleObjects = 0;
     std::size_t triangleObjects = 0;
     std::size_t glowObjects = 0;
+    std::size_t stampObjects = 0;
     std::size_t moveTriggers = 0;
     float similarity = 100.f;
     float geometrySimilarity = 100.f;

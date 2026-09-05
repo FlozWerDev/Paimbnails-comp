@@ -1,5 +1,6 @@
 #include "GifArtVectorizer.hpp"
 #include "GifMotionPlanner.hpp"
+#include "GifShapeRaster.hpp"
 #include "GifVectorMath.hpp"
 
 #include <algorithm>
@@ -11,31 +12,6 @@
 namespace paimon::gifimport {
 
 namespace {
-
-bool contains(Primitive const& object, float x, float y) {
-    if (object.width <= 0.f || object.height <= 0.f) return false;
-    float const angle = object.rotation * kPi / 180.f;
-    float const cosine = std::cos(angle);
-    float const sine = std::sin(angle);
-    float const dx = x - object.x;
-    float const dy = y - object.y;
-    float const localX = dx * cosine + dy * sine;
-    float const localY = -dx * sine + dy * cosine;
-
-    if (object.kind == PrimitiveKind::Circle) {
-        float const nx = localX / (object.width * 0.5f);
-        float const ny = localY / (object.height * 0.5f);
-        return nx * nx + ny * ny <= 1.f;
-    }
-    if (object.kind == PrimitiveKind::Triangle ||
-        object.kind == PrimitiveKind::WideTriangle) {
-        float const u = localX / object.width + 0.5f;
-        float const v = localY / object.height + 0.5f;
-        return u >= 0.f && v >= 0.f && u <= 1.f && v <= 1.f && u + v <= 1.f;
-    }
-    return std::abs(localX) <= object.width * 0.5f &&
-        std::abs(localY) <= object.height * 0.5f;
-}
 
 Primitive fitStroke(std::vector<int> const& positions, int width, int color) {
     float meanX = 0.f;
@@ -98,13 +74,14 @@ std::vector<int> uncovered(
     int width,
     std::vector<Primitive> const& objects
 ) {
+    auto const shapes = xformsOf(objects);
     std::vector<int> result;
     for (int position : positions) {
         float const x = static_cast<float>(position % width) + 0.5f;
         float const y = static_cast<float>(position / width) + 0.5f;
         bool covered = false;
-        for (auto const& object : objects) {
-            if (contains(object, x, y)) {
+        for (auto const& shape : shapes) {
+            if (shape.contains(x, y)) {
                 covered = true;
                 break;
             }
@@ -128,20 +105,17 @@ ExtraCoverage extraCoverage(
 ) {
     std::vector<std::uint8_t> target(static_cast<std::size_t>(width) * height, 0);
     for (int position : positions) target[static_cast<std::size_t>(position)] = 1;
+    auto const shapes = xformsOf(objects);
     int minX = width;
     int minY = height;
     int maxX = -1;
     int maxY = -1;
-    for (auto const& object : objects) {
-        float const angle = object.rotation * kPi / 180.f;
-        float const extentX = std::abs(std::cos(angle)) * object.width * 0.5f +
-            std::abs(std::sin(angle)) * object.height * 0.5f;
-        float const extentY = std::abs(std::sin(angle)) * object.width * 0.5f +
-            std::abs(std::cos(angle)) * object.height * 0.5f;
-        minX = std::min(minX, std::max(0, static_cast<int>(std::floor(object.x - extentX))));
-        minY = std::min(minY, std::max(0, static_cast<int>(std::floor(object.y - extentY))));
-        maxX = std::max(maxX, std::min(width - 1, static_cast<int>(std::ceil(object.x + extentX))));
-        maxY = std::max(maxY, std::min(height - 1, static_cast<int>(std::ceil(object.y + extentY))));
+    for (auto const& shape : shapes) {
+        auto const box = xformBox(shape, width, height);
+        minX = std::min(minX, box[0]);
+        minY = std::min(minY, box[1]);
+        maxX = std::max(maxX, box[2]);
+        maxY = std::max(maxY, box[3]);
     }
     ExtraCoverage coverage;
     for (int y = minY; y <= maxY; ++y) {
@@ -149,8 +123,8 @@ ExtraCoverage extraCoverage(
             int const position = y * width + x;
             if (target[static_cast<std::size_t>(position)]) continue;
             bool centerCovered = false;
-            for (auto const& object : objects) {
-                if (contains(object, x + 0.5f, y + 0.5f)) {
+            for (auto const& shape : shapes) {
+                if (shape.contains(x + 0.5f, y + 0.5f)) {
                     centerCovered = true;
                     break;
                 }
@@ -166,8 +140,8 @@ ExtraCoverage extraCoverage(
                     float const xx = x + (sampleX + 0.5f) / 4.f;
                     float const yy = y + (sampleY + 0.5f) / 4.f;
                     touchesBlocked = std::any_of(
-                        objects.begin(), objects.end(), [&](Primitive const& object) {
-                            return contains(object, xx, yy);
+                        shapes.begin(), shapes.end(), [&](ShapeXform const& shape) {
+                            return shape.contains(xx, yy);
                         });
                 }
             }
@@ -569,35 +543,19 @@ std::vector<std::uint8_t> renderPlanFrame(ImportPlan const& plan, int frame, int
         if (object.color >= plan.palette.size()) return;
         auto const& color = plan.palette[object.color];
         float const opacity = object.color >= plan.glowPaletteStart ? plan.glowOpacity : 1.f;
-        float const angle = object.rotation * kPi / 180.f;
-        float const extentX = std::abs(std::cos(angle)) * object.width * 0.5f +
-            std::abs(std::sin(angle)) * object.height * 0.5f;
-        float const extentY = std::abs(std::sin(angle)) * object.width * 0.5f +
-            std::abs(std::cos(angle)) * object.height * 0.5f;
-        int const minX = std::clamp(
-            static_cast<int>(std::floor((object.x - extentX) * scale)), 0, outputWidth - 1);
-        int const minY = std::clamp(
-            static_cast<int>(std::floor((object.y - extentY) * scale)), 0, outputHeight - 1);
-        int const maxX = std::clamp(
-            static_cast<int>(std::ceil((object.x + extentX) * scale)), 0, outputWidth - 1);
-        int const maxY = std::clamp(
-            static_cast<int>(std::ceil((object.y + extentY) * scale)), 0, outputHeight - 1);
-        for (int y = minY; y <= maxY; ++y) {
-            for (int x = minX; x <= maxX; ++x) {
-                float const sampleX = (x + 0.5f) / scale;
-                float const sampleY = (y + 0.5f) / scale;
-                if (!contains(object, sampleX, sampleY)) continue;
-                std::size_t const index = (static_cast<std::size_t>(y) * outputWidth + x) * 4;
-                auto mix = [&](std::uint8_t channel, std::uint8_t over) {
-                    return static_cast<std::uint8_t>(over * opacity + channel * (1.f - opacity));
-                };
-                pixels[index] = mix(pixels[index], color.r);
-                pixels[index + 1] = mix(pixels[index + 1], color.g);
-                pixels[index + 2] = mix(pixels[index + 2], color.b);
-                pixels[index + 3] = std::max<std::uint8_t>(
-                    pixels[index + 3], static_cast<std::uint8_t>(255.f * opacity));
-            }
-        }
+        auto const shape = xformOf(object, plan.stamps);
+        forEachSample(shape, plan.width, plan.height, scale, [&](int x, int y) {
+            std::size_t const index = (static_cast<std::size_t>(y) * outputWidth + x) * 4;
+            auto mix = [&](std::uint8_t channel, std::uint8_t over) {
+                return static_cast<std::uint8_t>(over * opacity + channel * (1.f - opacity));
+            };
+            pixels[index] = mix(pixels[index], color.r);
+            pixels[index + 1] = mix(pixels[index + 1], color.g);
+            pixels[index + 2] = mix(pixels[index + 2], color.b);
+            pixels[index + 3] = std::max<std::uint8_t>(
+                pixels[index + 3], static_cast<std::uint8_t>(255.f * opacity));
+            return false;
+        });
     };
 
     std::vector<Primitive> moved;

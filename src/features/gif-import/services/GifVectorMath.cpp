@@ -28,6 +28,42 @@ int skeletonNeighbors(Skeleton const& skeleton, int position, std::array<int, 8>
     return count;
 }
 
+void transformRow(
+    std::vector<float>& source,
+    std::vector<float>& target,
+    std::vector<int>& hull,
+    std::vector<float>& breaks,
+    int count
+) {
+    constexpr float kInfinity = std::numeric_limits<float>::max();
+    int top = 0;
+    hull[0] = 0;
+    breaks[0] = -kInfinity;
+    breaks[1] = kInfinity;
+    for (int q = 1; q < count; ++q) {
+        float split = 0.f;
+        while (true) {
+            int const p = hull[top];
+            split = ((source[static_cast<std::size_t>(q)] + static_cast<float>(q) * q) -
+                     (source[static_cast<std::size_t>(p)] + static_cast<float>(p) * p)) /
+                    (2.f * static_cast<float>(q - p));
+            if (split > breaks[static_cast<std::size_t>(top)] || top == 0) break;
+            --top;
+        }
+        ++top;
+        hull[static_cast<std::size_t>(top)] = q;
+        breaks[static_cast<std::size_t>(top)] = split;
+        breaks[static_cast<std::size_t>(top) + 1] = kInfinity;
+    }
+    top = 0;
+    for (int q = 0; q < count; ++q) {
+        while (breaks[static_cast<std::size_t>(top) + 1] < static_cast<float>(q)) ++top;
+        int const p = hull[static_cast<std::size_t>(top)];
+        float const offset = static_cast<float>(q - p);
+        target[static_cast<std::size_t>(q)] = offset * offset + source[static_cast<std::size_t>(p)];
+    }
+}
+
 std::uint64_t edgeKey(int first, int second) {
     auto const low = static_cast<std::uint32_t>(std::min(first, second));
     auto const high = static_cast<std::uint32_t>(std::max(first, second));
@@ -82,6 +118,45 @@ std::vector<Point> simplify(std::vector<Point> const& points, float tolerance) {
         if (keep[i]) output.push_back(points[i]);
     }
     return output;
+}
+
+std::vector<float> distanceField(
+    std::vector<std::uint8_t> const& cells,
+    int width,
+    int height
+) {
+    constexpr float kInfinity = 1e18f;
+    std::size_t const total = static_cast<std::size_t>(width) * height;
+    std::vector<float> distance(total, 0.f);
+    std::vector<float> work(total, 0.f);
+    for (std::size_t i = 0; i < total; ++i) work[i] = cells[i] ? kInfinity : 0.f;
+
+    int const span = std::max(width, height);
+    std::vector<float> source(static_cast<std::size_t>(span));
+    std::vector<float> target(static_cast<std::size_t>(span));
+    std::vector<int> hull(static_cast<std::size_t>(span));
+    std::vector<float> breaks(static_cast<std::size_t>(span) + 1);
+
+    for (int x = 0; x < width; ++x) {
+        for (int y = 0; y < height; ++y) {
+            source[static_cast<std::size_t>(y)] = work[static_cast<std::size_t>(y) * width + x];
+        }
+        transformRow(source, target, hull, breaks, height);
+        for (int y = 0; y < height; ++y) {
+            work[static_cast<std::size_t>(y) * width + x] = target[static_cast<std::size_t>(y)];
+        }
+    }
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            source[static_cast<std::size_t>(x)] = work[static_cast<std::size_t>(y) * width + x];
+        }
+        transformRow(source, target, hull, breaks, width);
+        for (int x = 0; x < width; ++x) {
+            distance[static_cast<std::size_t>(y) * width + x] =
+                std::sqrt(target[static_cast<std::size_t>(x)]);
+        }
+    }
+    return distance;
 }
 
 std::array<int, 4> bounds(std::vector<int> const& positions, int width) {

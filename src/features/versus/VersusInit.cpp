@@ -15,7 +15,6 @@ void init() {
         return;
     }
 
-    VersusStore::get().load();
     net::registerEvents();
 
     auto const rank = VersusStore::get().rank(VersusStore::get().preferredMode());

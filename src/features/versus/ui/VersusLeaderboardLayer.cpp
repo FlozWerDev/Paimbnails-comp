@@ -142,8 +142,9 @@ void VersusLeaderboardLayer::buildTabs() {
 }
 
 void VersusLeaderboardLayer::load() {
-    if (m_loading) return;
-    m_loading = true;
+    // Switching tabs mid-request has to win: the answer to the old one is
+    // dropped rather than painted under the new tab.
+    uint32_t const request = ++m_request;
     m_rows.clear();
     m_scroll->m_contentLayer->removeAllChildren();
     setStatus(Localization::get().getString("versus.board.loading"));
@@ -159,9 +160,8 @@ void VersusLeaderboardLayer::load() {
 
     auto self = Ref<VersusLeaderboardLayer>(this);
     VersusClient::get().fetchLeaderboard(m_mode, m_scope,
-        [self](bool ok, std::vector<LeaderboardRow> const& rows) {
-            if (!self->isRunning()) return;
-            self->m_loading = false;
+        [self, request](bool ok, std::vector<LeaderboardRow> const& rows) {
+            if (!self->isRunning() || request != self->m_request) return;
 
             if (!ok) {
                 self->setStatus(Localization::get().getString("versus.board.failed"));

@@ -237,7 +237,7 @@ void VersusHubLayer::refreshFormats() {
     for (auto* btn : m_formatButtons) btn->removeFromParent();
     m_formatButtons.clear();
 
-    auto const formats = rankedFormats(m_mode);
+    auto const formats = queueableFormats(m_mode);
     auto const selected = VersusStore::get().preferredFormat(m_mode);
 
     int const columns = 4;

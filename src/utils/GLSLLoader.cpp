@@ -339,4 +339,14 @@ CCGLProgram* getDominantColorsDownsampleShader() {
     );
 }
 
+CCGLProgram* getGifDownscaleShader() {
+    return loadShader(
+        "paimon-gif-downscale-v1",
+        "cell_vertex.glsl",
+        "gif_downscale.glsl",
+        nullptr,
+        nullptr
+    );
+}
+
 } // namespace paimon::shaders

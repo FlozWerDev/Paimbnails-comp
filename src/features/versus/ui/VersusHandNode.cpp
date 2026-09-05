@@ -15,8 +15,18 @@ namespace paimon::versus {
 namespace {
 
 constexpr float kCardW = 46.f;
+constexpr float kSpyCardW = 30.f;
 constexpr float kSlotGap = 54.f;
+constexpr float kSpyGap = 36.f;
 constexpr float kEffectSize = 22.f;
+
+// The colour is the owner's, so a card that changes hands is a different glyph.
+bool sameEffects(std::vector<ActiveEffect> const& active, std::vector<ActiveEffect> const& drawn) {
+    return std::equal(active.begin(), active.end(), drawn.begin(), drawn.end(),
+        [](ActiveEffect const& a, ActiveEffect const& b) {
+            return a.card == b.card && a.fromRival == b.fromRival;
+        });
+}
 
 } // namespace
 
@@ -39,6 +49,12 @@ bool VersusHandNode::init() {
     m_slots = CCNode::create();
     m_slots->setPosition({winSize.width - 46.f, 52.f});
     this->addChild(m_slots, 1);
+
+    // Under the rival's bar, so what the Eye shows sits next to whose it is.
+    m_rivalSlots = CCNode::create();
+    m_rivalSlots->setPosition({winSize.width - 34.f, winSize.height - 78.f});
+    m_rivalSlots->setVisible(false);
+    this->addChild(m_rivalSlots, 1);
 
     m_effects = CCNode::create();
     m_effects->setPosition({winSize.width - 16.f, 110.f});
@@ -63,19 +79,36 @@ void VersusHandNode::update(float) {
 }
 
 void VersusHandNode::refresh() {
-    auto const& hand = VersusSession::get().hand();
+    auto const& session = VersusSession::get();
+    auto const& effects = VersusEffects::get();
+
+    auto const& hand = session.hand();
     if (hand != m_drawn) {
         m_drawn = hand;
         rebuildHand();
     }
 
-    auto const& active = VersusEffects::get().active();
-    if (active.size() != m_effectCount) {
-        m_effectCount = active.size();
-        rebuildEffects();
+    // Their hand is only ours to look at while the Eye is up.
+    bool const spying = effects.seesRival();
+    m_rivalSlots->setVisible(spying);
+    if (spying && session.rivalHand() != m_drawnRival) {
+        m_drawnRival = session.rivalHand();
+        rebuildRivalHand();
     }
 
-    m_locked->setVisible(VersusEffects::get().cardsLocked());
+    auto const& active = effects.active();
+    if (!sameEffects(active, m_drawnEffects)) {
+        m_drawnEffects = active;
+        rebuildEffects(active);
+    }
+
+    for (size_t i = 0; i < m_rings.size() && i < active.size(); i++) {
+        if (!m_rings[i] || active[i].total <= 0.f) continue;
+        m_rings[i]->setPercentage(
+            std::clamp(active[i].remaining / active[i].total, 0.f, 1.f) * 100.f);
+    }
+
+    m_locked->setVisible(effects.cardsLocked());
 }
 
 void VersusHandNode::rebuildHand() {
@@ -96,13 +129,25 @@ void VersusHandNode::rebuildHand() {
     }
 }
 
-void VersusHandNode::rebuildEffects() {
-    m_effects->removeAllChildren();
+void VersusHandNode::rebuildRivalHand() {
+    m_rivalSlots->removeAllChildren();
 
-    auto const& active = VersusEffects::get().active();
+    for (size_t i = 0; i < m_drawnRival.size(); i++) {
+        auto* card = VersusCardNode::create(m_drawnRival[i], kSpyCardW);
+        if (!card) continue;
+        card->setPosition({-static_cast<float>(i) * kSpyGap, 0.f});
+        m_rivalSlots->addChild(card, static_cast<int>(10 - i));
+    }
+}
+
+void VersusHandNode::rebuildEffects(std::vector<ActiveEffect> const& active) {
+    m_effects->removeAllChildren();
+    m_rings.clear();
+
     for (size_t i = 0; i < active.size(); i++) {
         auto const& effect = active[i];
         auto const& def = cardAt(effect.card);
+        m_rings.push_back(nullptr);
 
         auto* glyph = paimon::SpriteHelper::safeCreate(cardGlyphSprite(def).c_str());
         if (!glyph) continue;
@@ -112,17 +157,20 @@ void VersusHandNode::rebuildEffects() {
         glyph->setColor(effect.fromRival ? ccColor3B{240, 120, 140} : ccColor3B{140, 220, 250});
         m_effects->addChild(glyph, 1);
 
-        if (effect.total > 0.f) {
-            auto* ring = CCProgressTimer::create(
-                paimon::SpriteHelper::safeCreate("paim_vsPip.png"_spr));
-            if (!ring) continue;
-            ring->setType(kCCProgressTimerTypeRadial);
-            ring->setReverseDirection(true);
-            ring->setScale(kEffectSize * 1.5f / std::max(1.f, ring->getContentSize().width));
-            ring->setPosition(glyph->getPosition());
-            ring->setOpacity(120);
-            m_effects->addChild(ring, 0);
-        }
+        if (effect.total <= 0.f) continue;
+
+        auto* pip = paimon::SpriteHelper::safeCreate("paim_vsPip.png"_spr);
+        if (!pip) continue;
+
+        auto* ring = CCProgressTimer::create(pip);
+        if (!ring) continue;
+        ring->setType(kCCProgressTimerTypeRadial);
+        ring->setReverseDirection(true);
+        ring->setScale(kEffectSize * 1.5f / std::max(1.f, ring->getContentSize().width));
+        ring->setPosition(glyph->getPosition());
+        ring->setOpacity(120);
+        m_effects->addChild(ring, 0);
+        m_rings.back() = ring;
     }
 }
 

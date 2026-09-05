@@ -54,29 +54,32 @@ class $modify(PaimonVersusPlayLayer, PlayLayer) {
                 m_fields->m_hud = hud;
                 if (session.countingDown()) hud->playCountdown(session.countdownLeft());
             }
+        }
 
-            if (session.dealsCards()) {
-                if (auto* hand = VersusHandNode::create()) {
-                    hand->setID("versus-hand"_spr);
-                    this->addChild(hand, 1000);
-                    m_fields->m_hand = hand;
-                }
-                bindCardKeys();
+        // The hand is its own module: turning the bars off is not a reason to
+        // deal cards nobody can see or play.
+        if (session.dealsCards()) {
+            if (auto* hand = VersusHandNode::create()) {
+                hand->setID("versus-hand"_spr);
+                this->addChild(hand, 1000);
+                m_fields->m_hand = hand;
             }
+            bindCardKeys();
         }
         return true;
     }
 
     // Two slots, two keys. Both go through the mod's keybind settings, so they
-    // are rebindable like everything else.
+    // are rebindable like everything else. The listener is owned by the layer,
+    // so it holds a plain pointer: a Ref would be the layer keeping itself
+    // alive and the whole level would leak once per duel.
     void bindCardKeys() {
-        auto self = Ref<PaimonVersusPlayLayer>(this);
         for (int slot = 0; slot < 2; slot++) {
             auto const key = slot == 0 ? "versus-card-1-keybind" : "versus-card-2-keybind";
             this->addEventListener(
                 KeybindSettingPressedEventV3(Mod::get(), key),
-                [self, slot](Keybind const&, bool down, bool repeat, double) {
-                    if (!down || repeat || !self->isRunning()) return;
+                [this, slot](Keybind const&, bool down, bool repeat, double) {
+                    if (!down || repeat || !this->isRunning()) return;
                     VersusSession::get().playCard(slot);
                 });
         }

@@ -35,7 +35,8 @@ VersusEffects& VersusEffects::get() {
 void VersusEffects::attach(PlayLayer* layer) {
     detach();
     m_layer = layer;
-    m_baseScaleValid = false;
+    m_cameraFactor = 1.f;
+    m_cameraMirrored = false;
     m_bombTimer = 0.f;
     m_reflect = false;
 }
@@ -49,7 +50,8 @@ void VersusEffects::detach() {
     m_active.clear();
     m_layer = nullptr;
     m_reflect = false;
-    m_baseScaleValid = false;
+    m_cameraFactor = 1.f;
+    m_cameraMirrored = false;
 }
 
 CCNode* VersusEffects::overlayRoot() {
@@ -131,10 +133,15 @@ void VersusEffects::begin(CardId card, bool fromRival) {
 
         case CardId::Weight:
             if (m_layer->m_percentageLabel) m_layer->m_percentageLabel->setVisible(false);
+            if (m_layer->m_progressBar) m_layer->m_progressBar->setVisible(false);
             break;
 
         case CardId::Noise:
             if (auto* engine = FMODAudioEngine::sharedEngine(); engine && !m_audioMuted) {
+                // Whatever they were playing at is what they get back; muting
+                // first would restore everyone to full volume.
+                m_musicVolume = engine->getBackgroundMusicVolume();
+                m_effectsVolume = engine->getEffectsVolume();
                 m_audioMuted = true;
                 engine->setBackgroundMusicVolume(0.f);
                 engine->setEffectsVolume(0.f);
@@ -197,6 +204,7 @@ void VersusEffects::end(CardId card) {
 
         case CardId::Weight:
             if (m_layer && m_layer->m_percentageLabel) m_layer->m_percentageLabel->setVisible(true);
+            if (m_layer && m_layer->m_progressBar) m_layer->m_progressBar->setVisible(true);
             break;
 
         case CardId::Noise:
@@ -222,7 +230,8 @@ void VersusEffects::end(CardId card) {
         case CardId::ZoomIn:
         case CardId::ZoomOut:
         case CardId::Mirror:
-            // Restored by applyCameraTransforms once nothing is left holding it.
+            // applyCameraTransforms puts the layer back on the next frame, once
+            // it can see that nothing is left holding it.
             break;
 
         default:
@@ -235,10 +244,19 @@ void VersusEffects::endAll() {
     for (auto const& effect : snapshot) end(effect.card);
     m_active.clear();
 
-    if (m_layer && m_layer->m_objectLayer && m_baseScaleValid) {
-        m_layer->m_objectLayer->setScale(m_baseScale);
-        m_layer->m_objectLayer->setScaleX(m_baseScale);
+    restoreCamera();
+}
+
+void VersusEffects::restoreCamera() {
+    if (m_cameraFactor == 1.f && !m_cameraMirrored) return;
+
+    if (m_layer && m_layer->m_objectLayer) {
+        // Puts both axes back, so a mirrored layer loses its sign here too.
+        m_layer->m_objectLayer->setScale(
+            m_layer->m_objectLayer->getScaleY() / m_cameraFactor);
     }
+    m_cameraFactor = 1.f;
+    m_cameraMirrored = false;
 }
 
 void VersusEffects::update(float dt) {
@@ -268,28 +286,28 @@ void VersusEffects::applyCameraTransforms() {
     auto* objects = m_layer->m_objectLayer;
     if (!objects) return;
 
-    bool const zoomIn = has(CardId::ZoomIn);
-    bool const zoomOut = has(CardId::ZoomOut);
     bool const mirror = has(CardId::Mirror);
+    float factor = 1.f;
+    if (has(CardId::ZoomIn)) factor *= kZoomIn;
+    if (has(CardId::ZoomOut)) factor *= kZoomOut;
 
-    if (!zoomIn && !zoomOut && !mirror) {
-        // Nothing of ours is applied, so whatever the level set is the truth.
-        m_baseScale = objects->getScale();
-        m_baseScaleValid = true;
+    if (factor == 1.f && !mirror) {
+        restoreCamera();
         return;
     }
-    if (!m_baseScaleValid) {
-        m_baseScale = objects->getScale();
-        m_baseScaleValid = true;
-    }
 
-    float scale = m_baseScale;
-    if (zoomIn) scale *= kZoomIn;
-    if (zoomOut) scale *= kZoomOut;
+    // The level writes its own zoom triggers into this same scale between our
+    // frames, so ours comes back out before the new one goes in. Remembering a
+    // baseline instead would freeze whatever trigger fired while a card was up.
+    // Y is the axis to read: mirror is the only thing that touches the sign.
+    float const level = objects->getScaleY() / m_cameraFactor;
 
     // Written after the level's own update, so ours is what ends up on screen.
-    objects->setScale(scale);
-    if (mirror) objects->setScaleX(-scale);
+    objects->setScale(level * factor);
+    if (mirror) objects->setScaleX(-level * factor);
+
+    m_cameraFactor = factor;
+    m_cameraMirrored = mirror;
 }
 
 void VersusEffects::dispelAll() {
@@ -314,6 +332,10 @@ bool VersusEffects::cardsLocked() const {
 
 bool VersusEffects::seesRival() const {
     return has(CardId::Eye);
+}
+
+bool VersusEffects::barsHidden() const {
+    return has(CardId::Magnet);
 }
 
 bool VersusEffects::consumeReflect() {

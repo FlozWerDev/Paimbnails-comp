@@ -21,6 +21,9 @@ struct Tick {
     bool alive = true;
     bool practice = false;
     bool shielded = false;
+    // The two slots, CardId::Count for one that is not held. It rides along on
+    // every tick; only the Eye card ever puts it on screen.
+    CardId hand[2] = {CardId::Count, CardId::Count};
 };
 
 enum class StateKind : uint8_t {
@@ -31,6 +34,8 @@ enum class StateKind : uint8_t {
     Finish,
     Forfeit,
     Rematch,
+    Spent,      // out of attempts: the format decides once both sides are
+    Revive,     // a Heart moved the limit, so the run is back on
 };
 
 struct StateMsg {

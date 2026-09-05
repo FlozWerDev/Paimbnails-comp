@@ -204,7 +204,7 @@ SimulationTrace simulateWorkspace(
     }
 
     auto trace = simulate(specs, options);
-    if (reactive.empty() || trace.frames.size() < 2) return trace;
+    if (trace.exhausted || reactive.empty() || trace.frames.size() < 2) return trace;
 
     auto const blocks = worldBlocks(bodies);
     float const fixedStep = 1.f / static_cast<float>(std::clamp(options.fixedRate, 30, 480));

@@ -1,4 +1,5 @@
 #include "VersusHUDNode.hpp"
+#include "../services/VersusEffects.hpp"
 #include "../services/VersusGlobed.hpp"
 #include "../services/VersusSession.hpp"
 #include "../../../utils/Localization.hpp"
@@ -14,6 +15,7 @@ namespace paimon::versus {
 namespace {
 
 constexpr float kBarWidth = 190.f;
+constexpr float kRopeWidth = 120.f;
 constexpr ccColor3B kOwnColor = {90, 180, 250};
 constexpr ccColor3B kRivalColor = {240, 90, 110};
 
@@ -51,8 +53,16 @@ bool VersusHUDNode::init() {
     auto const winSize = CCDirector::get()->getWinSize();
     this->setPosition({0.f, 0.f});
 
-    buildBar(true, winSize.height - 22.f);
-    buildBar(false, winSize.height - 40.f);
+    m_ownRow = buildBar(true, winSize.height - 22.f);
+    m_rivalRow = buildBar(false, winSize.height - 40.f);
+    buildRope(winSize.height - 74.f);
+
+    m_clock = CCLabelBMFont::create("", "bigFont.fnt");
+    m_clock->setScale(0.42f);
+    m_clock->setPosition({winSize.width / 2.f, winSize.height - 58.f});
+    m_clock->setOpacity(210);
+    m_clock->setVisible(false);
+    this->addChild(m_clock, 2);
 
     m_ping = CCLabelBMFont::create("", "chatFont.fnt");
     m_ping->setScale(0.36f);
@@ -114,10 +124,39 @@ CCNode* VersusHUDNode::buildBar(bool own, float y) {
     return row;
 }
 
+// Tug of war is decided by a number nobody can see otherwise, so the rope gets
+// its own strip. Every other format leaves it hidden.
+void VersusHUDNode::buildRope(float y) {
+    auto const winSize = CCDirector::get()->getWinSize();
+
+    m_ropeRow = CCNode::create();
+    m_ropeRow->setPosition({winSize.width / 2.f, y});
+    m_ropeRow->setVisible(false);
+    this->addChild(m_ropeRow, 1);
+
+    if (auto* frame = paimon::SpriteHelper::safeCreate("paim_vsBar.png"_spr)) {
+        frame->setScale(kRopeWidth / std::max(1.f, frame->getContentSize().width));
+        frame->setColor({210, 216, 232});
+        m_ropeRow->addChild(frame, 1);
+    }
+
+    m_ropePip = paimon::SpriteHelper::safeCreate("paim_vsPip.png"_spr);
+    if (!m_ropePip) return;
+    m_ropePip->setScale(14.f / std::max(1.f, m_ropePip->getContentSize().width));
+    m_ropePip->setColor(kOwnColor);
+    m_ropeRow->addChild(m_ropePip, 2);
+}
+
 void VersusHUDNode::refresh() {
     auto const& session = VersusSession::get();
     auto const& own = session.own();
     auto const& rival = session.rival();
+
+    // Blackout takes both bars away; the Eye is what buys the rival's back.
+    auto const& effects = VersusEffects::get();
+    bool const blackout = effects.barsHidden();
+    if (m_ownRow) m_ownRow->setVisible(!blackout);
+    if (m_rivalRow) m_rivalRow->setVisible(!blackout || effects.seesRival());
 
     if (m_ownFill) m_ownFill->setPercentage(std::clamp(own.percent, 0.f, 100.f));
     if (m_rivalFill) m_rivalFill->setPercentage(std::clamp(rival.percent, 0.f, 100.f));
@@ -125,14 +164,35 @@ void VersusHUDNode::refresh() {
     if (m_ownLabel) m_ownLabel->setString(fmt::format("{}%", static_cast<int>(own.percent)).c_str());
     if (m_rivalLabel) {
         m_rivalLabel->setString(fmt::format("{}%", static_cast<int>(rival.percent)).c_str());
-        // Dim the rival's bar while they are dead, so the lead reads at a glance
-        // instead of looking like they simply stopped.
-        m_rivalLabel->setOpacity(rival.alive ? 255 : 120);
-        if (m_rivalFill) m_rivalFill->setOpacity(rival.alive ? 255 : 120);
+        // Dim the rival's bar while they are dead or practising, so the lead
+        // reads at a glance instead of looking like they simply stopped.
+        GLubyte const opacity = rival.alive && !rival.practice ? 255 : 120;
+        m_rivalLabel->setOpacity(opacity);
+        if (m_rivalFill) m_rivalFill->setOpacity(opacity);
     }
 
     if (m_rivalName) {
-        m_rivalName->setString(session.match().rival.name.c_str());
+        auto const& name = session.match().rival.name;
+        if (name != m_rivalName->getString()) m_rivalName->setString(name.c_str());
+    }
+
+    bool const tug = session.match().format == Format::TugOfWar;
+    if (m_ropeRow) m_ropeRow->setVisible(tug && !blackout);
+    if (tug && m_ropePip) {
+        m_ropePip->setPositionX(std::clamp(session.rope(), -1.f, 1.f) * kRopeWidth / 2.f);
+    }
+
+    float const left = session.timeLeft();
+    if (m_clock) {
+        m_clock->setVisible(left > 0.f && !blackout);
+        int const seconds = left > 0.f ? static_cast<int>(std::ceil(left)) : -1;
+        if (seconds != m_shownSeconds) {
+            m_shownSeconds = seconds;
+            if (seconds >= 0) {
+                m_clock->setString(fmt::format("{}:{:02}", seconds / 60, seconds % 60).c_str());
+                m_clock->setColor(seconds <= 15 ? ccColor3B{240, 130, 140} : ccColor3B{225, 230, 240});
+            }
+        }
     }
 }
 

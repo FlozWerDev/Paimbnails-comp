@@ -65,11 +65,13 @@ private:
     Options m_options;
     std::filesystem::path m_path;
     std::shared_ptr<SourceAnimation> m_source;
+    std::shared_ptr<SourceAnimation> m_scaled;
     std::shared_ptr<ImportPlan> m_plan;
     std::shared_ptr<SourceLoadState> m_sourceLoad;
     std::shared_ptr<ProcessingProgress> m_progress;
     bool m_processing = false;
     bool m_reprocess = false;
+    int m_scaledFor = 0;
     int m_previewFrame = 0;
     float m_previewElapsed = 0.f;
 

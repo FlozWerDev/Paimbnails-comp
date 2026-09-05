@@ -668,7 +668,15 @@ void AutobuildPopup::runCapture(bool asSample) {
 
     auto sample = result.unwrap();
     if (asSample) {
-        auto target = *store.selected();
+        // The button was built with the selection of an earlier frame, and a
+        // delete queued in between leaves nothing selected by the time it fires.
+        auto const* chosen = store.selected();
+        if (!chosen) {
+            setStatus("Elige una plantilla antes de anadirle una muestra.", kError);
+            scheduleRebuild();
+            return;
+        }
+        auto target = *chosen;
         auto merged = accumulate(target, sample);
         if (merged.isErr()) {
             setStatus(merged.unwrapErr(), kError);
@@ -676,7 +684,7 @@ void AutobuildPopup::runCapture(bool asSample) {
             return;
         }
         store.replace(store.selectedIndex(), target);
-        setStatus(fmt::format("Muestra anadida: {}", store.selected()->summary()), kOk);
+        setStatus(fmt::format("Muestra anadida: {}", target.summary()), kOk);
     } else {
         sample.name = fmt::format("Plantilla {}", store.all().size() + 1);
         int index = store.add(std::move(sample));

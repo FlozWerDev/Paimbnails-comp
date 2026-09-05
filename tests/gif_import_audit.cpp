@@ -25,8 +25,13 @@
 
 #include "../src/features/gif-import/services/GifImportPipeline.hpp"
 #include "../src/features/gif-import/services/ColorSpace.cpp"
+#include "../src/features/gif-import/services/GifParallel.cpp"
+#include "../src/features/gif-import/services/GifShapeRaster.cpp"
 #include "../src/features/gif-import/services/GifVectorMath.cpp"
 #include "../src/features/gif-import/services/GifArtVectorizer.cpp"
+#include "../src/features/gif-import/services/GifCircleVectorizer.cpp"
+#include "../src/features/gif-import/services/GifFreeVectorizer.cpp"
+#include "../src/features/gif-import/services/GifStampCatalog.cpp"
 #include "../src/features/gif-import/services/GifGlowPass.cpp"
 #include "../src/features/gif-import/services/GifMotionPlanner.cpp"
 #include "../src/features/gif-import/services/GifPaintVectorizer.cpp"
@@ -175,13 +180,23 @@ Composite composite(std::vector<Primitive> const& objects, int width, int height
     result.top.assign(samples, -1);
     result.under.assign(samples, -1);
 
-    for (std::size_t index = 0; index < objects.size(); ++index) {
+    // La lista del plan deja de ir ordenada por capa en cuanto absorbPaintRects
+    // saca las fusiones al principio; el juego dibuja por capa, asi que aqui hay
+    // que ordenar igual o el de abajo acaba contado como el de arriba.
+    std::vector<std::size_t> order(objects.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t left, std::size_t right) {
+        return objects[left].layer < objects[right].layer;
+    });
+
+    for (std::size_t index : order) {
         auto const& object = objects[index];
-        auto const box = shapeBox(object, width, height);
+        auto const placed = xformOf(object);
+        auto const box = xformBox(placed, width, height);
         for (int y = box[1] * kAuditScale; y < (box[3] + 1) * kAuditScale; ++y) {
             for (int x = box[0] * kAuditScale; x < (box[2] + 1) * kAuditScale; ++x) {
-                if (!insideShape(
-                        object, (x + 0.5f) / kAuditScale, (y + 0.5f) / kAuditScale)) {
+                if (!placed.contains(
+                        (x + 0.5f) / kAuditScale, (y + 0.5f) / kAuditScale)) {
                     continue;
                 }
                 auto const sample = static_cast<std::size_t>(y) * result.width + x;
@@ -213,7 +228,7 @@ struct PlanAudit {
     std::size_t inversions = 0;
     std::size_t painted = 0;
     std::size_t bySublayer[kPaintSublayers]{};
-    std::size_t byKind[5]{};
+    std::size_t byKind[kPrimitiveKinds]{};
     std::vector<ObjectAudit> perObject;
 };
 
@@ -262,8 +277,8 @@ bool shapesOverlap(Primitive const& first, Primitive const& second, int width, i
         for (int x = minX * kAuditScale; x < (maxX + 1) * kAuditScale; ++x) {
             float const sampleX = (x + 0.5f) / kAuditScale;
             float const sampleY = (y + 0.5f) / kAuditScale;
-            if (insideShape(first, sampleX, sampleY) &&
-                insideShape(second, sampleX, sampleY)) {
+            if (xformOf(first).contains(sampleX, sampleY) &&
+                xformOf(second).contains(sampleX, sampleY)) {
                 return true;
             }
         }
@@ -427,6 +442,8 @@ char const* kindName(PrimitiveKind kind) {
         case PrimitiveKind::Circle: return "circulo";
         case PrimitiveKind::Triangle: return "triangulo";
         case PrimitiveKind::WideTriangle: return "triangulo-ancho";
+        case PrimitiveKind::Glow: return "glow";
+        case PrimitiveKind::Stamp: return "molde";
     }
     return "?";
 }
@@ -435,6 +452,8 @@ ImportMode parseMode(std::string const& name) {
     if (name == "art") return ImportMode::Art;
     if (name == "blocks") return ImportMode::Blocks;
     if (name == "render") return ImportMode::Render;
+    if (name == "free") return ImportMode::Free;
+    if (name == "circles") return ImportMode::Circles;
     return ImportMode::Paint;
 }
 
@@ -444,6 +463,8 @@ char const* modeName(ImportMode mode) {
         case ImportMode::Art: return "art";
         case ImportMode::Paint: return "paint";
         case ImportMode::Render: return "render";
+        case ImportMode::Free: return "free";
+        case ImportMode::Circles: return "circles";
     }
     return "?";
 }
@@ -513,7 +534,7 @@ int main(int argc, char** argv) {
               << std::setw(9) << "invers." << '\n';
 
     std::size_t totals[12]{};
-    std::size_t kinds[5]{};
+    std::size_t kinds[kPrimitiveKinds]{};
     double totalDensity = 0.0;
     int counted = 0;
 
@@ -594,7 +615,9 @@ int main(int argc, char** argv) {
         totals[9] += report.bySublayer[0];
         totals[10] += report.bySublayer[1];
         totals[11] += report.bySublayer[2];
-        for (std::size_t kind = 0; kind < 5; ++kind) kinds[kind] += report.byKind[kind];
+        for (std::size_t kind = 0; kind < kPrimitiveKinds; ++kind) {
+            kinds[kind] += report.byKind[kind];
+        }
         totalDensity += density;
         ++counted;
 
@@ -641,7 +664,8 @@ int main(int argc, char** argv) {
                   << " parche=" << totals[11]
                   << "   bloques=" << kinds[0] << " tiras=" << kinds[1]
                   << " circulos=" << kinds[2]
-                  << " triangulos=" << kinds[3] + kinds[4] << '\n';
+                  << " triangulos=" << kinds[3] + kinds[4]
+                  << " moldes=" << kinds[6] << '\n';
     }
     return 0;
 }

@@ -1,4 +1,5 @@
 #include "VersusModes.hpp"
+#include "../../../core/modules/ModuleRegistry.hpp"
 #include "../../../utils/Localization.hpp"
 
 #include <Geode/Geode.hpp>
@@ -75,6 +76,15 @@ std::vector<FormatDef const*> rankedFormats(Mode mode) {
         if (def.ranked && (def.modes & bit)) out.push_back(&def);
     }
     return out;
+}
+
+// The deck is the whole of Roulette; with the cards module off it would be a
+// race under another name, so it leaves the queue instead.
+std::vector<FormatDef const*> queueableFormats(Mode mode) {
+    auto formats = rankedFormats(mode);
+    if (paimon::modules::isEnabled("paimbnails.versus.cards")) return formats;
+    std::erase_if(formats, [](FormatDef const* def) { return def->cards; });
+    return formats;
 }
 
 std::string formatName(FormatDef const& def) {

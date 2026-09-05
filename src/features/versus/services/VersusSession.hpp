@@ -57,6 +57,9 @@ public:
     // Roulette: the milestone list comes from the server seed, so both clients
     // build the same one and a card lands with no round trip.
     std::vector<CardId> const& hand() const { return m_hand; }
+    // What the rival is holding, as of their last tick. Only the Eye card is
+    // allowed to draw it.
+    std::vector<CardId> const& rivalHand() const { return m_rivalHand; }
     std::vector<float> const& milestones() const { return m_milestones; }
     bool playCard(int slot);
     bool dealsCards() const;
@@ -69,6 +72,10 @@ public:
 
     float countdownLeft() const;
     bool countingDown() const { return m_phase == Phase::Countdown; }
+    // Seconds left on the format's clock, 0 when it has none or it ran out.
+    float timeLeft() const;
+    // Tug of war, -1 on the rival's side and 1 on ours.
+    float rope() const { return m_rope; }
     std::string statusLine() const;
 
 private:
@@ -80,7 +87,17 @@ private:
     void applyLobby(MatchInfo const& info);
     void wireNet();
     void pushTick(bool force);
+    // Ladder and Relay: takes the segment for us if neither side holds it yet.
+    void claimSegment(int segment);
     void evaluate();
+    // Relay is the one format the finish line does not settle, so it gets its
+    // own reading of the four segments.
+    void evaluateRelay();
+    // Closes a duel nobody won outright: the better run takes it.
+    void finishOnPercent();
+    // Positive is our side. Under a hair the two runs are called a dead heat.
+    void finishOnGap(float gap);
+    int attemptLimit() const;
     void finish(Outcome outcome);
     void notifyListeners();
     void buildMilestones();
@@ -99,17 +116,21 @@ private:
     bool m_inLevel = false;
     bool m_submitted = false;
     bool m_rivalSeen = false;
+    bool m_practice = false;
     float m_levelTime = 0.f;
     float m_sinceTick = 0.f;
     float m_hillHeld = 0.f;
+    float m_rope = 0.f;
     float m_startsIn = 0.f;
     float m_rivalSilence = 0.f;
 
     std::vector<CardId> m_hand;
+    std::vector<CardId> m_rivalHand;
     std::vector<float> m_milestones;
     size_t m_nextMilestone = 0;
     float m_milestoneShift = 0.f;
     float m_hourglass = 0.f;
+    int m_extraAttempts = 0;
 
     uint64_t m_pollGeneration = 0;
     std::vector<std::pair<void const*, std::function<void()>>> m_listeners;

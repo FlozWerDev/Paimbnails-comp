@@ -1,17 +1,23 @@
 ﻿#include "GifImportPipeline.hpp"
 #include "ColorSpace.hpp"
 #include "GifArtVectorizer.hpp"
+#include "GifCircleVectorizer.hpp"
+#include "GifFreeVectorizer.hpp"
 #include "GifGlowPass.hpp"
 #include "GifMotionPlanner.hpp"
 #include "GifPaintVectorizer.hpp"
+#include "GifParallel.hpp"
+#include "GifStampCatalog.hpp"
 #include "ImageWatermark.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <queue>
 #include <utility>
@@ -1488,6 +1494,18 @@ std::vector<Primitive> buildGeometry(
                 context.ranks[static_cast<std::size_t>(color)],
                 context.obstacles[static_cast<std::size_t>(color)],
                 context.empty);
+        case ImportMode::Circles:
+            return vectorizeCircles(
+                positions, width, height, color,
+                context.ranks[static_cast<std::size_t>(color)],
+                context.obstacles[static_cast<std::size_t>(color)],
+                context.empty);
+        case ImportMode::Free:
+            return vectorizeFree(
+                positions, width, height, color,
+                context.ranks[static_cast<std::size_t>(color)],
+                context.obstacles[static_cast<std::size_t>(color)],
+                context.empty);
         case ImportMode::Blocks:
             break;
     }
@@ -1655,11 +1673,21 @@ Candidate temporalCandidate(
         }
     }
 
+    std::vector<std::pair<BucketKey const*, std::vector<int> const*>> entries;
+    entries.reserve(buckets.size());
+    for (auto const& entry : buckets) entries.emplace_back(&entry.first, &entry.second);
+    std::vector<std::vector<Primitive>> traced(entries.size());
+    parallelFor(entries.size(), [&](std::size_t index) {
+        traced[index] = buildGeometry(
+            *entries[index].second, width, height, entries[index].first->color, context);
+    });
+
     Candidate candidate;
     candidate.strategy = "temporal";
     std::map<std::vector<std::uint64_t>, std::size_t> tracksByMask;
-    for (auto const& [key, positions] : buckets) {
-        auto objects = buildGeometry(positions, width, height, key.color, context);
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+        auto const& key = *entries[index].first;
+        auto const& objects = traced[index];
         if (allFrames(key.mask, frameCount)) {
             candidate.staticObjects.insert(
                 candidate.staticObjects.end(), objects.begin(), objects.end());
@@ -1714,20 +1742,25 @@ Candidate frameCandidate(
             staticPositions[static_cast<std::size_t>(first)].push_back(position);
         }
     }
-    for (int color = 0; color < colors; ++color) {
-        auto objects = buildGeometry(
-            staticPositions[static_cast<std::size_t>(color)], width, height, color, context);
+    std::vector<std::vector<Primitive>> byColor(static_cast<std::size_t>(colors));
+    parallelFor(static_cast<std::size_t>(colors), [&](std::size_t color) {
+        byColor[color] = buildGeometry(
+            staticPositions[color], width, height, static_cast<int>(color), context);
+    });
+    for (auto const& objects : byColor) {
         candidate.staticObjects.insert(
             candidate.staticObjects.end(), objects.begin(), objects.end());
     }
     sortByLayer(candidate.staticObjects);
 
-    for (int frame = 0; frame < frameCount; ++frame) {
+    std::vector<VisibilityTrack> perFrame(static_cast<std::size_t>(frameCount));
+    parallelFor(static_cast<std::size_t>(frameCount), [&](std::size_t index) {
+        int const frame = static_cast<int>(index);
         VisibilityTrack track;
         track.mask.assign(static_cast<std::size_t>(words), 0);
         track.mask[static_cast<std::size_t>(frame / 64)] |= std::uint64_t{1} << (frame % 64);
         std::vector<std::vector<int>> positions(static_cast<std::size_t>(colors));
-        auto const& cells = frames[static_cast<std::size_t>(frame)].cells;
+        auto const& cells = frames[index].cells;
         for (int position = 0; position < width * height; ++position) {
             if (!dynamic[static_cast<std::size_t>(position)]) continue;
             int const color = cells[static_cast<std::size_t>(position)];
@@ -1739,6 +1772,9 @@ Candidate frameCandidate(
             track.objects.insert(track.objects.end(), objects.begin(), objects.end());
         }
         sortByLayer(track.objects);
+        perFrame[index] = std::move(track);
+    });
+    for (auto& track : perFrame) {
         if (!track.objects.empty()) candidate.tracks.push_back(std::move(track));
     }
     if (usesPaintGeometry(context.mode)) {
@@ -1811,6 +1847,35 @@ Candidate chooseCandidate(Candidate temporal, Candidate perFrame, std::size_t ob
             : std::move(perFrame);
     }
     return temporal.total() <= perFrame.total() ? std::move(temporal) : std::move(perFrame);
+}
+
+// Mientras se traza, un molde se apunta por su sitio en la biblioteca, que tiene
+// miles de entradas. El plan se queda solo con los que aparecen —para no
+// arrastrar la biblioteca entera hasta el editor— y reindexa las figuras.
+void collectStamps(ImportPlan& plan) {
+    // Solo el modo libre suelta moldes, y la biblioteca es global: preguntarla
+    // desde los demas modos seria tocar sin motivo algo que el juego rellena
+    // mientras tanto desde el hilo principal.
+    if (plan.mode != ImportMode::Free) return;
+    auto const& variants = stampVariants();
+    std::map<std::uint16_t, std::uint16_t> slots;
+    auto remap = [&](Primitive& object) {
+        if (object.kind != PrimitiveKind::Stamp) return;
+        auto [slot, inserted] = slots.try_emplace(
+            object.stamp, static_cast<std::uint16_t>(plan.stamps.size()));
+        if (inserted) {
+            plan.stamps.push_back(
+                object.stamp < variants.size() ? variants[object.stamp].stamp : PlanStamp{});
+        }
+        object.stamp = slot->second;
+    };
+    for (auto& object : plan.staticObjects) remap(object);
+    for (auto& track : plan.tracks) {
+        for (auto& object : track.objects) remap(object);
+    }
+    for (auto& track : plan.motionTracks) {
+        for (auto& object : track.objects) remap(object);
+    }
 }
 
 float paintPlanSimilarity(
@@ -1980,23 +2045,30 @@ BuildResult buildAt(
             if (color >= 0) positions[static_cast<std::size_t>(color)].push_back(position);
         }
         chosen.strategy = "estatico";
-        for (int color = 0; color < static_cast<int>(palette.size()); ++color) {
-            auto objects = buildGeometry(
-                positions[static_cast<std::size_t>(color)], width, height, color, context);
+        std::vector<std::vector<Primitive>> byColor(palette.size());
+        parallelFor(palette.size(), [&](std::size_t color) {
+            byColor[color] = buildGeometry(
+                positions[color], width, height, static_cast<int>(color), context);
+        });
+        for (auto const& objects : byColor) {
             chosen.staticObjects.insert(
                 chosen.staticObjects.end(), objects.begin(), objects.end());
         }
         sortByLayer(chosen.staticObjects);
         if (usesPaintGeometry(context.mode)) {
             prunePaintObjects(chosen.staticObjects, width, height);
-            repairPaintSeams(
-                chosen.staticObjects, frames.front().cells, context.ranks, width, height);
-            prunePaintObjects(chosen.staticObjects, width, height);
-            repairPaintSeams(
-                chosen.staticObjects, frames.front().cells, context.ranks, width, height);
-            // La secuencia acababa en parches, asi que los ultimos no pasaban por
-            // ninguna criba y algunos no cambiaban nada del dibujo.
-            prunePaintObjects(chosen.staticObjects, width, height);
+            if (matchesGridExactly(context.mode)) {
+                repairPaintSeams(
+                    chosen.staticObjects, frames.front().cells, context.ranks,
+                    width, height);
+                prunePaintObjects(chosen.staticObjects, width, height);
+                repairPaintSeams(
+                    chosen.staticObjects, frames.front().cells, context.ranks,
+                    width, height);
+                // La secuencia acababa en parches, asi que los ultimos no pasaban
+                // por ninguna criba y algunos no cambiaban nada del dibujo.
+                prunePaintObjects(chosen.staticObjects, width, height);
+            }
         }
     } else {
         auto plan = [&](std::vector<GridFrame> const& source) {
@@ -2039,6 +2111,7 @@ BuildResult buildAt(
     plan.motionTracks = std::move(chosen.motionTracks);
     plan.strategy = std::move(chosen.strategy);
     applyImageWatermark(plan, options.objectBudget);
+    collectStamps(plan);
     plan.visualObjects = plan.staticObjects.size();
     for (auto const& track : plan.tracks) plan.visualObjects += track.objects.size();
     for (auto const& track : plan.motionTracks) plan.visualObjects += track.objects.size();
@@ -2055,6 +2128,7 @@ BuildResult buildAt(
             case PrimitiveKind::Triangle:
             case PrimitiveKind::WideTriangle: ++plan.triangleObjects; break;
             case PrimitiveKind::Glow: ++plan.glowObjects; break;
+            case PrimitiveKind::Stamp: ++plan.stampObjects; break;
         }
     };
     for (auto const& object : plan.staticObjects) countShape(object);
@@ -2139,40 +2213,59 @@ BuildResult buildRenderPlan(
     int const passes = static_cast<int>(dimensions.size());
     std::size_t const softLimit = std::min<std::size_t>(
         options.objectBudget, source.frames.size() > 1 ? 6000 : 2500);
+
+    // Los pases son independientes entre si —cada uno traza la imagen entera a
+    // una rejilla distinta— asi que van a la vez y la eleccion se hace despues,
+    // en orden, para que el plan que sale no dependa de quien acabe primero.
+    std::vector<BuildResult> results(static_cast<std::size_t>(passes));
+    std::vector<std::atomic<float>> shares(static_cast<std::size_t>(passes));
+    std::atomic<int> done{0};
+    std::mutex reporting;
+    float published = 0.f;
+    // La barra no puede bajar, y aqui varios pases la empujan a la vez: se suma
+    // y se compara dentro del candado, y el segundo intento de un pase parte de
+    // donde lo dejo el primero.
+    auto publish = [&] {
+        if (!progress) return;
+        std::lock_guard<std::mutex> lock(reporting);
+        float total = 0.f;
+        for (auto const& share : shares) total += share.load(std::memory_order_relaxed);
+        float const value = 0.01f + 0.97f * total / static_cast<float>(passes);
+        if (value < published) return;
+        published = value;
+        progress({
+            BuildStage::Refining, value, done.load(std::memory_order_relaxed), passes});
+    };
+
+    parallelFor(static_cast<std::size_t>(passes), [&](std::size_t index) {
+        int const dimension = dimensions[index];
+        auto share = [&, index](BuildStage, float value) {
+            if (value <= shares[index].load(std::memory_order_relaxed)) return;
+            shares[index].store(value, std::memory_order_relaxed);
+            publish();
+        };
+        auto result = buildAt(source, options, dimension, frameLimit, true, share);
+        if (result && result.plan.geometrySimilarity < kPaintReviewGate) {
+            auto plain = buildAt(source, options, dimension, frameLimit, false, share);
+            if (plain && plain.plan.geometrySimilarity > result.plan.geometrySimilarity) {
+                result = std::move(plain);
+            }
+        }
+        if (result) result.plan.requestedDimension = options.maxDimension;
+        shares[index].store(1.f, std::memory_order_relaxed);
+        done.fetch_add(1, std::memory_order_relaxed);
+        publish();
+        results[index] = std::move(result);
+    });
+
     ImportPlan best;
     bool hasBest = false;
     int attempted = 0;
-
-    for (int index = 0; index < passes; ++index) {
-        float const start = 0.01f + 0.97f * index / passes;
-        float const length = 0.97f / passes;
-        auto compactProgress = progressRange(
-            progress, start, length * 0.7f, index + 1, passes);
-        auto result = buildAt(
-            source, options, dimensions[static_cast<std::size_t>(index)],
-            frameLimit, true, compactProgress);
+    for (auto& result : results) {
         ++attempted;
         if (!result) {
             finishProgress(progress, attempted, passes);
-            return result;
-        }
-        result.plan.requestedDimension = options.maxDimension;
-
-        if (result.plan.geometrySimilarity < kPaintReviewGate) {
-            auto plainProgress = progressRange(
-                progress, start + length * 0.7f, length * 0.25f,
-                index + 1, passes);
-            auto plain = buildAt(
-                source, options, dimensions[static_cast<std::size_t>(index)],
-                frameLimit, false, plainProgress);
-            if (plain && plain.plan.geometrySimilarity > result.plan.geometrySimilarity) {
-                result = std::move(plain);
-                result.plan.requestedDimension = options.maxDimension;
-            }
-        }
-
-        if (progress) {
-            progress({BuildStage::Refining, start + length * 0.98f, index + 1, passes});
+            return std::move(result);
         }
         if (!planFits(result.plan, options)) continue;
         if (!hasBest || betterRenderPlan(result.plan, best, softLimit)) {
@@ -2214,7 +2307,7 @@ BuildResult buildRegularPlan(
             return result;
         }
         result.plan.requestedDimension = options.maxDimension;
-        if (usesPaintGeometry(options.mode) &&
+        if (matchesGridExactly(options.mode) &&
             result.plan.geometrySimilarity < kPaintReviewGate) {
             auto plainProgress = progressRange(
                 progress, start + length * 0.68f, length * 0.3f);
@@ -2226,7 +2319,7 @@ BuildResult buildRegularPlan(
             }
         }
         if (planFits(result.plan, options)) {
-            if (!usesPaintGeometry(options.mode) ||
+            if (!matchesGridExactly(options.mode) ||
                 result.plan.geometrySimilarity >= kPaintReviewGate) {
                 finishProgress(progress);
                 return result;

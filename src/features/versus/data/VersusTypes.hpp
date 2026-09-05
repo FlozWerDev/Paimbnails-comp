@@ -114,7 +114,10 @@ struct SideState {
     int deaths = 0;
     bool alive = true;
     bool finished = false;
+    bool forfeited = false; // walked out of the level, so the duel is handed over
     bool shielded = false;
+    bool practice = false;  // practising, so the percent is parked rather than stopped
+    bool spent = false;     // out of attempts, nothing more will be added
     uint8_t segments = 0;   // ladder: one bit per 25% claimed
 };
 

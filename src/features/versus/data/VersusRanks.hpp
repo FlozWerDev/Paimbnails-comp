@@ -12,9 +12,8 @@ namespace paimon::versus {
 inline constexpr int kStartElo = 1000;
 inline constexpr int kPlacementMatches = 5;
 
-// Below this there is no decay: punishing the casual player makes no sense in
-// a mod. Paimon is handed out by the server to the top twenty, not by Elo.
-inline constexpr int kDecayFloorTier = 13;
+// Paimon is handed out by the server to the top twenty of each mode, not
+// reached by Elo, so it has no floor of its own.
 inline constexpr int kPaimonTier = 19;
 
 struct RankInfo {
@@ -31,16 +30,6 @@ struct RankInfo {
 };
 
 RankInfo rankFor(int elo, int placementsLeft = 0, bool paimon = false);
-
-int kFactor(int elo, int placementsLeft);
-float expectedScore(int own, int rival);
-
-// Signed Elo change for the local player. `margin` is the percent gap at the
-// end, `streak` the win streak going in. Losses take no bonuses.
-int eloDelta(int own, int rival, bool won, int placementsLeft, int streak, float margin);
-
-int decayFor(int elo, int daysIdle);
-int softReset(int elo);
 
 std::string rankName(RankInfo const& rank);
 std::string rankShortName(RankInfo const& rank);

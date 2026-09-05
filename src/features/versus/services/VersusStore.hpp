@@ -4,6 +4,7 @@
 // hub remembers. The server stays the authority; this exists so the hub can
 // draw a rank before the first request answers.
 
+#include "../data/VersusModes.hpp"
 #include "../data/VersusRanks.hpp"
 #include "../data/VersusTypes.hpp"
 
@@ -55,6 +56,8 @@ public:
     Mode preferredMode() const { return m_mode; }
     void setPreferredMode(Mode mode);
 
+    // Never answers a format the queue no longer offers: the hub, the challenge
+    // and beginQueue all read this and would otherwise disagree on the rules.
     Format preferredFormat(Mode mode) const;
     void setPreferredFormat(Mode mode, Format format);
 
@@ -70,11 +73,11 @@ public:
     std::string const& sessionToken() const { return m_token; }
     void setSessionToken(std::string token);
 
-    void load();
-
 private:
     VersusStore() = default;
 
+    // get() runs this once, lazily; nobody outside needs to ask for it.
+    void load();
     void saveProfiles();
 
     static constexpr size_t kHistoryKept = 20;

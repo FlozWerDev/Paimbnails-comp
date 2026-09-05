@@ -11,6 +11,8 @@
 #include "../services/GifArtVectorizer.hpp"
 #include "../services/GifImportPipeline.hpp"
 #include "../services/GifObjectEmitter.hpp"
+#include "../services/GifSourceScaler.hpp"
+#include "../services/GifStampLibrary.hpp"
 #include "../services/GifVideoSource.hpp"
 
 #include <Geode/binding/ButtonSprite.hpp>
@@ -24,7 +26,6 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
-#include <thread>
 
 using namespace geode::prelude;
 
@@ -279,8 +280,10 @@ void GifImportPopup::loadOptions() {
         ? SamplingMode::Smooth : SamplingMode::Pixel;
     int const savedMode = static_cast<int>(mod->getSavedValue<int64_t>(
         "gif-import-mode", mod->getSavedValue<bool>("gif-import-art-mode", false) ? 1 : 0));
-    m_options.mode = savedMode == 3
-        ? (renderEnabled() ? ImportMode::Render : ImportMode::Paint)
+    m_options.mode = savedMode == 5 ? ImportMode::Circles
+        : savedMode == 4 ? ImportMode::Free
+        : savedMode == 3
+            ? (renderEnabled() ? ImportMode::Render : ImportMode::Paint)
         : savedMode == 2 ? ImportMode::Paint
         : savedMode == 1 ? ImportMode::Art : ImportMode::Blocks;
     m_options.dither = mod->getSavedValue<bool>("gif-import-dither", false);
@@ -363,7 +366,8 @@ void GifImportPopup::loadAnimated(
     showBusy("Decodificando GIF");
     m_sourceLoad = std::make_shared<SourceLoadState>();
     auto state = m_sourceLoad;
-    std::thread([state, bytes, path, safeFrames] {
+    bool const started = paimon::ThreadTracker::get().spawn([state, bytes, path, safeFrames] {
+        geode::utils::thread::setName("Paimon GIF Decode");
         auto gif = GIFDecoder::decode(bytes->data(), bytes->size(), safeFrames);
         auto source = std::make_shared<SourceAnimation>();
         source->width = gif.width;
@@ -376,7 +380,11 @@ void GifImportPopup::loadAnimated(
         if (source->frames.empty()) loaded.error = "No se pudo decodificar ningun frame.";
         std::lock_guard lock(state->mutex);
         state->result = std::move(loaded);
-    }).detach();
+    });
+    if (started) return;
+    m_sourceLoad.reset();
+    hideBusy();
+    PaimonNotify::show("El juego se esta cerrando.", NotificationIcon::Warning);
 }
 
 void GifImportPopup::loadStill(
@@ -402,7 +410,8 @@ void GifImportPopup::loadStill(
     showBusy("Decodificando imagen");
     m_sourceLoad = std::make_shared<SourceLoadState>();
     auto state = m_sourceLoad;
-    std::thread([state, bytes, path] {
+    bool const started = paimon::ThreadTracker::get().spawn([state, bytes, path] {
+        geode::utils::thread::setName("Paimon Image Decode");
         int decodedWidth = 0;
         int decodedHeight = 0;
         int decodedChannels = 0;
@@ -425,7 +434,11 @@ void GifImportPopup::loadStill(
         if (source->frames.empty()) loaded.error = "No se pudo decodificar la imagen.";
         std::lock_guard lock(state->mutex);
         state->result = std::move(loaded);
-    }).detach();
+    });
+    if (started) return;
+    m_sourceLoad.reset();
+    hideBusy();
+    PaimonNotify::show("El juego se esta cerrando.", NotificationIcon::Warning);
 }
 
 void GifImportPopup::loadVideo(std::filesystem::path const& path) {
@@ -453,6 +466,8 @@ void GifImportPopup::applySource(
 ) {
     m_path = path;
     m_source = std::move(source);
+    m_scaled.reset();
+    m_scaledFor = 0;
     m_plan.reset();
     m_previewFrame = 0;
     m_previewElapsed = 0.f;
@@ -487,10 +502,20 @@ void GifImportPopup::startProcess() {
     m_statsLabel->setColor({255, 205, 105});
     m_statsLabel->setString("Procesando y optimizando...");
 
-    auto source = m_source;
+    // Al reabrir el popup el modo libre puede venir guardado sin que nadie haya
+    // pasado por el boton, y la biblioteca solo se puede leer desde aqui.
+    if (m_options.mode == ImportMode::Free && !stampLibraryReady()) buildStampLibrary();
+    // La reduccion toca GL, asi que se hace aqui y no dentro del hilo. Se guarda
+    // porque cambiar colores o presupuesto no cambia la resolucion de trabajo.
+    if (!m_scaled || m_scaledFor != m_options.maxDimension) {
+        m_scaled = prescaleSource(m_source, m_options.maxDimension);
+        m_scaledFor = m_options.maxDimension;
+    }
+    auto source = m_scaled;
     Options const options = m_options;
     auto progress = m_progress;
-    std::thread([source, options, progress] {
+    bool const started = paimon::ThreadTracker::get().spawn([source, options, progress] {
+        geode::utils::thread::setName("Paimon GIF Plan");
         auto result = buildPlan(*source, options, [progress](BuildProgress const& update) {
             progress->value.store(update.value, std::memory_order_relaxed);
             progress->stage.store(static_cast<int>(update.stage), std::memory_order_relaxed);
@@ -499,7 +524,14 @@ void GifImportPopup::startProcess() {
         });
         std::lock_guard lock(progress->mutex);
         progress->result = std::move(result);
-    }).detach();
+    });
+    if (started) return;
+    m_processing = false;
+    m_progress.reset();
+    m_progressTrack->setVisible(false);
+    m_progressFill->setVisible(false);
+    m_statsLabel->setColor({255, 190, 100});
+    m_statsLabel->setString("El juego se esta cerrando.");
 }
 
 void GifImportPopup::applyProcessed(BuildResult result) {
@@ -538,6 +570,8 @@ void GifImportPopup::refreshControls() {
         m_options.mode == ImportMode::Render ? "Modo: Render"
         : m_options.mode == ImportMode::Paint ? "Modo: Pintura"
         : m_options.mode == ImportMode::Art ? "Modo: Art"
+        : m_options.mode == ImportMode::Free ? "Modo: Libre"
+        : m_options.mode == ImportMode::Circles ? "Modo: Circulos"
         : "Modo: Bloques");
     m_samplingSprite->setString(vector
         ? "Suave: fijo"
@@ -562,6 +596,10 @@ void GifImportPopup::refreshControls() {
         review = fmt::format(" | fidelidad {:.1f}%", m_plan->similarity);
     }
     std::string extra;
+    if (m_plan->stampObjects > 0) {
+        extra += fmt::format(", {} deco de {} moldes",
+                             m_plan->stampObjects, m_plan->stamps.size());
+    }
     if (m_plan->glowObjects > 0) extra += fmt::format(", {} glow", m_plan->glowObjects);
     if (m_plan->moveTriggers > 0) {
         extra += fmt::format(", {} moves en {} pistas",
@@ -695,7 +733,11 @@ void GifImportPopup::runBackground() {
     auto const winSize = CCDirector::get()->getWinSize();
     CCPoint const workspaceCenter{winSize.width * 0.5f, winSize.height * 0.4f};
     auto const center = editor->m_objectLayer->convertToNodeSpace(workspaceCenter);
-    auto result = startBackgroundImport(ui, m_source, m_options, center);
+    if (!m_scaled || m_scaledFor != m_options.maxDimension) {
+        m_scaled = prescaleSource(m_source, m_options.maxDimension);
+        m_scaledFor = m_options.maxDimension;
+    }
+    auto result = startBackgroundImport(ui, m_scaled, m_options, center);
     if (result.isErr()) {
         PaimonNotify::show(result.unwrapErr(), NotificationIcon::Error);
         return;
@@ -801,7 +843,25 @@ void GifImportPopup::toggleMode() {
     m_options.mode = m_options.mode == ImportMode::Blocks ? ImportMode::Art
         : m_options.mode == ImportMode::Art ? ImportMode::Paint
         : m_options.mode == ImportMode::Paint && renderEnabled() ? ImportMode::Render
-        : ImportMode::Blocks;
+        : m_options.mode == ImportMode::Free ? ImportMode::Circles
+        : m_options.mode == ImportMode::Circles ? ImportMode::Blocks
+        : ImportMode::Free;
+    // Rasterizar la decoracion de GD toca GL y tarda un momento, asi que se hace
+    // una vez aqui y con el aviso ya puesto. Con un plan a medio trazar se deja
+    // para startProcess: la biblioteca la estan leyendo sus hilos.
+    if (m_options.mode == ImportMode::Free && !stampLibraryReady() && !m_processing) {
+        refreshControls();
+        showBusy("Leyendo la decoracion de GD");
+        WeakRef<GifImportPopup> self = this;
+        Loader::get()->queueInMainThread([self] {
+            auto* popup = self.lock().data();
+            if (!popup) return;
+            if (!popup->m_processing) buildStampLibrary();
+            popup->hideBusy();
+            popup->requestProcess();
+        });
+        return;
+    }
     requestProcess();
 }
 

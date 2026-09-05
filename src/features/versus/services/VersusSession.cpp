@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 using namespace geode::prelude;
 
@@ -32,6 +33,10 @@ constexpr float kFoundPoll = 1.0f;
 // A rival that stops ticking for this long is treated as gone; the server still
 // decides what that costs them.
 constexpr float kRivalTimeout = 30.f;
+
+// Closer than this and the two runs are called a dead heat, whether the gap is
+// in seconds or in points.
+constexpr float kDeadHeat = 0.05f;
 
 int64_t nowSeconds() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -81,16 +86,20 @@ void VersusSession::reset() {
     m_inLevel = false;
     m_submitted = false;
     m_rivalSeen = false;
+    m_practice = false;
     m_levelTime = 0.f;
     m_sinceTick = 0.f;
     m_hillHeld = 0.f;
+    m_rope = 0.f;
     m_startsIn = 0.f;
     m_rivalSilence = 0.f;
     m_hand.clear();
+    m_rivalHand.clear();
     m_milestones.clear();
     m_nextMilestone = 0;
     m_milestoneShift = 0.f;
     m_hourglass = 0.f;
+    m_extraAttempts = 0;
     net::setRival(0);
     net::stopListening();
     gl::restoreVisibility();
@@ -182,7 +191,10 @@ void VersusSession::applyLobby(MatchInfo const& info) {
         setPhase(Phase::Loading);
         return;
     }
-    if (info.countdownMs > 0 && m_phase != Phase::Running) {
+    // The lobby keeps answering with the countdown while we are still outside,
+    // and that is the only clock there is out here; once the level is up
+    // onLevelTick owns it and a late answer would wind it back.
+    if (info.countdownMs > 0 && !m_inLevel && m_phase != Phase::Running) {
         m_startsIn = info.countdownMs / 1000.f;
         setPhase(Phase::Countdown);
     }
@@ -248,7 +260,13 @@ void VersusSession::wireNet() {
         m_rival.bestPercent = std::max(m_rival.bestPercent, tick.percent);
         m_rival.attempt = tick.attempt;
         m_rival.alive = tick.alive;
+        m_rival.practice = tick.practice;
         m_rival.shielded = tick.shielded;
+
+        m_rivalHand.clear();
+        for (auto const card : tick.hand) {
+            if (card != CardId::Count) m_rivalHand.push_back(card);
+        }
         notifyListeners();
     };
 
@@ -267,9 +285,16 @@ void VersusSession::wireNet() {
                 m_rival.finishTime = state.levelTime;
                 break;
             case net::StateKind::Forfeit:
-                m_rival.finished = true;
+                m_rival.forfeited = true;
                 m_rival.alive = false;
                 m_rival.percent = 0.f;
+                break;
+            case net::StateKind::Spent:
+                m_rival.spent = true;
+                m_rival.alive = false;
+                break;
+            case net::StateKind::Revive:
+                m_rival.spent = false;
                 break;
             default:
                 break;
@@ -294,13 +319,16 @@ void VersusSession::onLevelStarted(PlayLayer* layer) {
     m_levelTime = 0.f;
     m_sinceTick = 0.f;
     m_hillHeld = 0.f;
+    m_rope = 0.f;
     m_rivalSilence = 0.f;
+    m_practice = false;
     m_own = {};
     m_submitted = false;
     m_hand.clear();
     m_nextMilestone = 0;
     m_milestoneShift = 0.f;
     m_hourglass = 0.f;
+    m_extraAttempts = 0;
     buildMilestones();
 
     if (m_match.rival.accountId != 0) {
@@ -326,10 +354,6 @@ void VersusSession::onLevelTick(float dt, float percent, int attempt, bool pract
     VersusEffects::get().update(dt);
 
     m_levelTime += dt;
-    m_own.percent = percent;
-    m_own.bestPercent = std::max(m_own.bestPercent, percent);
-    m_own.attempt = attempt;
-    m_own.alive = true;
 
     if (m_rivalSeen) {
         m_rivalSilence += dt;
@@ -338,26 +362,35 @@ void VersusSession::onLevelTick(float dt, float percent, int attempt, bool pract
         }
     }
 
-    // Practice runs never count toward a duel, but leaving practice should not
-    // end the match either: the tick just stops carrying progress.
-    if (practice) return;
-
-    auto const& def = format();
-    if (def.id == Format::Ladder) {
-        int const segment = segmentForPercent(m_own.percent);
-        if (segment >= 0) {
-            uint8_t const bit = static_cast<uint8_t>(1u << segment);
-            if (!(m_own.segments & bit) && !(m_rival.segments & bit)) {
-                m_own.segments |= bit;
-                net::sendState({net::StateKind::Segment, static_cast<uint8_t>(segment), 0, m_levelTime});
-            }
-        }
-    } else if (def.id == Format::KingOfTheHill) {
-        m_hillHeld = m_own.percent > m_rival.percent ? m_hillHeld + dt : 0.f;
+    // Practice runs never count toward a duel, and neither does anything past
+    // the attempt limit: the percent parks where it was. What must not stop is
+    // everything the two clients share, or one of them keeps integrating the
+    // rope against a frozen number and calls the duel on its own.
+    m_practice = practice;
+    bool const counts = !practice && !m_own.spent;
+    if (counts) {
+        m_own.percent = percent;
+        m_own.bestPercent = std::max(m_own.bestPercent, percent);
+        m_own.attempt = attempt;
+        m_own.alive = true;
     }
 
-    if (m_hourglass > 0.f) m_hourglass = std::max(0.f, m_hourglass - dt);
-    checkMilestones();
+    auto const& def = format();
+    if (def.id == Format::Ladder || def.id == Format::Relay) {
+        if (counts) claimSegment(segmentForPercent(m_own.percent));
+    } else if (def.id == Format::KingOfTheHill) {
+        m_hillHeld = m_own.percent > m_rival.percent ? m_hillHeld + dt : 0.f;
+    } else if (def.id == Format::TugOfWar) {
+        // Both clients run this off the same two percentages, so the rope lands
+        // on the same side without anything having to be sent.
+        float const pull = (m_own.percent - m_rival.percent) / kRopeLead / kRopeSeconds;
+        m_rope = std::clamp(m_rope + pull * dt, -1.f, 1.f);
+    }
+
+    if (counts) {
+        if (m_hourglass > 0.f) m_hourglass = std::max(0.f, m_hourglass - dt);
+        checkMilestones();
+    }
 
     m_sinceTick += dt;
     if (m_sinceTick >= kTickInterval) pushTick(false);
@@ -421,6 +454,17 @@ bool VersusSession::playCard(int slot) {
     auto const& def = cardAt(card);
     switch (def.target) {
         case CardTarget::Self:
+            // Heart is bookkeeping rather than an effect: the attempt limit is
+            // the session's to move, not the level's. Played on the death that
+            // spent the run it also has to hand it back, which is the only
+            // moment anybody would keep one for.
+            if (card == CardId::Heart) {
+                m_extraAttempts++;
+                if (m_own.spent && m_own.attempt < attemptLimit()) {
+                    m_own.spent = false;
+                    net::sendState({net::StateKind::Revive, 0, 0, m_levelTime});
+                }
+            }
             VersusEffects::get().apply(card, false);
             break;
         case CardTarget::Rival:
@@ -475,29 +519,62 @@ void VersusSession::pushTick(bool force) {
     tick.levelTime = m_levelTime;
     tick.attempt = m_own.attempt;
     tick.alive = m_own.alive;
+    tick.practice = m_practice;
     tick.shielded = gl::shieldActive();
+    for (size_t i = 0; i < m_hand.size() && i < std::size(tick.hand); i++) {
+        tick.hand[i] = m_hand[i];
+    }
     net::sendTick(tick);
+}
+
+int VersusSession::attemptLimit() const {
+    auto const& def = format();
+    if (def.attemptLimit <= 0) return 0;
+    return def.attemptLimit + m_extraAttempts;
 }
 
 void VersusSession::onDeath() {
     if (!m_inLevel || m_phase != Phase::Running) return;
+    // Past the limit the run is already over; what follows is the player
+    // restarting, and announcing it again would only flood the rival.
+    if (m_own.spent) return;
 
     m_own.deaths++;
     m_own.alive = false;
     net::sendState({net::StateKind::Death, 0, static_cast<uint16_t>(m_own.deaths), m_levelTime});
 
-    auto const& def = format();
-    if (def.attemptLimit > 0 && m_own.attempt >= def.attemptLimit) {
-        evaluate();
+    // One life each, so the death is the whole result. It goes before the
+    // attempt limit or the limit of one would swallow it.
+    if (format().id == Format::SuddenDeath) {
+        finish(m_rival.alive ? Outcome::Loss : Outcome::Draw);
         return;
     }
-    if (def.id == Format::SuddenDeath) {
-        finish(m_rival.alive ? Outcome::Loss : Outcome::Draw);
+
+    int const limit = attemptLimit();
+    if (limit > 0 && m_own.attempt >= limit) {
+        m_own.spent = true;
+        net::sendState({net::StateKind::Spent, 0, 0, m_levelTime});
+        evaluate();
     }
+}
+
+void VersusSession::claimSegment(int segment) {
+    if (segment < 0 || segment >= kLadderSegments) return;
+
+    uint8_t const bit = static_cast<uint8_t>(1u << segment);
+    if ((m_own.segments & bit) || (m_rival.segments & bit)) return;
+
+    m_own.segments |= bit;
+    net::sendState({net::StateKind::Segment, static_cast<uint8_t>(segment), 0, m_levelTime});
 }
 
 void VersusSession::onComplete() {
     if (!m_inLevel) return;
+
+    // The last segment is the finish line itself, and the tick does not always
+    // report a clean 100 before the level ends.
+    auto const& def = format();
+    if (def.id == Format::Ladder || def.id == Format::Relay) claimSegment(kLadderSegments - 1);
 
     m_own.finished = true;
     m_own.percent = 100.f;
@@ -512,6 +589,17 @@ void VersusSession::evaluate() {
 
     auto const& def = format();
 
+    // Walking out hands the duel over whatever else is on the board.
+    if (m_rival.forfeited) {
+        finish(Outcome::Win);
+        return;
+    }
+
+    if (def.id == Format::Relay) {
+        evaluateRelay();
+        return;
+    }
+
     if (m_own.finished && !m_rival.finished) {
         finish(Outcome::Win);
         return;
@@ -523,9 +611,7 @@ void VersusSession::evaluate() {
     }
     if (m_own.finished && m_rival.finished) {
         if (def.id == Format::TimeAttack || def.id == Format::Race) {
-            float const gap = m_rival.finishTime - m_own.finishTime;
-            if (std::fabs(gap) < 0.05f) finish(Outcome::Draw);
-            else finish(gap > 0.f ? Outcome::Win : Outcome::Loss);
+            finishOnGap(m_rival.finishTime - m_own.finishTime);
         } else {
             finish(Outcome::Draw);
         }
@@ -538,19 +624,59 @@ void VersusSession::evaluate() {
             if (m_own.segments & (1u << i)) own++;
             if (m_rival.segments & (1u << i)) rival++;
         }
-        if (own >= kLadderToWin) finish(Outcome::Win);
-        else if (rival >= kLadderToWin) finish(Outcome::Loss);
+        if (own >= kLadderToWin) { finish(Outcome::Win); return; }
+        if (rival >= kLadderToWin) { finish(Outcome::Loss); return; }
+    } else if (def.id == Format::KingOfTheHill && m_hillHeld >= kHillSeconds) {
+        finish(Outcome::Win);
         return;
-    }
-
-    if (def.id == Format::KingOfTheHill && m_hillHeld >= kHillSeconds) {
+    } else if (def.id == Format::TugOfWar && std::fabs(m_rope) >= 1.f) {
+        finish(m_rope > 0.f ? Outcome::Win : Outcome::Loss);
+        return;
+    } else if (def.id == Format::SuddenDeath && !m_rival.alive && m_own.alive) {
         finish(Outcome::Win);
         return;
     }
 
-    if (def.id == Format::SuddenDeath && !m_rival.alive && m_own.alive) {
-        finish(Outcome::Win);
+    // Both sides out of attempts, or the clock ran out: whoever got further
+    // takes it. Nothing else can move now.
+    if (m_own.spent && m_rival.spent) {
+        finishOnPercent();
+        return;
     }
+    if (def.timeLimit > 0 && m_levelTime >= static_cast<float>(def.timeLimit)) {
+        finishOnPercent();
+    }
+}
+
+// The four segments are claimed once each and never handed to the second one
+// there, so a run that died at 90% still holds the ones it took on the way: the
+// player who closes the last one is not necessarily the one who wins.
+void VersusSession::evaluateRelay() {
+    int own = 0, rival = 0;
+    for (int i = 0; i < kLadderSegments; i++) {
+        if (m_own.segments & (1u << i)) own++;
+        if (m_rival.segments & (1u << i)) rival++;
+    }
+
+    auto const& def = format();
+    bool const closed = own + rival >= kLadderSegments;
+    bool const outOfTime = def.timeLimit > 0 && m_levelTime >= static_cast<float>(def.timeLimit);
+    if (!closed && !outOfTime) return;
+
+    if (own != rival) {
+        finish(own > rival ? Outcome::Win : Outcome::Loss);
+        return;
+    }
+    finishOnPercent();
+}
+
+void VersusSession::finishOnPercent() {
+    finishOnGap(m_own.bestPercent - m_rival.bestPercent);
+}
+
+void VersusSession::finishOnGap(float gap) {
+    if (std::fabs(gap) < kDeadHeat) finish(Outcome::Draw);
+    else finish(gap > 0.f ? Outcome::Win : Outcome::Loss);
 }
 
 void VersusSession::finish(Outcome outcome) {
@@ -561,27 +687,32 @@ void VersusSession::finish(Outcome outcome) {
 
     int const before = VersusStore::get().profile(m_match.mode).elo;
 
+    // Everything the record needs is read here: reset() can run while the
+    // request is in the air, and it would leave the callback writing a row for
+    // a duel that no longer exists.
+    MatchRecord record;
+    record.id = m_match.id;
+    record.rival = m_match.rival.name;
+    record.levelId = m_match.levelId;
+    record.mode = m_match.mode;
+    record.format = m_match.format;
+    record.outcome = outcome;
+    record.ownPercent = m_own.bestPercent;
+    record.rivalPercent = m_rival.bestPercent;
+    record.playedAt = nowSeconds();
+
     VersusClient::get().submitResult(m_match.id, m_own, m_rival, outcome,
-        [this, before](bool ok, std::string const& message) {
+        [this, before, record](bool ok, std::string const& message) mutable {
             if (!ok) {
                 log::warn("[Versus][Session] Result rejected: {}", message);
                 return;
             }
-            m_eloDelta = VersusStore::get().profile(m_match.mode).elo - before;
-
-            MatchRecord record;
-            record.id = m_match.id;
-            record.rival = m_match.rival.name;
-            record.levelId = m_match.levelId;
-            record.mode = m_match.mode;
-            record.format = m_match.format;
-            record.outcome = m_outcome;
-            record.eloDelta = m_eloDelta;
-            record.ownPercent = m_own.bestPercent;
-            record.rivalPercent = m_rival.bestPercent;
-            record.playedAt = nowSeconds();
+            record.eloDelta = VersusStore::get().profile(record.mode).elo - before;
             VersusStore::get().pushRecord(record);
 
+            // The duel is still on screen only if nobody has left it yet.
+            if (m_match.id != record.id) return;
+            m_eloDelta = record.eloDelta;
             notifyListeners();
         });
 }
@@ -590,6 +721,7 @@ void VersusSession::forfeit() {
     if (m_match.id.empty() || m_submitted) return;
 
     net::sendState({net::StateKind::Forfeit, 0, 0, m_levelTime});
+    m_own.forfeited = true;
     m_submitted = true;
     m_outcome = Outcome::Loss;
     setPhase(Phase::Finished);
@@ -607,13 +739,21 @@ void VersusSession::onLevelLeft() {
     gl::restoreVisibility();
     gl::clearShield();
 
-    // Walking out of a running duel is a forfeit; the server would rule it one
-    // anyway once the rival submits.
-    if (m_phase == Phase::Running && !m_submitted) forfeit();
+    // Walking out of a duel that is already paired is a forfeit; the server
+    // would rule it one anyway once the rival submits. Leaving during the
+    // countdown counts, or the match stays alive and the next entry starts
+    // against whatever the rival had already claimed.
+    if ((m_phase == Phase::Running || m_phase == Phase::Countdown) && !m_submitted) forfeit();
 }
 
 float VersusSession::countdownLeft() const {
     return std::max(0.f, m_startsIn);
+}
+
+float VersusSession::timeLeft() const {
+    auto const& def = format();
+    if (def.timeLimit <= 0) return 0.f;
+    return std::max(0.f, static_cast<float>(def.timeLimit) - m_levelTime);
 }
 
 std::string VersusSession::statusLine() const {

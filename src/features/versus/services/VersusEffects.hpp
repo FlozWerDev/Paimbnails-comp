@@ -40,7 +40,10 @@ public:
     void dispelAll();
     bool has(CardId card) const;
     bool cardsLocked() const;
+    // Eye lets the duel bar and the rival's hand through; Blackout takes the
+    // bar away from both of them.
     bool seesRival() const;
+    bool barsHidden() const;
     bool reflectArmed() const { return m_reflect; }
     bool consumeReflect();
 
@@ -59,6 +62,7 @@ private:
     void flash(cocos2d::ccColor4B const& color, float duration);
 
     void applyCameraTransforms();
+    void restoreCamera();
 
     PlayLayer* m_layer = nullptr;
     cocos2d::CCNode* m_overlay = nullptr;
@@ -66,8 +70,10 @@ private:
     std::vector<ActiveEffect> m_active;
     bool m_reflect = false;
 
-    float m_baseScale = 1.f;
-    bool m_baseScaleValid = false;
+    // What our cards multiplied into the object layer's scale last frame, so it
+    // can be divided back out before the next one goes in.
+    float m_cameraFactor = 1.f;
+    bool m_cameraMirrored = false;
     float m_bombTimer = 0.f;
     float m_musicVolume = 1.f;
     float m_effectsVolume = 1.f;

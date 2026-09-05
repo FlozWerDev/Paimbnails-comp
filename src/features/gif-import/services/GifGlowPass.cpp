@@ -52,7 +52,7 @@ void collect(std::vector<Primitive>& objects, std::vector<int> const& map,
              std::vector<GlowTarget>& candidates) {
     for (std::size_t i = 0; i < objects.size(); ++i) {
         auto const& object = objects[i];
-        if (map[object.color] < 0) continue;
+        if (object.color >= map.size() || map[object.color] < 0) continue;
         float const area = object.width * object.height;
         if (area < 1.5f) continue;
         candidates.push_back({&objects, i, area});

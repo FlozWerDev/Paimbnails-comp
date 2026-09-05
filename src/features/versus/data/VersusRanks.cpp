@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 
 namespace paimon::versus {
 
@@ -60,48 +59,6 @@ RankInfo rankFor(int elo, int placementsLeft, bool paimon) {
         rank.division = 4 - idx;
     }
     return rank;
-}
-
-int kFactor(int elo, int placementsLeft) {
-    if (placementsLeft > 0) return 48;
-    if (elo < 1500) return 32;
-    if (elo < 2250) return 16;
-    return 12;
-}
-
-float expectedScore(int own, int rival) {
-    return 1.f / (1.f + std::pow(10.f, static_cast<float>(rival - own) / 400.f));
-}
-
-int eloDelta(int own, int rival, bool won, int placementsLeft, int streak, float margin) {
-    float const expected = expectedScore(own, rival);
-    float change = static_cast<float>(kFactor(own, placementsLeft)) * ((won ? 1.f : 0.f) - expected);
-
-    if (won) {
-        float bonus = 1.f;
-        if (streak >= 3) bonus += 0.15f;
-        bonus += std::clamp(margin / 60.f, 0.f, 1.f) * 0.20f;
-        change *= std::min(bonus, 1.35f);
-    }
-
-    int const rounded = static_cast<int>(std::lround(change));
-    // A win always pays something, or a heavy favourite would grind for nothing.
-    if (won && rounded < 1) return 1;
-    if (!won && rounded > -1) return std::max(-1, -own);
-    return std::max(rounded, -own);
-}
-
-int decayFor(int elo, int daysIdle) {
-    RankInfo const rank = rankFor(elo);
-    if (rank.tierIndex < kDecayFloorTier) return 0;
-
-    int const period = rank.tierIndex >= 18 ? 7 : 10;
-    if (daysIdle < period) return 0;
-    return -25 * (daysIdle / period);
-}
-
-int softReset(int elo) {
-    return static_cast<int>(std::lround(kStartElo + (elo - kStartElo) * 0.55));
 }
 
 std::string rankName(RankInfo const& rank) {

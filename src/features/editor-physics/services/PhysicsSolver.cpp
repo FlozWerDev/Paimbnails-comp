@@ -1,6 +1,7 @@
 #include "../PhysicsTypes.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -759,6 +760,7 @@ struct WorldData {
     std::unordered_map<std::uint64_t, ContactEvent> activeContacts;
     std::vector<ContactEvent> events;
     std::vector<std::uint32_t> candidates;
+    std::vector<Pose> safePoses;
     StaticGrid grid;
     float time = 0.f;
     float thinnest = 1.f;
@@ -860,6 +862,22 @@ void wakeState(State& state) {
     if (!isDynamic(state)) return;
     state.asleep = false;
     state.sleepTimer = 0.f;
+}
+
+// Rare, but a body whose impulses overflowed hands the preview a pose cocos
+// cannot draw, and every contact it takes part in inherits the NaN.
+bool diverged(State const& state) {
+    return !std::isfinite(state.position.x) || !std::isfinite(state.position.y) ||
+        !std::isfinite(state.angle) || !std::isfinite(state.velocity.x) ||
+        !std::isfinite(state.velocity.y) || !std::isfinite(state.angularVelocity);
+}
+
+// `fastest` reaches infinity before the divergence guard parks a body, and
+// casting that to int is undefined; the comparison order keeps NaN out too.
+int substepsFor(float travel) {
+    if (!(travel > 1.f)) return 1;
+    if (!(travel < static_cast<float>(kMaxSubsteps))) return kMaxSubsteps;
+    return static_cast<int>(std::ceil(travel));
 }
 
 bool jointAllowsCollision(WorldData const& data, std::size_t a, std::size_t b) {
@@ -1323,6 +1341,7 @@ PhysicsWorld::PhysicsWorld(
             staticReach += fixtureReach(fixture);
             ++staticFixtures;
         }
+        data.safePoses.push_back({state.position, state.angle});
         data.states.push_back(state);
     }
     data.thinnest = std::max(thinnest, 1.f);
@@ -1376,9 +1395,7 @@ void PhysicsWorld::step(float dt) {
     for (auto const& state : states) {
         if (isMovable(state) && !state.asleep) fastest = std::max(fastest, length(state.velocity));
     }
-    int const substeps = std::clamp(
-        static_cast<int>(std::ceil(fastest * dt / (data.thinnest * 0.5f))), 1, kMaxSubsteps
-    );
+    int const substeps = substepsFor(fastest * dt / (data.thinnest * 0.5f));
     float const subStep = dt / static_cast<float>(substeps);
 
     std::unordered_set<std::uint64_t> touchingPairs;
@@ -1503,6 +1520,23 @@ void PhysicsWorld::step(float dt) {
         data.cache.swap(data.nextCache);
         updateSleep(data, subStep);
     }
+
+    bool parked = false;
+    for (std::size_t i = 0; i < states.size(); ++i) {
+        auto& state = states[i];
+        if (!diverged(state)) {
+            data.safePoses[i] = {state.position, state.angle};
+            continue;
+        }
+        state.position = data.safePoses[i].position;
+        state.angle = data.safePoses[i].angle;
+        state.velocity = {};
+        state.angularVelocity = 0.f;
+        state.asleep = isDynamic(state);
+        parked = true;
+    }
+    // The warm start would feed the same overflowed impulses back in.
+    if (parked) data.cache.clear();
 
     data.time += dt;
     reportContacts(data, touchingPairs, touchingContacts);
@@ -1725,6 +1759,13 @@ SimulationTrace simulate(
     options.airDrag = std::max(0.f, options.airDrag);
     options.angularDrag = std::max(0.f, options.angularDrag);
 
+    auto const deadline = options.timeBudget > 0.f
+        ? std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<float>(options.timeBudget)
+            )
+        : std::chrono::steady_clock::time_point::max();
+
     PhysicsWorld world(bodies, options, joints);
     float const fixedStep = 1.f / static_cast<float>(options.fixedRate);
     float const sampleStep = 1.f / static_cast<float>(options.sampleRate);
@@ -1754,6 +1795,10 @@ SimulationTrace simulate(
             nextSample += sampleStep;
         }
         if (elapsed >= options.duration - 0.0001f) break;
+        if (std::chrono::steady_clock::now() >= deadline) {
+            trace.exhausted = true;
+            break;
+        }
     }
 
     if (trace.frames.empty() || trace.frames.back().time < options.duration - 0.0001f) {
