@@ -6,8 +6,8 @@
 #include <map>
 #include <string>
 
-// ModPreviewGalleryPopup — fullscreen viewer for mod previews with prev/next navigation
-// and a page counter. Port of ImagePopup (Mod-Previews by Alphalaneous) to Geode v5 Popup.
+// Fullscreen viewer for mod previews with prev/next navigation.
+// Inspired by Alphalaneous's Mod-Previews.
 
 namespace paimon::mod_previews {
 

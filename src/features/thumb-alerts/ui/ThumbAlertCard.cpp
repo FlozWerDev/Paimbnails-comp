@@ -20,19 +20,32 @@ namespace paimon::thumbalerts {
 
 namespace {
 
-constexpr float kCardW = 312.f;
-constexpr float kCardH = 96.f;
+constexpr float kCardW = 328.f;
+constexpr float kCardH = 102.f;
 constexpr float kRadius = 9.f;
-constexpr float kFaceX = 36.f;
-constexpr float kTextX = 68.f;
+constexpr float kBadgeX = 34.f;
+constexpr float kDividerX = 68.f;
+constexpr float kTextX = 78.f;
 constexpr float kRightPad = 12.f;
 constexpr float kScreenMargin = 10.f;
+
+// The scrim under the text is solid for as long as the labels run and then
+// fades out, so the right end of the card is still the artwork.
+constexpr float kPanelW = 176.f;
+constexpr float kPanelFadeW = 116.f;
+
+constexpr float kBarInset = 6.f;
+constexpr float kBarY = 6.f;
 
 // The shine and the Ken Burns drift are driven by hand instead of by actions,
 // so they cannot fight the per-frame opacity the card writes on every child.
 constexpr float kShineCycle = 3.6f;
 constexpr float kShineSweep = 1.3f;
+constexpr float kShineWidth = 56.f;
 constexpr float kBurnsCycle = 9.f;
+
+// How far the text sits from its rest spot while the card is still arriving.
+constexpr float kRevealSlide = 13.f;
 
 float easeOutCubic(float t) {
     float u = 1.f - t;
@@ -45,8 +58,7 @@ float easeOutExpo(float t) {
     return t >= 1.f ? 1.f : 1.f - std::pow(2.f, -9.f * t);
 }
 
-float easeOutBack(float t) {
-    constexpr float s = 1.6f;
+float easeOutBack(float t, float s = 1.6f) {
     float u = t - 1.f;
     return 1.f + u * u * ((s + 1.f) * u + s);
 }
@@ -88,13 +100,13 @@ int difficultyFace(std::string const& name) {
     return 0;
 }
 
-char const* rateFrame(int tier) {
+GJFeatureState featureState(int tier) {
     switch (tier) {
-        case 1: return "GJ_featuredCoin_001.png";
-        case 2: return "GJ_epicCoin_001.png";
-        case 3: return "GJ_epicCoin2_001.png";
-        case 4: return "GJ_epicCoin3_001.png";
-        default: return nullptr;
+        case 1: return GJFeatureState::Featured;
+        case 2: return GJFeatureState::Epic;
+        case 3: return GJFeatureState::Legendary;
+        case 4: return GJFeatureState::Mythic;
+        default: return GJFeatureState::None;
     }
 }
 
@@ -109,7 +121,7 @@ ccColor3B rateColor(int tier) {
 }
 
 // A colour picked off a dark thumbnail can be almost black; lift it until it
-// still reads as a border over the card.
+// still reads over the card.
 ccColor3B brighten(ccColor3B color) {
     int const peak = std::max({static_cast<int>(color.r), static_cast<int>(color.g),
                                static_cast<int>(color.b)});
@@ -121,6 +133,20 @@ ccColor3B brighten(ccColor3B color) {
         static_cast<GLubyte>(std::min(255.f, color.g * factor)),
         static_cast<GLubyte>(std::min(255.f, color.b * factor)),
     };
+}
+
+ccColor3B shade(ccColor3B color, float factor) {
+    return {
+        static_cast<GLubyte>(color.r * factor),
+        static_cast<GLubyte>(color.g * factor),
+        static_cast<GLubyte>(color.b * factor),
+    };
+}
+
+// Both frames are 80x80 with an 8px corner, so the default thirds insets fold
+// in on themselves on anything as short as the chip.
+CCScale9Sprite* smallFrame(char const* file) {
+    return paimon::SpriteHelper::safeCreateScale9(file, CCRectMake(8.f, 8.f, 64.f, 64.f));
 }
 
 std::string shortCount(int value) {
@@ -185,16 +211,30 @@ bool ThumbAlertCard::init(NewThumb const& item, Config const& config, CCTexture2
     this->ignoreAnchorPointForPosition(false);
 
     this->buildBackground(thumbnail);
+    this->buildFrame();
+    this->buildBadges();
     this->buildContent();
     if (m_config.click && m_item.levelId > 0) this->buildTouch();
 
     this->captureFade();
-    this->applyAlpha(0.f);
+    this->applyAlpha(0.f, 0.f);
+    this->applyReveal(0.f, 0.f);
     this->toPhase(Phase::In, std::max(0.05f, m_config.enterTime));
     return true;
 }
 
 void ThumbAlertCard::buildBackground(CCTexture2D* thumbnail) {
+    // A dark ring under the frame: over a bright menu the white border alone
+    // washes out into the background.
+    if (auto* shadow = paimon::SpriteHelper::safeCreateScale9("square02b_001.png")) {
+        shadow->setContentSize({kCardW + 10.f, kCardH + 10.f});
+        shadow->setAnchorPoint({0.f, 0.f});
+        shadow->setPosition({-5.f, -6.f});
+        shadow->setColor({0, 0, 0});
+        shadow->setOpacity(95);
+        this->addChild(shadow, -1);
+    }
+
     auto* clipper = CCClippingNode::create();
     clipper->setContentSize({kCardW, kCardH});
     clipper->setAnchorPoint({0.f, 0.f});
@@ -224,112 +264,154 @@ void ThumbAlertCard::buildBackground(CCTexture2D* thumbnail) {
     dim->setContentSize({kCardW, kCardH});
     clipper->addChild(dim, 2);
 
-    // Dark on the left where the text sits, clear on the right so the artwork
-    // still shows through.
-    auto* sideFade = CCLayerGradient::create({5, 6, 12, 236}, {0, 0, 0, 0}, {1.f, 0.f});
-    sideFade->setContentSize({kCardW * 0.66f, kCardH});
-    sideFade->setPosition({0.f, 0.f});
-    clipper->addChild(sideFade, 3);
+    auto* panel = CCLayerColor::create({6, 7, 14, 228});
+    panel->setContentSize({kPanelW, kCardH});
+    clipper->addChild(panel, 3);
 
-    auto* footFade = CCLayerGradient::create({4, 5, 10, 215}, {0, 0, 0, 0}, {0.f, 1.f});
+    auto* panelFade = CCLayerGradient::create({6, 7, 14, 228}, {0, 0, 0, 0}, {1.f, 0.f});
+    panelFade->setContentSize({kPanelFadeW, kCardH});
+    panelFade->setPosition({kPanelW, 0.f});
+    clipper->addChild(panelFade, 3);
+
+    auto* footFade = CCLayerGradient::create({4, 5, 11, 212}, {0, 0, 0, 0}, {0.f, 1.f});
     footFade->setContentSize({kCardW, 34.f});
     footFade->setPosition({0.f, 0.f});
     clipper->addChild(footFade, 3);
 
     if (m_config.shine) {
-        m_shine = CCSprite::create();
-        if (m_shine) {
-            m_shine->setTextureRect({0.f, 0.f, 1.f, 1.f});
-            m_shine->setScaleX(42.f);
-            m_shine->setScaleY(kCardH * 2.f);
-            m_shine->setRotation(18.f);
-            m_shine->setOpacity(0);
-            ccBlendFunc additive = {GL_SRC_ALPHA, GL_ONE};
-            m_shine->setBlendFunc(additive);
-            m_shine->setPosition({-60.f, kCardH / 2.f});
-            clipper->addChild(m_shine, 4);
-        }
-    }
+        ccBlendFunc additive = {GL_SRC_ALPHA, GL_ONE};
+        float const half = kShineWidth / 2.f;
+        float const tall = kCardH * 2.4f;
 
-    if (auto* border = paimon::SpriteHelper::safeCreateScale9("GJ_square07.png")) {
-        border->setContentSize({kCardW, kCardH});
-        border->setAnchorPoint({0.f, 0.f});
-        border->setColor(m_accent);
-        border->setOpacity(205);
-        this->addChild(border, 5);
+        m_shine = CCNode::create();
+        m_shine->setPosition({-kShineWidth, kCardH / 2.f});
+        m_shine->setRotation(16.f);
+        clipper->addChild(m_shine, 4);
+
+        // Two halves instead of one quad: a hard edged bar sweeping over the
+        // artwork reads as a seam rather than as light.
+        m_shineLead = CCLayerGradient::create({255, 255, 255, 0}, {255, 255, 255, 0}, {1.f, 0.f});
+        m_shineLead->setContentSize({half, tall});
+        m_shineLead->setPosition({-half, -tall / 2.f});
+        m_shineLead->setBlendFunc(additive);
+        m_shine->addChild(m_shineLead);
+
+        m_shineTrail = CCLayerGradient::create({255, 255, 255, 0}, {255, 255, 255, 0}, {1.f, 0.f});
+        m_shineTrail->setContentSize({half, tall});
+        m_shineTrail->setPosition({0.f, -tall / 2.f});
+        m_shineTrail->setBlendFunc(additive);
+        m_shine->addChild(m_shineTrail);
     }
 
     if (m_config.progress) {
-        auto* track = CCLayerColor::create({0, 0, 0, 120}, kCardW - 20.f, 3.f);
-        track->ignoreAnchorPointForPosition(false);
-        track->setAnchorPoint({0.f, 0.5f});
-        track->setPosition({10.f, 6.f});
-        this->addChild(track, 6);
+        auto* track = CCLayerColor::create({0, 0, 0, 150}, kCardW - kBarInset * 2.f, 3.f);
+        track->setPosition({kBarInset, kBarY});
+        clipper->addChild(track, 5);
 
-        m_bar = CCLayerColor::create({m_accent.r, m_accent.g, m_accent.b, 235}, kCardW - 20.f, 3.f);
+        m_bar = CCLayerColor::create({m_accent.r, m_accent.g, m_accent.b, 245},
+                                     kCardW - kBarInset * 2.f, 3.f);
+        // Anchored on its left edge, or draining it would eat the bar from
+        // both ends towards the middle.
         m_bar->ignoreAnchorPointForPosition(false);
         m_bar->setAnchorPoint({0.f, 0.5f});
-        m_bar->setPosition({10.f, 6.f});
-        this->addChild(m_bar, 7);
+        m_bar->setPosition({kBarInset, kBarY + 1.5f});
+        clipper->addChild(m_bar, 6);
+    }
+}
+
+void ThumbAlertCard::buildFrame() {
+    if (auto* border = paimon::SpriteHelper::safeCreateScale9("GJ_square07.png")) {
+        border->setContentSize({kCardW, kCardH});
+        border->setAnchorPoint({0.f, 0.f});
+        border->setColor({255, 255, 255});
+        border->setOpacity(235);
+        this->addChild(border, 5);
+    }
+
+    auto* divider = CCLayerColor::create({255, 255, 255, 45}, 1.f, kCardH - 34.f);
+    divider->setPosition({kDividerX, 17.f});
+    this->addChild(divider, 6);
+}
+
+void ThumbAlertCard::buildBadges() {
+    m_badges = CCNode::create();
+    m_badges->setPosition({kBadgeX, kCardH / 2.f});
+    this->addChild(m_badges, 8);
+
+    if (auto* face = GJDifficultySprite::create(difficultyFace(m_item.difficulty),
+                                                GJDifficultyName::Short)) {
+        // The rate burst belongs to the face sprite: hanging the coin next to
+        // it by hand is what left the glow twice the size of the difficulty.
+        face->updateFeatureState(featureState(m_item.rateTier));
+        face->setScale(0.86f);
+        face->setPosition({0.f, 13.f});
+        m_badges->addChild(face);
+    }
+
+    if (m_item.stars <= 0) return;
+
+    auto* count = CCLabelBMFont::create(fmt::format("{}", m_item.stars).c_str(), "bigFont.fnt");
+    count->setScale(0.38f);
+    count->setAnchorPoint({1.f, 0.5f});
+    count->setPosition({-2.f, -27.f});
+    m_badges->addChild(count);
+
+    char const* frame = m_item.length == "Plat." ? "GJ_moonsIcon_001.png" : "GJ_starsIcon_001.png";
+    if (auto* icon = paimon::SpriteHelper::safeCreateWithFrameName(frame)) {
+        icon->setScale(0.52f);
+        icon->setAnchorPoint({0.f, 0.5f});
+        icon->setPosition({0.f, -27.f});
+        m_badges->addChild(icon);
     }
 }
 
 void ThumbAlertCard::buildContent() {
+    m_content = CCNode::create();
+    this->addChild(m_content, 9);
+
     float const textWidth = kCardW - kTextX - kRightPad;
 
-    if (char const* frame = rateFrame(m_item.rateTier)) {
-        if (auto* coin = paimon::SpriteHelper::safeCreateWithFrameName(frame)) {
-            coin->setScale(0.9f);
-            coin->setPosition({kFaceX, kCardH - 40.f});
-            this->addChild(coin, 8);
-        }
-    }
-
-    if (auto* face = GJDifficultySprite::create(difficultyFace(m_item.difficulty),
-                                                GJDifficultyName::Short)) {
-        face->setScale(0.72f);
-        face->setPosition({kFaceX, kCardH - 40.f});
-        this->addChild(face, 9);
-    }
-
-    if (m_item.stars > 0) {
-        auto* count = CCLabelBMFont::create(fmt::format("{}", m_item.stars).c_str(), "bigFont.fnt");
-        count->setScale(0.36f);
-        count->setAnchorPoint({1.f, 0.5f});
-        count->setPosition({kFaceX + 3.f, 24.f});
-        this->addChild(count, 9);
-
-        char const* frame = m_item.length == "Plat." ? "GJ_moonsIcon_001.png" : "GJ_starsIcon_001.png";
-        if (auto* icon = paimon::SpriteHelper::safeCreateWithFrameName(frame)) {
-            icon->setScale(0.5f);
-            icon->setAnchorPoint({0.f, 0.5f});
-            icon->setPosition({kFaceX + 5.f, 24.f});
-            this->addChild(icon, 9);
-        }
-    }
-
-    auto* tag = CCLabelBMFont::create(tr("NEW THUMBNAIL", "NUEVA MINIATURA"), "goldFont.fnt");
+    constexpr float chipH = 20.f;
+    constexpr float chipY = kCardH - 16.f;
+    auto* tag = CCLabelBMFont::create(tr("NEW THUMBNAIL", "NUEVA MINIATURA"), "bigFont.fnt");
     tag->setAnchorPoint({0.f, 0.5f});
-    tag->limitLabelWidth(textWidth, 0.34f, 0.18f);
-    tag->setPosition({kTextX, kCardH - 15.f});
-    this->addChild(tag, 9);
+    tag->limitLabelWidth(textWidth - 20.f, 0.3f, 0.2f);
+
+    float const chipW = tag->getScaledContentSize().width + 18.f;
+    if (auto* chip = smallFrame("square02b_001.png")) {
+        chip->setContentSize({chipW, chipH});
+        chip->setAnchorPoint({0.f, 0.5f});
+        chip->setPosition({kTextX, chipY});
+        chip->setColor(shade(m_accent, 0.3f));
+        chip->setOpacity(238);
+        m_content->addChild(chip, 0);
+    }
+    if (auto* chipEdge = smallFrame("GJ_square07.png")) {
+        chipEdge->setContentSize({chipW, chipH});
+        chipEdge->setAnchorPoint({0.f, 0.5f});
+        chipEdge->setPosition({kTextX, chipY});
+        chipEdge->setColor(m_accent);
+        m_content->addChild(chipEdge, 1);
+    }
+    tag->setPosition({kTextX + 9.f, chipY});
+    m_content->addChild(tag, 2);
 
     auto const name = m_item.levelName.empty()
         ? fmt::format("ID {}", m_item.levelId)
         : m_item.levelName;
     auto* title = CCLabelBMFont::create(name.c_str(), "bigFont.fnt");
     title->setAnchorPoint({0.f, 0.5f});
-    title->limitLabelWidth(textWidth, 0.52f, 0.26f);
-    title->setPosition({kTextX, kCardH - 38.f});
-    this->addChild(title, 9);
+    title->limitLabelWidth(textWidth - 26.f, 0.56f, 0.26f);
+    title->setPosition({kTextX, 61.f});
+    m_content->addChild(title, 2);
 
     if (!m_item.creator.empty()) {
         auto* author = CCLabelBMFont::create(
             fmt::format("{} {}", tr("by", "de"), m_item.creator).c_str(), "goldFont.fnt");
         author->setAnchorPoint({0.f, 0.5f});
-        author->limitLabelWidth(textWidth, 0.36f, 0.2f);
-        author->setPosition({kTextX, kCardH - 56.f});
-        this->addChild(author, 9);
+        author->limitLabelWidth(textWidth - 26.f, 0.36f, 0.2f);
+        author->setPosition({kTextX, 43.f});
+        m_content->addChild(author, 2);
     }
 
     // The stats eat into the bottom row from the right, so they are laid out
@@ -340,15 +422,15 @@ void ThumbAlertCard::buildContent() {
             auto* label = CCLabelBMFont::create(text.c_str(), "bigFont.fnt");
             label->setScale(0.32f);
             label->setAnchorPoint({1.f, 0.5f});
-            label->setPosition({statsEdge, 18.f});
-            this->addChild(label, 9);
+            label->setPosition({statsEdge, 21.f});
+            m_content->addChild(label, 2);
             statsEdge -= label->getScaledContentSize().width + 3.f;
 
             if (auto* icon = paimon::SpriteHelper::safeCreateWithFrameName(frame)) {
                 icon->setScale(0.42f);
                 icon->setAnchorPoint({1.f, 0.5f});
-                icon->setPosition({statsEdge, 18.f});
-                this->addChild(icon, 9);
+                icon->setPosition({statsEdge, 21.f});
+                m_content->addChild(icon, 2);
                 statsEdge -= icon->getScaledContentSize().width + 8.f;
             }
         };
@@ -368,8 +450,8 @@ void ThumbAlertCard::buildContent() {
     who->setAnchorPoint({0.f, 0.5f});
     who->limitLabelWidth(std::max(60.f, statsEdge - 8.f - kTextX), 0.36f, 0.2f);
     who->setColor(m_accent);
-    who->setPosition({kTextX, 18.f});
-    this->addChild(who, 9);
+    who->setPosition({kTextX, 21.f});
+    m_content->addChild(who, 2);
 }
 
 void ThumbAlertCard::buildTouch() {
@@ -395,25 +477,27 @@ void ThumbAlertCard::buildTouch() {
 
 void ThumbAlertCard::captureFade() {
     m_fade.clear();
+    m_fadeContent.clear();
     m_fadeGradients.clear();
     // Read every opacity before touching any of them: a container that has
     // already been dimmed would poison the base values of its children.
-    std::function<void(CCNode*)> walk = [&](CCNode* node) {
-        if (!node) return;
+    std::function<void(CCNode*, FadeList&)> walk = [&](CCNode* node, FadeList& into) {
+        if (!node || node == m_shine) return;
         if (auto* gradient = typeinfo_cast<CCLayerGradient*>(node)) {
             m_fadeGradients.push_back({gradient, gradient->getStartOpacity(),
                                        gradient->getEndOpacity()});
-        } else if (node != m_shine) {
-            if (auto* rgba = typeinfo_cast<CCRGBAProtocol*>(node)) {
-                m_fade.emplace_back(node, rgba->getOpacity());
-            }
+        } else if (auto* rgba = typeinfo_cast<CCRGBAProtocol*>(node)) {
+            into.emplace_back(node, rgba->getOpacity());
         }
         if (auto* children = node->getChildren()) {
-            for (auto* child : CCArrayExt<CCNode*>(children)) walk(child);
+            for (auto* child : CCArrayExt<CCNode*>(children)) walk(child, into);
         }
     };
     if (auto* children = this->getChildren()) {
-        for (auto* child : CCArrayExt<CCNode*>(children)) walk(child);
+        for (auto* child : CCArrayExt<CCNode*>(children)) {
+            bool const late = child == m_content || child == m_badges;
+            walk(child, late ? m_fadeContent : m_fade);
+        }
     }
 }
 
@@ -449,7 +533,9 @@ void ThumbAlertCard::toPhase(Phase phase, float duration) {
 
 void ThumbAlertCard::applyIdle(Pose& pose) const {
     if (m_config.idle == Idle::None) return;
-    float const wave = std::sin(m_elapsed * 2.f);
+    // Measured from the start of the hold: seeded with m_elapsed the wave would
+    // take over from the entry at whatever value it happened to be at.
+    float const wave = std::sin(m_phaseTime * 2.f);
     switch (m_config.idle) {
         case Idle::Float: pose.offset.y += wave * 2.5f; break;
         case Idle::Sway:  pose.offset.x += wave * 3.f; break;
@@ -475,30 +561,56 @@ void ThumbAlertCard::tick(float dt) {
     float const t = std::clamp(m_phaseTime / m_phaseDuration, 0.f, 1.f);
 
     Pose pose;
+    float content = 1.f;
+    float pop = 1.f;
     switch (m_phase) {
         case Phase::In: {
             switch (m_config.enter) {
-                case Enter::Slide:
-                    pose.offset = m_edge * (1.f - easeOutExpo(t));
+                case Enter::Slide: {
+                    // Overshoots a hair past the rest spot and stretches along
+                    // the way in, so the card lands instead of stopping dead.
+                    float const travel = 1.f - easeOutBack(t, 0.9f);
+                    float const stretch = 0.09f * std::abs(travel);
+                    pose.offset = m_edge * travel;
+                    if (m_edge.x != 0.f) {
+                        pose.scaleX = 1.f + stretch;
+                        pose.scaleY = 1.f - stretch * 0.7f;
+                    } else {
+                        pose.scaleY = 1.f + stretch;
+                        pose.scaleX = 1.f - stretch * 0.7f;
+                    }
                     pose.alpha = easeOutCubic(std::min(t * 2.f, 1.f));
                     break;
+                }
                 case Enter::Fade:
+                    pose.scaleX = pose.scaleY = 0.97f + 0.03f * easeOutCubic(t);
                     pose.alpha = easeOutCubic(t);
                     break;
-                case Enter::Pop:
-                    pose.scaleX = pose.scaleY = 0.4f + 0.6f * easeOutBack(t);
+                case Enter::Pop: {
+                    float const grow = 0.4f + 0.6f * easeOutBack(t);
+                    float const squash = 0.08f * (1.f - easeOutCubic(t));
+                    pose.scaleX = grow * (1.f + squash);
+                    pose.scaleY = grow * (1.f - squash);
                     pose.alpha = easeOutCubic(std::min(t * 2.5f, 1.f));
                     break;
-                case Enter::Drop:
-                    pose.offset.y = (kCardH * 2.4f + 40.f) * (1.f - easeOutBounce(t));
+                }
+                case Enter::Drop: {
+                    float const bounce = easeOutBounce(t);
+                    // Squashes on contact, which is wherever the bounce curve
+                    // touches the floor, and flattens out as the card settles.
+                    float const hit = std::max(0.f, 1.f - std::abs(1.f - bounce) * 7.f) * (1.f - t);
+                    pose.offset.y = (kCardH * 2.4f + 40.f) * (1.f - bounce);
+                    pose.scaleX = 1.f + 0.16f * hit;
+                    pose.scaleY = 1.f - 0.16f * hit;
                     pose.alpha = easeOutCubic(std::min(t * 3.f, 1.f));
                     break;
+                }
                 case Enter::Flip:
                     pose.scaleX = std::max(0.02f, easeOutBack(t));
                     pose.alpha = easeOutCubic(std::min(t * 2.5f, 1.f));
                     break;
                 case Enter::Zoom:
-                    pose.scaleX = pose.scaleY = 1.45f - 0.45f * easeOutCubic(t);
+                    pose.scaleX = pose.scaleY = 1.45f - 0.45f * easeOutExpo(t);
                     pose.alpha = easeOutCubic(std::min(t * 1.8f, 1.f));
                     break;
                 case Enter::Elastic:
@@ -521,6 +633,10 @@ void ThumbAlertCard::tick(float dt) {
                     break;
                 default: break;
             }
+            if (m_config.enter != Enter::None) {
+                content = easeOutCubic(std::clamp((t - 0.18f) / 0.82f, 0.f, 1.f));
+                pop = easeOutBack(std::clamp((t - 0.24f) / 0.76f, 0.f, 1.f));
+            }
             if (t >= 1.f) this->toPhase(Phase::Hold, std::max(0.2f, m_config.hold));
             break;
         }
@@ -532,12 +648,24 @@ void ThumbAlertCard::tick(float dt) {
         }
         case Phase::Out: {
             float const fadeOut = 1.f - easeInCubic(std::min(t * 1.25f, 1.f));
+            content = 1.f - easeInCubic(std::min(t * 1.5f, 1.f));
             switch (m_config.exit) {
-                case Exit::Slide:
-                    pose.offset = m_edge * easeInBack(t);
+                case Exit::Slide: {
+                    float const travel = easeInBack(t);
+                    float const stretch = 0.08f * std::abs(travel);
+                    pose.offset = m_edge * travel;
+                    if (m_edge.x != 0.f) {
+                        pose.scaleX = 1.f + stretch;
+                        pose.scaleY = 1.f - stretch * 0.7f;
+                    } else {
+                        pose.scaleY = 1.f + stretch;
+                        pose.scaleX = 1.f - stretch * 0.7f;
+                    }
                     pose.alpha = fadeOut;
                     break;
+                }
                 case Exit::Fade:
+                    pose.scaleX = pose.scaleY = 1.f - 0.04f * easeInCubic(t);
                     pose.alpha = 1.f - easeOutCubic(t);
                     break;
                 case Exit::Shrink:
@@ -581,15 +709,22 @@ void ThumbAlertCard::tick(float dt) {
     this->setScaleX(m_baseScale * pose.scaleX);
     this->setScaleY(m_baseScale * pose.scaleY);
     this->setRotation(pose.rotation);
-    this->applyAlpha(pose.alpha);
-    this->updateThumbMotion(pose.alpha);
+    this->applyAlpha(pose.alpha, content);
+    this->applyReveal(content, pop);
+    this->updateAmbient(pose.alpha);
 }
 
-void ThumbAlertCard::applyAlpha(float alpha) {
+void ThumbAlertCard::applyAlpha(float alpha, float content) {
     float const a = std::clamp(alpha, 0.f, 1.f);
+    float const c = a * std::clamp(content, 0.f, 1.f);
     for (auto& [node, base] : m_fade) {
         if (auto* rgba = typeinfo_cast<CCRGBAProtocol*>(node.data())) {
             rgba->setOpacity(static_cast<GLubyte>(base * a));
+        }
+    }
+    for (auto& [node, base] : m_fadeContent) {
+        if (auto* rgba = typeinfo_cast<CCRGBAProtocol*>(node.data())) {
+            rgba->setOpacity(static_cast<GLubyte>(base * c));
         }
     }
     for (auto& entry : m_fadeGradients) {
@@ -599,22 +734,32 @@ void ThumbAlertCard::applyAlpha(float alpha) {
     }
 }
 
-void ThumbAlertCard::updateThumbMotion(float alpha) {
+void ThumbAlertCard::applyReveal(float content, float pop) {
+    if (m_content) m_content->setPositionX(kRevealSlide * (1.f - std::clamp(content, 0.f, 1.f)));
+    if (m_badges) m_badges->setScale(0.62f + 0.38f * pop);
+}
+
+void ThumbAlertCard::updateAmbient(float alpha) {
     if (m_thumb && m_config.kenBurns) {
         float const phase = 0.5f - 0.5f * std::cos(m_elapsed * 2.f * static_cast<float>(M_PI) / kBurnsCycle);
         m_thumb->setScale(m_thumbScale * (1.f + 0.11f * phase));
         m_thumb->setPosition({m_thumbHome.x - 6.f * phase, m_thumbHome.y + 3.f * phase});
     }
 
-    if (!m_shine) return;
+    if (!m_shineLead) return;
     float const phase = std::fmod(m_elapsed, kShineCycle);
     if (phase > kShineSweep) {
-        m_shine->setOpacity(0);
+        m_shineLead->setEndOpacity(0);
+        m_shineTrail->setStartOpacity(0);
         return;
     }
     float const progress = phase / kShineSweep;
-    m_shine->setPosition({-60.f + (kCardW + 120.f) * progress, kCardH / 2.f});
-    m_shine->setOpacity(static_cast<GLubyte>(55.f * std::clamp(alpha, 0.f, 1.f)));
+    m_shine->setPositionX(-kShineWidth + (kCardW + kShineWidth * 2.f) * progress);
+    // Fades in and out along the sweep instead of clipping in at the edges.
+    float const peak = 72.f * std::sin(progress * static_cast<float>(M_PI)) *
+        std::clamp(alpha, 0.f, 1.f);
+    m_shineLead->setEndOpacity(static_cast<GLubyte>(peak));
+    m_shineTrail->setStartOpacity(static_cast<GLubyte>(peak));
 }
 
 void ThumbAlertCard::finish() {
@@ -638,7 +783,8 @@ void ThumbAlertCard::onOpenLevel(CCObject*) {
     if (m_finished || m_item.levelId <= 0) return;
     if (m_menu) m_menu->setEnabled(false);
     paimon::twitch::openRequestedLevel(m_item.levelId, false);
-    this->finish();
+    // Let it play its exit over the level screen instead of blinking out.
+    if (m_phase != Phase::Out) this->toPhase(Phase::Out, 0.25f);
 }
 
 } // namespace paimon::thumbalerts

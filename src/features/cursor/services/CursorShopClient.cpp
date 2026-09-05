@@ -820,7 +820,19 @@ std::string ShopClient::filenameFor(std::string const& url, std::string const& f
         if (name[i] == '%' && i + 2 < name.size() &&
             std::isxdigit(static_cast<unsigned char>(name[i + 1])) &&
             std::isxdigit(static_cast<unsigned char>(name[i + 2]))) {
-            decoded.push_back(static_cast<char>(std::stoi(name.substr(i + 1, 2), nullptr, 16)));
+            auto hexDigit = [](char c) {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            int high = hexDigit(name[i + 1]);
+            int low = hexDigit(name[i + 2]);
+            if (high < 0 || low < 0) {
+                decoded.push_back(name[i]);
+                continue;
+            }
+            decoded.push_back(static_cast<char>((high << 4) | low));
             i += 2;
         } else {
             decoded.push_back(name[i]);

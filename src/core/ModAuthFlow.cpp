@@ -193,7 +193,7 @@ void complete(std::string const& challengeToken, std::shared_ptr<AutoConfirmStat
                 if (autoState) {
                     // PROFILE_CODE_NOT_FOUND / retryable: keep polling until the
                     // comment shows up on the GD profile, or the challenge expires.
-                    auto code = stringField(*parsed, "code");
+                    auto code = parsed ? stringField(*parsed, "code") : std::string();
                     // Keep polling while the user might still be posting the
                     // comment. A stale challenge, though, is a dead end — the
                     // user must generate a new one.

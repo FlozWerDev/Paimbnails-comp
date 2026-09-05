@@ -18,7 +18,7 @@ std::string formatInt(int v) {
     return std::string(buf);
 }
 
-// Emit numbers in PackGen/GD style (no trailing zeros) for byte-compatible output.
+// Numbers without trailing zeros, GD-style.
 std::string formatNumber(float v) {
     float rounded = std::round(v * 100.0f) / 100.0f;
     if (rounded == std::floor(rounded)) {

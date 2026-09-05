@@ -52,25 +52,17 @@ struct AudioOwnerChangedEvent {
     int sessionToken = 0;
 };
 
-// Emitted by LevelInfoLayer when the thumbnail background changes.
-// CustomSongWidget and InfoLayer subscribe to sync their backgrounds.
+// Cambia el fondo y avisa a los suscritos.
 struct ThumbnailBackgroundChangedEvent {
     int levelID = 0;
     geode::Ref<cocos2d::CCTexture2D> texture = nullptr;
 
-    // Cache of the last active thumbnail per level so InfoLayer can read the
-    // current texture on open without waiting for the next cycle.
-    //
-    // We don't use geode::Ref<> here: a static with a non-trivial destructor
-    // would call release() on invalid memory at atexit (CCPoolManager gone) ->
-    // crash. Instead use a raw pointer with manual retain; RuntimeLifecycle.cpp
-    // ($on_game(Exiting)) calls setLastTexture(nullptr) to free it. If Exiting
-    // never fires (kill -9, crash on another thread), the OS reclaims the handle
-    // at process exit, which beats an atexit crash.
+// Lo lee InfoLayer al abrir, sin esperar al siguiente ciclo.
+// Puntero crudo con retain manual: un estatico con destructor reventaria en atexit.
     static inline int s_lastLevelID = 0;
     static inline cocos2d::CCTexture2D* s_lastTextureRaw = nullptr;
 
-    // Thread-safe helpers to mutate the cache (call from the main thread).
+    // Solo hilo principal.
     static void setLastTexture(cocos2d::CCTexture2D* tex) {
         if (s_lastTextureRaw == tex) return;
         if (tex) tex->retain();

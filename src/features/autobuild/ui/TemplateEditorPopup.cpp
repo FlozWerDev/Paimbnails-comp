@@ -632,12 +632,7 @@ void TemplateEditorPopup::setTextPopupClosed(SetTextPopup*, gd::string text) {
     if (m_remapFrom > 0) {
         int const from = m_remapFrom;
         m_remapFrom = 0;
-        int to = 0;
-        try {
-            to = std::stoi(value);
-        } catch (...) {
-            to = 0;
-        }
+        int to = geode::utils::numFromString<int>(value).unwrapOr(0);
         if (to < 1 || to > 999) {
             setStatus("El canal destino tiene que estar entre 1 y 999.", kWarn);
             scheduleRebuild();

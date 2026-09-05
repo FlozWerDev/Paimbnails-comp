@@ -9,9 +9,9 @@
 
 namespace paimon::thumbalerts {
 
-// Level data drawn over the level's own thumbnail. One tick drives position,
-// scale, rotation and opacity together, so the clipped thumbnail, the scrims
-// and the labels never drift apart mid-animation.
+// Level data drawn over the level's own thumbnail, inside a popup style frame.
+// One tick drives position, scale, rotation and opacity together, so the
+// clipped thumbnail, the scrims and the labels never drift apart mid-animation.
 class ThumbAlertCard : public cocos2d::CCNodeRGBA {
 public:
     static ThumbAlertCard* create(NewThumb const& item, Config const& config,
@@ -35,17 +35,22 @@ private:
         float alpha = 1.f;
     };
 
+    using FadeList = std::vector<std::pair<geode::Ref<cocos2d::CCNode>, GLubyte>>;
+
     bool init(NewThumb const& item, Config const& config, cocos2d::CCTexture2D* thumbnail);
 
     void buildBackground(cocos2d::CCTexture2D* thumbnail);
+    void buildFrame();
+    void buildBadges();
     void buildContent();
     void buildTouch();
     void captureFade();
 
     void tick(float dt);
     void applyIdle(Pose& pose) const;
-    void applyAlpha(float alpha);
-    void updateThumbMotion(float alpha);
+    void applyAlpha(float alpha, float content);
+    void applyReveal(float content, float pop);
+    void updateAmbient(float alpha);
     void toPhase(Phase phase, float duration);
     void finish();
     void onOpenLevel(cocos2d::CCObject*);
@@ -65,8 +70,12 @@ private:
     bool m_priorityQueued = false;
 
     cocos2d::CCMenu* m_menu = nullptr;
+    cocos2d::CCNode* m_badges = nullptr;
+    cocos2d::CCNode* m_content = nullptr;
     cocos2d::CCSprite* m_thumb = nullptr;
-    cocos2d::CCSprite* m_shine = nullptr;
+    cocos2d::CCNode* m_shine = nullptr;
+    cocos2d::CCLayerGradient* m_shineLead = nullptr;
+    cocos2d::CCLayerGradient* m_shineTrail = nullptr;
     cocos2d::CCLayerColor* m_bar = nullptr;
     float m_thumbScale = 1.f;
     cocos2d::CCPoint m_thumbHome{0.f, 0.f};
@@ -79,7 +88,10 @@ private:
         GLubyte end = 0;
     };
 
-    std::vector<std::pair<geode::Ref<cocos2d::CCNode>, GLubyte>> m_fade;
+    // The badge column and the text come in half a beat behind the frame, so
+    // they fade through their own list.
+    FadeList m_fade;
+    FadeList m_fadeContent;
     std::vector<GradientFade> m_fadeGradients;
     std::function<void()> m_onFinished;
 };

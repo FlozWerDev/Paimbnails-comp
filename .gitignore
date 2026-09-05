@@ -37,10 +37,6 @@ tests/**/*.exe
 !docs/
 !docs/**
 
-# Keep .idea/ and all its contents
-!.idea/
-!.idea/**
-
 # Private / local-only: do not publish servers or reverse-engineering notes
 betteredit-reference.md
 cloudflare-server/
@@ -62,3 +58,71 @@ post.md
 
 # Local analysis reports, not part of the mod
 informe_memcheck.md
+
+# Local IDE and AI-assistant state (never part of the mod)
+.idea/
+.vscode/
+.cursor/
+.windsurf/
+.aider/
+.continue/
+.gemini/
+.codex/
+.agents/
+.ai/
+.ai-*/
+ai/
+ai-*/
+GEMINI.md
+COPILOT.md
+.cursorrules
+.windsurfrules
+
+# Local audit, analysis and review material
+audit/
+audits/
+audit-*/
+auditoria/
+auditorias/
+auditoria-*/
+analysis/
+analisis/
+analysis-*/
+analisis-*/
+report/
+reports/
+review/
+reviews/
+qa-reports/
+memcheck/
+coverage/
+scratch/
+snapshots/
+tmp/
+temp/
+
+# Prompts, model outputs and AI-generated asset staging areas
+prompt/
+prompts/
+ai-assets/
+ai-generated/
+ai-generated-assets/
+ai-output/
+ai-outputs/
+aigc/
+aigc-*/
+synthetic-assets/
+model-output/
+model-outputs/
+generated-ai/
+generated-assets/
+generated-art/
+generated-images/
+generated-sprites/
+generated-textures/
+generated-resources/
+gen-assets/
+gen-art/
+gen-images/
+gen-sprites/
+gen-textures/

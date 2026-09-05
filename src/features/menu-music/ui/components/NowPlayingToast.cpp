@@ -39,16 +39,7 @@ float NowPlayingToast::easeInOutCubic(float t) {
     return 0.5f * p * p * p + 1.f;
 }
 
-// Redraw: rounded rect con radio dinamico
-//
-// El draw node se limpia y re-llena cada frame con un rounded rect
-// que tiene el ancho `width` y un radio tal que:
-//
-//   * cuando width == height, radio = height/2 (circulo perfecto)
-//   * cuando width >>> height, radio = height/2 (pill)
-//
-// El radio es SIEMPRE height/2 asi la pill pasa suavemente de
-// circulo a pildora sin saltos visuales en las esquinas.
+// Pill with radius height/2 for smooth circle-to-pill transition.
 
 void NowPlayingToast::redrawPill(float width) {
     if (!m_pill) return;
@@ -189,12 +180,8 @@ bool NowPlayingToast::init(const std::string& title, const std::string& subtitle
     this->setContentOpacity(0.f);
 
     float holdDuration = 1.5f;
-    try {
-        holdDuration = static_cast<float>(
-            Mod::get()->getSettingValue<double>("menuLoopNotificationTime"));
-    } catch (...) {
-        // Setting no existe: usar default.
-    }
+    holdDuration = static_cast<float>(
+        Mod::get()->getSettingValue<double>("menuLoopNotificationTime"));
     m_stayFor = std::clamp(holdDuration, 0.8f, 5.f);
 
     this->setPosition({winSize.width / 2.f, m_hideY});

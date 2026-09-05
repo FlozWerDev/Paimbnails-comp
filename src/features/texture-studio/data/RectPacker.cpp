@@ -17,9 +17,9 @@ PackResult RectPacker::pack(std::vector<RectPackInput> rects, PackerOptions opti
             return a.id < b.id;
         });
 
-    // Faithfully reproduce PackGen's shelf algorithm so output layout matches byte-for-byte.
+    // Shelf layout matching PackGen.
     struct Bin {
-        int x         = 0;   // kept for parity with PackGen
+        int x         = 0;
         int y         = 0;
         int width     = 0;
         int maxHeight = 0;
@@ -89,7 +89,7 @@ PackResult RectPacker::pack(std::vector<RectPackInput> rects, PackerOptions opti
             maxBinW = std::max(maxBinW, bin.width);
             maxBinB = std::max(maxBinB, bin.y + bin.maxHeight);
         }
-        // Subtract the trailing gap so sheet sizes match PackGen.
+        // Drop trailing gap to match sheet size.
         result.sheetWidth  = std::max(0, maxBinW - gap);
         result.sheetHeight = maxBinB;
     }

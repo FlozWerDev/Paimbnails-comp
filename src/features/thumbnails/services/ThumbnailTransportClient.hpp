@@ -31,6 +31,9 @@ public:
     void setServerEnabled(bool enabled) { m_serverEnabled = enabled; }
 
     void getThumbnails(int levelId, ThumbnailListCallback callback, bool forceRefresh = false);
+    // Reorder answers with the list it just wrote; parsing that beats re-reading it,
+    // which can still land on an edge cache holding the previous order.
+    static bool parseThumbnailList(std::string const& response, std::vector<ThumbnailInfo>& out);
     arc::Future<ThumbnailGalleryResult> fetchThumbnailsFuture(int levelId, bool forceRefresh = false);
     void getThumbnailInfo(int levelId, ActionCallback callback);
     std::string getThumbnailURL(int levelId);

@@ -192,14 +192,10 @@ bool parseCurrentFloat(CCTextInputNode* input, double& out) {
     if (s.empty()) { out = 0.0; return true; }
 // Accept comma decimal separators.
     for (auto& c : s) if (c == ',') c = '.';
-    try {
-        size_t idx = 0;
-        double v = std::stod(s, &idx);
-        out = v;
-        return true;
-    } catch (...) {
-        return false;
-    }
+    auto parsed = geode::utils::numFromString<double>(s);
+    if (!parsed.isOk()) return false;
+    out = parsed.unwrap();
+    return true;
 }
 
 void commitString(CCTextInputNode* input, std::string const& newStr) {

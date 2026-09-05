@@ -32,7 +32,7 @@ Over <cg>**30 screen transitions**</c>: fades, slides, flips, zooms, page curls,
 
 ## Mod Previews
 
-When you open a Geode mod, Paimbnails shows <cb>**preview images**</c> for any mod whose repository includes a <cb>`previews`</c> folder. Click a thumbnail for a <cb>full-screen gallery</c>. Based on the original idea by <cb>Alphalaneous</c> ([Mod-Previews](https://github.com/Alphalaneous/Mod-Previews)).
+When you open a Geode mod, Paimbnails shows <cb>**preview images**</c> for any mod whose repository includes a <cb>`previews`</c> folder. Click a thumbnail for a <cb>full-screen gallery</c>. Inspired by <cb>Alphalaneous</c>.
 
 ## Audio
 

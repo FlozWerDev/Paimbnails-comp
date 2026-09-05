@@ -435,7 +435,20 @@ void DynamicSongManager::playSong(GJGameLevel* level) {
     if (GameManager::get()->getGameVariable("0122")) return;
     if (paimon::isVideoAudioInteropActive()) return;
     auto* engine = FMODAudioEngine::sharedEngine();
-    if (!engine || engine->m_musicVolume <= 0.0f) return;
+    if (!engine || engine->m_musicVolume <= 0.0f) {
+        // The stream never joined the music group, so silencing the slider does
+        // not stop it: tear it down instead of leaving it buffering.
+        if (m_streamingPreview || isStreamingPreviewPending() || m_awaitingDownloadOnly) {
+            cancelFade();
+            stopStreamingPreview();
+            m_state = DynState::Idle;
+            m_activeSongPath.clear();
+            m_currentPlayingLevelID = 0;
+            paimon::setDynamicSongInteropActive(false);
+            AudioContextCoordinator::get().clearDynamicAudio();
+        }
+        return;
+    }
     {
         auto now = std::chrono::steady_clock::now();
         auto elapsed = now - m_lastPlaySongTime;
@@ -1238,6 +1251,15 @@ void DynamicSongManager::stopStreamingPreview() {
     m_previewPlayAttemptSince = {};
 }
 
+// The stream owns a channel outside m_backgroundMusicChannel, so slider moves
+// never reach it; re-apply the target whenever the fade isn't driving it.
+void DynamicSongManager::syncPreviewVolume() {
+    if (!m_streamingPreview || !m_previewChannel) return;
+    if (m_fadeNode && m_fadeNode->isActive()) return;
+
+    m_previewChannel->setVolume(dynamicTargetVolume());
+}
+
 void DynamicSongManager::checkPreviewSwap() {
     if (paimon::isRuntimeShuttingDown()) {
         stopStreamingPreview();
@@ -1405,6 +1427,8 @@ void DynamicSongManager::checkPreviewSwap() {
                   m_previewSongID, percentBuffered, starving, diskBusy);
         return;
     }
+
+    syncPreviewVolume();
 
     if (!mdm->isSongDownloaded(m_previewSongID)) return;
 

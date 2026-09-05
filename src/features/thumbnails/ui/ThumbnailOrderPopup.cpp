@@ -63,6 +63,18 @@ std::string mediaLabelForThumbnail(ThumbnailInfo const& thumbnail) {
     return "IMG";
 }
 
+std::string reorderErrorText(std::string const& response) {
+    auto parsed = matjson::parse(response);
+    if (parsed.isOk()) {
+        auto const json = parsed.unwrap();
+        if (json.contains("error")) {
+            auto text = json["error"].asString().unwrapOr("");
+            if (!text.empty()) return text;
+        }
+    }
+    return response.empty() ? "Could not save the thumbnail order" : response;
+}
+
 void fitPreviewNode(CCNode* node) {
     if (!node) return;
 
@@ -288,6 +300,18 @@ void ThumbnailOrderPopup::layoutCells(bool resetScrollPosition) {
     if (resetScrollPosition) {
         m_scrollLayer->moveToTop();
     }
+}
+
+void ThumbnailOrderPopup::adoptServerOrder(std::vector<ThumbnailAPI::ThumbnailInfo> const& thumbnails,
+                                           std::string const& selectedKey) {
+    m_thumbnails = thumbnails;
+    m_originalOrderIds = getOrderIds();
+
+    int const index = indexForThumbnail(selectedKey);
+    m_selectedIndex = index >= 0 ? index : 0;
+
+    buildCells();
+    layoutCells(true);
 }
 
 void ThumbnailOrderPopup::updateUiState() {
@@ -635,17 +659,31 @@ void ThumbnailOrderPopup::onSave(CCObject*) {
 
         popup->m_isSaving = false;
 
+        std::vector<ThumbnailAPI::ThumbnailInfo> serverOrder;
+        bool const gotServerOrder =
+            ThumbnailTransportClient::parseThumbnailList(message, serverOrder) && !serverOrder.empty();
+
         if (!success) {
+            // A rejected save comes back with the list the server really holds, so taking
+            // it makes the retry work instead of failing on the same stale ids.
+            if (gotServerOrder) popup->adoptServerOrder(serverOrder, selectedKey);
             popup->updateUiState();
-            PaimonNotify::create(message.c_str(), NotificationIcon::Error)->show();
+            PaimonNotify::create(reorderErrorText(message).c_str(), NotificationIcon::Error)->show();
             return;
         }
 
         ThumbnailTransportClient::get().invalidateGalleryMetadata(popup->m_levelID);
         ThumbnailLoader::get().invalidateLevel(popup->m_levelID);
 
-        for (size_t i = 0; i < popup->m_thumbnails.size(); ++i) {
-            popup->m_thumbnails[i].position = static_cast<int>(i) + 1;
+        // Only the first slot is served from /t/<level>, so the two thumbnails that swap
+        // in and out of it also swap URLs. Reusing the local copies would leave the
+        // gallery asking for the old primary's address.
+        if (gotServerOrder) {
+            popup->m_thumbnails = serverOrder;
+        } else {
+            for (size_t i = 0; i < popup->m_thumbnails.size(); ++i) {
+                popup->m_thumbnails[i].position = static_cast<int>(i) + 1;
+            }
         }
 
         popup->m_originalOrderIds = popup->getOrderIds();

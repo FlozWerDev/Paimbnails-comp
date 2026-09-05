@@ -8,14 +8,7 @@
 
 namespace paimon {
 
-// CCClippingNode that clips axis-aligned rectangles via GL scissor instead of
-// the stencil buffer: scissor is a single GL state, draws no mask geometry, and
-// doesn't break batching (a win in lists with many thumbnails).
-//
-// Only correct for axis-aligned RECTANGULAR clips. If the node's world transform
-// has rotation/skew (b/c != 0) or the rect is degenerate, it falls back to the
-// stencil path (CCClippingNode::visit), so it's a safe drop-in. The stencil
-// passed to create() is kept for the fallback but isn't drawn on the fast path.
+// Recorte por scissor en vez de stencil; si hay rotacion usa stencil.
 class ScissorClipNode : public cocos2d::CCClippingNode {
 public:
     static ScissorClipNode* create(cocos2d::CCNode* stencil) {

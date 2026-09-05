@@ -1,7 +1,6 @@
 #pragma once
-// Asset pack hosted at https://packgenweb.pages.dev/pack/ (made by Asterveila for PackGen).
-// Base sheets plus hand-drawn overlay masks (_OVERLAY1/_OVERLAY2/_GLOWOVERLAY/
-// _GOLDOVERLAY/_OVERLAY1_DEMONFACES/...) that give pixel-exact region tinting.
+// Base asset pack for region tinting.
+// Inspired by Asterveila's PackGen.
 
 #include <Geode/Geode.hpp>
 

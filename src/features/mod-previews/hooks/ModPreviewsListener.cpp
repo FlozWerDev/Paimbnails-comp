@@ -8,8 +8,8 @@
 #include <string>
 #include <vector>
 
-// ModPopupUIEvent hook: shows a thumbnail strip on mod popups whose repo has previews.
-// Port of Mod-Previews by Alphalaneous.
+// Shows a thumbnail strip on mod popups whose repo has previews.
+// Inspired by Alphalaneous's Mod-Previews.
 
 using namespace geode::prelude;
 using namespace paimon::mod_previews;

@@ -1,13 +1,6 @@
 #pragma once
-// Tienda de cursores: lee los listados publicos de rw-designer.com/cursor-library
-// y custom-cursor.com y los convierte en fichas navegables. No hay API oficial en
-// ninguno de los dos, asi que se parsea el HTML de las paginas de navegacion.
-//
-// Las descargas de ficheros (.cur/.ani/.zip/.png) solo salen cuando el usuario
-// pulsa instalar: ambos sitios piden en su robots.txt que no se rastreen esas
-// rutas, y prefetchearlas seria justo eso.
-//
-// Todo callback vuelve en el hilo principal (lo garantiza WebHelper).
+// Cursor shop: inspired by rw-designer and custom-cursor.
+// No official API, so HTML is parsed. All callbacks return on main thread.
 
 #include <Geode/Geode.hpp>
 #include "CursorManager.hpp"

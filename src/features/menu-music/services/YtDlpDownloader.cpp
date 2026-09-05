@@ -505,11 +505,8 @@ void YtDlpDownloader::download(
     auto tracksDir = lib.getTracksDir();
     auto coversDir = lib.getCoversDir();
 
-    std::string formatChoice = "mp3";
-    try {
-        formatChoice = Mod::get()->getSavedValue<std::string>("menuMusicDownloadFormat", "mp3");
-    } catch (...) {
-    }
+    std::string formatChoice = Mod::get()->getSavedValue<std::string>(
+        "menuMusicDownloadFormat", "mp3");
     // This mod exposes only the formats supported by its FMOD path.
     if (formatChoice != "mp3" && formatChoice != "m4a") {
         formatChoice = "mp3";

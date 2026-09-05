@@ -90,8 +90,8 @@ std::string PackMetadataBuilder::buildPackJson(std::string_view packName,
     return obj.dump(4);
 }
 
-// Port of PackGen's generateUiColors(): same keys, same darkening factors
-// (0.5 / 0.4 / 0.3 / 0.2), same transparent-list variants.
+// UI colors.
+// Inspired by PackGen.
 std::string PackMetadataBuilder::buildUiColorsJson(PackExportConfig const& cfg) {
     auto primary   = cfg.colors.color1;
     auto secondary = cfg.colors.color2;
@@ -159,8 +159,8 @@ std::string PackMetadataBuilder::buildUiColorsJson(PackExportConfig const& cfg) 
     return obj.dump(4);
 }
 
-// Port of PackGen's generateModsLayerJson(): recolors the Geode mod-list
-// frame background and the search bar via the layer-json node tree.
+// Mods layer json.
+// Inspired by PackGen.
 std::string PackMetadataBuilder::buildModsLayerJson(PackExportConfig const& cfg) {
     auto frameBg = matjson::Value::object();
     {
@@ -200,8 +200,8 @@ std::string PackMetadataBuilder::buildModsLayerJson(PackExportConfig const& cfg)
     return nodeChild("mod-list-frame", std::move(modListFrame)).dump(4);
 }
 
-// Port of PackGen's generateLoadingLayerJson(): swap the loading screen
-// background for the custom image, or tint it to match the pack.
+// Loading layer json.
+// Inspired by PackGen.
 std::string PackMetadataBuilder::buildLoadingLayerJson(PackExportConfig const& cfg) {
     auto bgTexture = matjson::Value::object();
     auto attrs = matjson::Value::object();

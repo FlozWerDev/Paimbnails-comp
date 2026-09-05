@@ -1,7 +1,5 @@
 #pragma once
-// Shared pixel math for the PackGen-style tint, used by both the
-// cluster-mask path (LuminanceTinter) and the overlay-asset path
-// (OverlayTinter). Semantics must stay bit-compatible between the two.
+// Luminance-based tinting, inspired by PackGen.
 
 #include <Geode/cocos/include/ccTypes.h>
 
@@ -15,20 +13,14 @@ inline std::uint8_t clampByte(int v) {
     return static_cast<std::uint8_t>(std::clamp(v, 0, 255));
 }
 
-// Rec.601 luminance in 0..255 space, matching PackGen which divides this by
-// `brightness` directly.
+// Rec.601 luminance in 0..255 space.
 inline float luminance601(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
     return 0.30f * static_cast<float>(r)
          + 0.59f * static_cast<float>(g)
          + 0.11f * static_cast<float>(b);
 }
 
-// tinted = userColor * (luminance / brightness), clamped per channel exactly
-// like PackGen's tintImageWithLuminance. Letting each channel saturate to 255
-// independently is what keeps highlights bright; a hue-preserving rescale
-// would dull them and shift the color away from what PackGen produces.
-// Saturation/contrast are an optional post-grade (no-op at 1.0 / 0.0), applied
-// after the PackGen clamp so defaults stay bit-faithful to the web tool.
+// Tint by luminance, clamped per channel.
 inline void tintByLuminance(std::uint8_t srcR, std::uint8_t srcG, std::uint8_t srcB,
                             cocos2d::ccColor3B tint, float brightnessF,
                             float saturation, float contrast,
@@ -78,7 +70,7 @@ inline void overlayPixel(std::uint8_t& baseR, std::uint8_t& baseG, std::uint8_t&
     baseA = std::max(baseA, overlayA);
 }
 
-// PackGen's "alternative glow": replace the pixel entirely where mask > 0.
+// Alternative glow: full replace where mask > 0.
 inline void replacePixel(std::uint8_t& baseR, std::uint8_t& baseG, std::uint8_t& baseB, std::uint8_t& baseA,
                          std::uint8_t overlayR, std::uint8_t overlayG, std::uint8_t overlayB,
                          std::uint8_t overlayA) {

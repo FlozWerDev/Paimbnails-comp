@@ -28,27 +28,18 @@ struct HookResult {
 
 // Context passed to each hook.
 struct HookContext {
-    std::string action;       // "upload", "validate", "security-check"
+    std::string action;
     int levelID = 0;
     std::string username;
-    std::string format;       // "png", "gif", "mp4"
+    std::string format;
     size_t dataSize = 0;
-    std::vector<uint8_t> const* data = nullptr;  // payload pointer (not copied)
+    std::vector<uint8_t> const* data = nullptr;
 };
 
 using PreHookFn  = std::function<HookResult(HookContext const&)>;
 using PostHookFn = std::function<void(HookContext const&, bool success)>;
 
-// HookInterceptor: pre/post interceptors ONLY for uploads, security, validation.
-//
-// Usage:
-//   HookInterceptor::get().addPreHook("upload", [](HookContext const& ctx) {
-//       if (ctx.dataSize > 5 * 1024 * 1024) return HookResult::deny("File > 5MB");
-//       return HookResult::allow();
-//   });
-//
-//   auto result = HookInterceptor::get().runPreHooks(ctx);
-//   if (!result.isAllowed()) { /* blocked */ }
+// Pre/post interceptors for uploads and validation only.
 
 class HookInterceptor {
 public:
@@ -67,7 +58,7 @@ public:
         m_postHooks[action].push_back(std::move(hook));
     }
 
-    // Run all pre-hooks for the action. Returns Deny if any denies.
+// Runs pre-hooks; one Deny blocks.
     HookResult runPreHooks(HookContext const& ctx) {
         std::unique_lock lock(m_mutex);
         auto it = m_preHooks.find(ctx.action);
@@ -101,7 +92,7 @@ public:
         return HookResult::allow();
     }
 
-    // Run all post-hooks for the action (cannot block).
+    // Runs post-hooks.
     void runPostHooks(HookContext const& ctx, bool success) {
         std::unique_lock lock(m_mutex);
         auto it = m_postHooks.find(ctx.action);

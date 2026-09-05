@@ -1,8 +1,7 @@
 #pragma once
 
-// Separate Dual Icons: customize the 2nd player's kit (icons, colors, trails,
-// death effect) independently from your own. Port of Weebify's
-// separate-dual-icons-geode, gated by the paimbnails.separatedual.global module.
+// Separate 2nd player's kit from your own.
+// Inspired by Weebify's mod.
 
 #include <Geode/Geode.hpp>
 #include "../../core/modules/ModuleRegistry.hpp"

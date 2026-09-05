@@ -90,7 +90,7 @@ CCLabelBMFont* makeHint(char const* text) {
 }
 
 void collectRGBANodes(CCNode* root, std::vector<std::pair<CCNode*, GLubyte>>& out) {
-    if (auto* rgba = dynamic_cast<CCRGBAProtocol*>(root)) {
+    if (auto* rgba = typeinfo_cast<CCRGBAProtocol*>(root)) {
         out.emplace_back(root, rgba->getOpacity());
     }
     for (auto* child : CCArrayExt<CCNode*>(root->getChildren())) collectRGBANodes(child, out);
@@ -101,13 +101,15 @@ void fadeInTree(CCNode* root, float duration) {
     std::vector<std::pair<CCNode*, GLubyte>> nodes;
     collectRGBANodes(root, nodes);
     for (auto& [node, target] : nodes) {
-        dynamic_cast<CCRGBAProtocol*>(node)->setOpacity(0);
+        auto* rgba = typeinfo_cast<CCRGBAProtocol*>(node);
+        if (!rgba) continue;
+        rgba->setOpacity(0);
         node->runAction(CCFadeTo::create(duration, target));
     }
 }
 
 void fadeOutTree(CCNode* root, float duration) {
-    if (auto* rgba = dynamic_cast<CCRGBAProtocol*>(root)) {
+    if (auto* rgba = typeinfo_cast<CCRGBAProtocol*>(root)) {
         root->stopAllActions();
         root->runAction(CCFadeTo::create(duration, 0));
     }

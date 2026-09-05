@@ -44,6 +44,7 @@ protected:
 
     void buildCells();
     void layoutCells(bool resetScrollPosition);
+    void adoptServerOrder(std::vector<ThumbnailAPI::ThumbnailInfo> const& thumbnails, std::string const& selectedKey);
     void updateUiState();
     void updateCellVisual(int index);
     void requestPreview(int index);

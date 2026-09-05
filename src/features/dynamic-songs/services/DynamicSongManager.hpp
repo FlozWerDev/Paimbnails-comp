@@ -135,4 +135,5 @@ private:
     std::chrono::steady_clock::time_point m_previewPlayAttemptSince{};
 
     void startStreamingPreview(GJGameLevel* level);
+    void syncPreviewVolume();
 };

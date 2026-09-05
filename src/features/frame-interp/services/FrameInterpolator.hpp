@@ -1,14 +1,6 @@
 #pragma once
 
-// Interpolacion de fotogramas.
-//
-// GD simula a pasos fijos de 1/240 s y dibuja cuando toca refrescar, asi que
-// cada frame se dibuja un estado que lleva parado entre 0 y un paso completo.
-// Ese resto (m_extraDelta) cambia de frame en frame y es lo que se ve como
-// micro-tirones a 144/165/240 Hz. Aqui se guarda el estado de los nodos que
-// mueve la simulacion en los dos ultimos frames con paso y se dibuja el punto
-// intermedio que corresponde al reloj real, restaurando los valores buenos en
-// cuanto termina el visit para que la logica del juego nunca los vea tocados.
+// Interpola entre pasos para quitar micro-tirones. Restaura todo al dibujar.
 
 #include "FrameInterpConfig.hpp"
 
@@ -46,10 +38,7 @@ public:
     bool isEnabled() const;
     void setEnabled(bool enabled);
 
-    // getModifiedDelta devuelve el tiempo que si se simulo este frame y deja el
-    // resto en m_extraDelta. Las dos cosas juntas son el reloj que necesita el
-    // interpolador, y que se llame es tambien la senal de que el update corrio:
-    // en pausa no llega nada y el visit dibuja el estado autentico.
+    // Guarda el resto sin simular; en pausa no llega nada.
     void onStepped(double stepped, double leftover);
 
     void beginVisit(GJBaseGameLayer* layer);

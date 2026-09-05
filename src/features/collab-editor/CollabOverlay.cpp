@@ -141,7 +141,7 @@ IconType peerIconTypeLocal(int raw) {
 // cocos fork don't cascade opacity, so each descendant animates itself.
 void fadeOutTree(CCNode* node, float duration) {
     if (!node) return;
-    if (dynamic_cast<CCRGBAProtocol*>(node)) {
+    if (typeinfo_cast<CCRGBAProtocol*>(node)) {
          node->stopAllActions();
         node->runAction(CCFadeOut::create(duration));
     }
@@ -152,7 +152,7 @@ void fadeOutTree(CCNode* node, float duration) {
 
 void fadeInTree(CCNode* node, float duration) {
     if (!node) return;
-    if (auto* rgba = dynamic_cast<CCRGBAProtocol*>(node)) {
+    if (auto* rgba = typeinfo_cast<CCRGBAProtocol*>(node)) {
         GLubyte target = rgba->getOpacity();
         rgba->setOpacity(0);
         node->runAction(CCFadeTo::create(duration, target));

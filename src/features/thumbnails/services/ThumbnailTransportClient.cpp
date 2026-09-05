@@ -180,6 +180,11 @@ bool ThumbnailTransportClient::hasGalleryMetadataCached(int levelId) {
     return it != m_galleryCache.end() && !it->second.thumbnails.empty();
 }
 
+bool ThumbnailTransportClient::parseThumbnailList(std::string const& response, std::vector<ThumbnailInfo>& out) {
+    out.clear();
+    return parseThumbnailResponse(response, out);
+}
+
 void ThumbnailTransportClient::getThumbnails(int levelId, ThumbnailListCallback callback, bool forceRefresh) {
     if (!callback) return;
     if (!m_serverEnabled) {

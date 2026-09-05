@@ -59,10 +59,8 @@ std::vector<int> splitIds(std::string const& text) {
     std::istringstream in(text);
     while (std::getline(in, token, ',')) {
         if (token.empty()) continue;
-        try {
-            out.push_back(std::stoi(token));
-        } catch (...) {
-        }
+        auto parsed = geode::utils::numFromString<int>(token);
+        if (parsed.isOk()) out.push_back(parsed.unwrap());
     }
     return out;
 }
@@ -84,19 +82,11 @@ std::vector<std::string> splitFields(std::string const& line, size_t expected) {
 }
 
 float toFloat(std::string const& text, float fallback = 0.f) {
-    try {
-        return std::stof(text);
-    } catch (...) {
-        return fallback;
-    }
+    return geode::utils::numFromString<float>(text).unwrapOr(fallback);
 }
 
 int toInt(std::string const& text, int fallback = 0) {
-    try {
-        return std::stoi(text);
-    } catch (...) {
-        return fallback;
-    }
+    return geode::utils::numFromString<int>(text).unwrapOr(fallback);
 }
 
 // Libraries written by the older autobuild mods: a header block, then pieces

@@ -1,5 +1,5 @@
-// Message Notifications — notifies on new messages and friend requests.
-// Adapted from BlueToadMaker's Message-Notification mod to Paimbnails conventions.
+// Notifies on new messages and friend requests.
+// Inspired by BlueToadMaker's Message-Notification mod.
 //
 // Polling timer runs on a background thread (sleep + fire only);
 // GD server requests are dispatched on the main thread via WebHelper,

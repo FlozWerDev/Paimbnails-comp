@@ -71,7 +71,7 @@ UnlockRequirement parseRequirement(std::string const& sentence) {
         }
     }
     if (!digits.empty() && digits.size() <= 9) {
-        requirement.amount = std::stoi(digits);
+        requirement.amount = geode::utils::numFromString<int>(digits).unwrapOr(0);
     }
     return requirement;
 }

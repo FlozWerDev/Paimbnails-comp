@@ -1,8 +1,6 @@
 #pragma once
-//
-// Data model + persistence for search-history entries.
-// Port of "Search History" by hiimjasmine00 (MIT), adapted to Paimbnails conventions.
-//
+// Search history data model and persistence.
+// Inspired by hiimjasmine00's mod.
 
 #include <matjson.hpp>
 #include <cstdint>

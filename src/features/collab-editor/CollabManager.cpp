@@ -2298,8 +2298,9 @@ void CollabManager::handleLayerOwners(matjson::Value const& msg) {
     for (auto const& value : *src) {
         auto key = value.getKey();
         if (!key) continue;
-        int layer = 0;
-        try { layer = std::stoi(*key); } catch (...) { continue; }
+        auto layerResult = geode::utils::numFromString<int>(*key);
+        if (!layerResult.isOk()) continue;
+        int layer = layerResult.unwrap();
         int owner = static_cast<int>(value.asInt().unwrapOr(0));
         if (owner > 0) m_layerOwners[layer] = owner;
     }

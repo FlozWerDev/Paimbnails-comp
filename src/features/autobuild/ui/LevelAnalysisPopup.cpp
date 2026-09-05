@@ -437,7 +437,13 @@ void LevelAnalysisPopup::setTextPopupClosed(SetTextPopup*, gd::string text) {
         scheduleRebuild();
         return;
     }
-    startAnalysis(std::stoi(digits));
+    auto parsed = geode::utils::numFromString<int>(digits);
+    if (!parsed.isOk()) {
+        setStatus("Ese id no es valido.", kError);
+        scheduleRebuild();
+        return;
+    }
+    startAnalysis(parsed.unwrap());
 }
 
 void LevelAnalysisPopup::startAnalysis(int levelId) {

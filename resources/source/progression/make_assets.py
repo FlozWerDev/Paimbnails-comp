@@ -11,7 +11,7 @@ turns the body into the tier or rarity colour.
 import math
 import os
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 SS = 4                      # supersampling factor
 OUT = os.path.join(os.path.dirname(__file__), "..", "..")
@@ -202,120 +202,58 @@ def make_ring():
     save(img, "paim_progRing.png", size)
 
 
-# Every frame punches the same rounded-square hole, so one face sprite serves
-# all six and the grid still reads as one family.
-HOLE_HALF = 0.24
-HOLE_RADIUS = 0.085
+# The tile is one flat rounded square: black rim, body tinted with the rarity at
+# runtime, and a separate ring and fill drawn on the same footprint so the three
+# sprites line up when scaled to the same size.
+TILE_HALF = 0.44
+TILE_RADIUS = 0.13
+TILE_INNER = 0.93
 
 
-def centroid(points):
-    return (sum(p[0] for p in points) / len(points),
-            sum(p[1] for p in points) / len(points))
-
-
-def shaded(d, points, origin=None):
-    """Black rim, shaded body, lit top - used for a plate and its trimmings."""
-    o = origin or centroid(points)
-    d.polygon(points, fill=BLACK)
-    d.polygon(scaled(points, o, 0.90), fill=SHADE)
-    d.polygon(scaled(points, o, 0.83), fill=BODY)
-
-
-def diamond(cx, cy, r):
-    return [(cx, cy - r), (cx + r * 0.72, cy), (cx, cy + r), (cx - r * 0.72, cy)]
-
-
-def frame_parts(level, U):
-    """(behind, body) outlines for a rarity frame, in canvas units."""
+def tile_outline(U):
     c = U / 2
-    if level == 1:                                   # common: plain plate
-        return [], rounded_square_points(c, c, U * 0.40, U * 0.14)
-    if level == 2:                                   # uncommon: chamfered
-        h, cut = U * 0.40, U * 0.15
-        return [], [
-            (c - h + cut, c - h), (c + h - cut, c - h), (c + h, c - h + cut),
-            (c + h, c + h - cut), (c + h - cut, c + h), (c - h + cut, c + h),
-            (c - h, c + h - cut), (c - h, c - h + cut),
-        ]
-    if level == 3:                                   # rare: riveted plate
-        return [], rounded_square_points(c, c, U * 0.40, U * 0.12)
-    if level == 4:                                   # epic: gems on every edge
-        h, g = U * 0.36, U * 0.135
-        behind = [diamond(c, c - h, g), diamond(c, c + h, g),
-                  diamond(c - h, c, g), diamond(c + h, c, g)]
-        return behind, rounded_square_points(c, c, h, U * 0.12)
-    if level == 5:                                   # legendary: crown and banner
-        h = U * 0.35
-        crown = [(c - h * 0.86, c - h * 0.52), (c - h * 0.52, c - h * 1.34),
-                 (c - h * 0.20, c - h * 0.62), (c, c - h * 1.52),
-                 (c + h * 0.20, c - h * 0.62), (c + h * 0.52, c - h * 1.34),
-                 (c + h * 0.86, c - h * 0.52)]
-        banner = [(c - h * 1.36, c + h * 0.66), (c - h * 1.12, c + h * 1.02),
-                  (c - h * 1.36, c + h * 1.38), (c + h * 1.36, c + h * 1.38),
-                  (c + h * 1.12, c + h * 1.02), (c + h * 1.36, c + h * 0.66)]
-        return [crown, banner], rounded_square_points(c, c, h, U * 0.12)
-    burst = star_points(c, c, U * 0.50, U * 0.355, 12, math.pi * 0.5 + math.pi / 12)
-    return [burst], rounded_square_points(c, c, U * 0.345, U * 0.11)
+    return rounded_square_points(c, c, U * TILE_HALF, U * TILE_RADIUS)
 
 
-def plate(level, size=288):
-    """One frame per rarity, from a plain plate up to a twelve point burst."""
+def make_tile(size=288):
     img = canvas(size)
     d = ImageDraw.Draw(img)
     U = size * SS
     c = (U / 2, U / 2)
 
-    behind, body = frame_parts(level, U)
-    for part in behind:
-        shaded(d, part)
-    shaded(d, body, c)
-    d.polygon(scaled(body, c, 0.78), fill=FACE)
+    outer = tile_outline(U)
+    inner = scaled(outer, c, TILE_INNER)
+    d.polygon(outer, fill=BLACK)
+    d.polygon(inner, fill=GLOSS)
 
-    if level in (3, 6):                              # rivets
-        reach = U * (0.30 if level == 3 else 0.25)
-        for sx in (-1, 1):
-            for sy in (-1, 1):
-                rx, ry, rr = c[0] + sx * reach, c[1] + sy * reach, U * 0.030
-                d.ellipse([rx - rr, ry - rr, rx + rr, ry + rr], fill=BLACK)
-                d.ellipse([rx - rr * 0.55, ry - rr * 0.55,
-                           rx + rr * 0.55, ry + rr * 0.55], fill=GLOSS)
+    # Vertical falloff, so a flat tint still has a top edge to read against.
+    body = canvas(size)
+    ImageDraw.Draw(body).polygon(inner, fill=BLACK)
+    ramp = Image.linear_gradient("L").resize((U, U)).point(lambda v: int(v * 0.34))
+    shade = Image.new("RGBA", (U, U), (0, 0, 0, 255))
+    shade.putalpha(ImageChops.multiply(ramp, body.getchannel("A")))
+    img.alpha_composite(shade)
 
-    gloss = canvas(size)
-    gd = ImageDraw.Draw(gloss)
-    gd.polygon(scaled(body, c, 0.86), fill=GLOSS)
-    gd.rectangle([0, c[1], U, U], fill=(0, 0, 0, 0))
-    gloss = gloss.filter(ImageFilter.GaussianBlur(U * 0.045))
-    gloss.putalpha(gloss.getchannel("A").point(lambda a: int(a * 0.40)))
-    img.alpha_composite(gloss)
-
-    hole = rounded_square_points(c[0], c[1], U * HOLE_HALF, U * HOLE_RADIUS)
-    d.polygon(scaled(hole, c, 1.11), fill=BLACK)
-    d.polygon(hole, fill=(0, 0, 0, 0))
-    return img
+    save(img, "paim_progTile.png", size)
 
 
-def make_plates():
-    for i in range(1, 7):
-        save(plate(i), "paim_progPlate%d.png" % i, 288)
+def make_tile_fill(size=288):
+    """Body without the rim, for the CCProgressTimer that fills a locked tile."""
+    img = canvas(size)
+    U = size * SS
+    c = (U / 2, U / 2)
+    ImageDraw.Draw(img).polygon(scaled(tile_outline(U), c, TILE_INNER), fill=GLOSS)
+    save(img, "paim_progTileFill.png", size)
 
 
-def make_face(size=288):
-    """The recess the frames punch, tinted with the category colour at runtime."""
+def make_tile_ring(size=288):
     img = canvas(size)
     d = ImageDraw.Draw(img)
     U = size * SS
-    c = U / 2
-    hole = rounded_square_points(c, c, U * HOLE_HALF, U * HOLE_RADIUS)
-    d.polygon(hole, fill=(96, 96, 104, 255))
-
-    # Lit from below so the glyph sitting on top keeps an edge against it.
-    shade = canvas(size)
-    sd = ImageDraw.Draw(shade)
-    sd.polygon(scaled(hole, (c, c), 0.98), fill=(40, 40, 46, 255))
-    sd.rectangle([0, c + U * HOLE_HALF * 0.15, U, U], fill=(0, 0, 0, 0))
-    shade = shade.filter(ImageFilter.GaussianBlur(U * 0.05))
-    img.alpha_composite(shade)
-    save(img, "paim_progPlateFace.png", size)
+    c = (U / 2, U / 2)
+    d.polygon(scaled(tile_outline(U), c, TILE_INNER), fill=GLOSS)
+    d.polygon(scaled(tile_outline(U), c, 0.855), fill=(0, 0, 0, 0))
+    save(img, "paim_progTileRing.png", size)
 
 
 def make_glow():
@@ -348,7 +286,8 @@ def make_spark():
 if __name__ == "__main__":
     make_tier_frames()
     make_ring()
-    make_plates()
-    make_face()
+    make_tile()
+    make_tile_fill()
+    make_tile_ring()
     make_glow()
     make_spark()

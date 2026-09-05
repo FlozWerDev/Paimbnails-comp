@@ -3,7 +3,7 @@
 #include <Geode/utils/string.hpp>
 #include <string>
 
-// Port of Mod-Previews by Alphalaneous to Geode v5.
+// Inspired by Alphalaneous's Mod-Previews.
 
 namespace paimon::mod_previews {
 
