@@ -1,6 +1,28 @@
 # <cy>v1.1.2</c>
 
-![](flozwer.paimbnails2/paim_Paimon.png?height=32) Llega <cl>Paimon RTX</c>: trazado de rayos en tiempo real sobre todo el juego, y la <cl>Interpolacion de Fotogramas</c>, que dibuja entre pasos de fisica para quitar los micro-tirones. Llegan tambien los <cl>Niveles de Perfil</c>: XP, rangos e insignias calculados con las estadisticas publicas de cualquier jugador. Ademas, <cl>Level Thumbnails</c> deja de ser incompatible y se puede tener puesto a la vez.
+![](flozwer.paimbnails2/paim_Paimon.png?height=32) Llega <cl>Paimon RTX</c>: trazado de rayos en tiempo real sobre todo el juego, y la <cl>Interpolacion de Fotogramas</c>, que dibuja entre pasos de fisica para quitar los micro-tirones. Llegan tambien los <cl>Niveles de Perfil</c>: XP, rangos e insignias calculados con las estadisticas publicas de cualquier jugador. Ademas, <cl>Level Thumbnails</c> deja de ser incompatible y se puede tener puesto a la vez. Y abre <cl>Paimon Versus</c>: duelos 1v1 con rango propio, sobre el boton Versus que el juego tenia sin usar.
+
+---
+
+## ![](frame:GJ_starBtn_001.png?height=18) <cy>Paimon Versus</c>
+
+- El boton <cg>Versus</c> del menu de creador, ese que solo abria un "proximamente", pasa a abrir un <cg>hub de duelos 1v1</c>. Se reviste con arte propio y lleva en la esquina un <cg>chip con tu rango</c>, asi que la escalera se lee desde el menu sin entrar. Si otro mod se lleva ese boton por delante, se anade uno nuevo en la misma fila.
+- <cg>Dos escaleras independientes</c>, clasico y plataforma, cada una con su Elo, su historial y su colocacion. Son habilidades distintas y mezclarlas rompe el emparejamiento.
+- El rango VS es un <cg>sub-rango</c> del sistema de niveles de perfil: reusa los mismos veinte rangos y colores, con <cg>divisiones IV a I</c> hasta Paragon y sin ellas por encima. La insignia es la medalla del rango dentro de un marco de laurel con espadas cruzadas.
+- <cg>Cinco duelos de colocacion</c> por modo antes de ver un numero, con el factor K a 48 para que cinco partidas basten. A partir de ahi baja a 32, luego a 16 y a 12 en lo mas alto. Una racha de tres suma un 15% y ganar por mucho margen hasta otro 20%, sin pasar nunca de un 35% extra.
+- <cg>Diez formatos</c>: carrera, muerte subita, mejor intento, contrarreloj, escalera por tramos, ruleta, tira y afloja, rey de la colina, relevos 2v2 y amistoso. Cada uno dice a que se juega y que se manda por la red.
+- <cg>Ruleta</c>: cada cierto porcentaje te toca una carta, buena para ti o mala para el rival. Los hitos los sortea el servidor y los dos clientes los reconstruyen con la misma semilla, asi que la carta cae sin ida y vuelta. Quien va por detras saca mejores cartas, hasta un 35% de desplazamiento en la tabla de rarezas.
+- <cg>24 cartas en cuatro rarezas</c>, con arte propio tenido por rareza. Ninguna toca la fisica, las hitboxes, la geometria ni la velocidad: solo camara, capas sobre la pantalla, audio, HUD, checkpoints y escudos. Una carrera con cartas sigue siendo una carrera legitima.
+- El tiempo real dentro del nivel va por los <cg>eventos de servidor de Globed</c>, que ya tiene una sesion abierta entre los dos jugadores: cuatro eventos binarios, dirigidos solo al rival, con un tope de ocho por segundo. Globed es <cg>dependencia opcional</c>; sin el se juega igual, solo que sin ver al rival.
+- Todo lo que hay que recordar - cola, Elo, historial, temporadas, la lista de niveles - vive en un <cg>servidor propio</c>, que se identifica con el mod-code que el mod ya emite. No hay cuenta nueva ni pantalla de registro.
+- <cg>Clasificacion</c> por modo, con global, amigos y temporada, y tu fila resaltada. Al lado, el <cg>historial</c> de tus ultimos veinte duelos con el rival, el formato y el Elo que se movio.
+- En cualquier perfil aparece un <cg>chip con el rango VS</c> junto al del nivel; al tocarlo salen las dos escaleras del jugador con su record, y en el de otro un boton de <cg>retar</c> que le abre el duelo directamente por su nombre.
+- Ganar un duelo da <cg>XP al nivel de perfil</c>: 60 de base mas 2 por punto de Elo, con tope de 600 al dia, y 15 por jugar aunque pierdas. Entra como una fuente mas en la ficha de progresion, junto a estrellas, demons y maestria, y vale 0 para quien nunca haya jugado uno.
+- La <cg>Ruleta</c> funciona: el servidor sortea entre seis y nueve hitos y manda la semilla antes de la cuenta atras, los dos clientes reconstruyen la misma lista, y cruzar un hito reparte carta sin ida y vuelta. La mano son <cg>dos huecos</c> y se lanzan con <cg>Q</c> y <cg>E</c>, rebindables desde los ajustes.
+- Las cartas se aplican de verdad: niebla y escarcha como capas sobre el HUD, terremoto con la sacudida de camara del propio juego, zoom y espejo sobre la capa de objetos reescritos cada fotograma, lastre ocultando el porcentaje, interferencia silenciando musica y efectos, antifaz escondiendo tu icono, escudo por el modo seguro de Globed, baliza y calavera sobre la pila de checkpoints, y rebote devolviendo la siguiente carta ofensiva. Todo con <cg>caducidad dura</c>: si el rival se desconecta con una carta puesta, el temporizador la retira igual.
+- <cg>Temporadas</c> de ocho semanas, con su ficha propia: el numero, lo que queda, tu mejor rango y que le pasa al Elo al cerrar. El reset suave y la decadencia por inactividad los aplica un cron nocturno en el servidor.
+- <cg>Mutadores rotativos</c> una semana si y otra no: <cg>sin practica</c> y <cg>sin pausa</c>. Solo se anuncian los que el duelo hace cumplir de verdad.
+- Se apaga entero, o por partes (HUD y cartas aparte), desde <cg>Modulos > Menu > Versus</c>.
 
 ---
 
@@ -97,9 +119,24 @@
 
 ---
 
+## ![](frame:GJ_infoIcon_001.png?height=18) <cy>Avisos de Miniaturas Nuevas</c>
+
+- La tarjeta pasa a llevar <cg>marco blanco de popup</c>. El borde se pintaba con el color dominante de la miniatura, asi que cada aviso salia de un color distinto y ninguno se parecia a las ventanas del juego. Ahora va el marco claro con una sombra por detras, que se ve igual sobre un menu claro que sobre uno oscuro.
+- <cr>La estela de featured salia mas grande que la cara de dificultad</c>. La moneda se colgaba aparte y a otra escala; ahora la pinta <cg>el propio icono de dificultad</c>, con la proporcion que usan las listas del juego.
+- Tarjeta redisenada: la columna de dificultad queda separada por una linea, el aviso entra en un <cg>chip</c> con el color del nivel y el <cg>panel oscuro se difumina</c> hacia la derecha, asi que el ultimo tercio sigue siendo la miniatura. La barra de tiempo va pegada al borde de abajo.
+- Animaciones repasadas: el contenido entra <cg>escalonado</c> por detras del marco, deslizar aterriza con estirado y rebote en vez de frenar en seco, caer aplasta la tarjeta al tocar el suelo, el brillo que la barre es un <cg>degradado</c> y no un cuadrado de bordes duros, y el vaiven de reposo arranca desde cero en lugar de saltar al acabar la entrada.
+
+---
+
 ## ![](frame:chestIcon_001.png?height=18) <cy>Compatibilidad</c>
 
 - <cl>Level Thumbnails</c>: ya es <cg>compatible</c>. Se quita el cartel de inicio que pedia desactivarlo y se pueden tener los dos mods puestos a la vez.
+
+---
+
+## ![](frame:GJ_optionsBtn_001.png?height=18) <cy>Correcciones</c>
+
+- <cl>Cancion Dinamica</c>: la escucha en streaming - la que suena mientras el juego se descarga la cancion del nivel - <cr>no hacia caso al volumen</c>. Va por un canal propio, fuera del grupo de musica del juego, asi que bajar el control no la tocaba y se seguia oyendo aunque estuviera en <cg>0</c>. Ahora sigue el volumen mientras suena, y en 0 se corta en vez de quedarse descargando de fondo.
 
 ---
 
@@ -394,7 +431,7 @@
 
 **Mod Previews**
 - New Mod Previews feature: when you open a Geode mod, if its repository has a previews/ folder with preview-1.png ... preview-10.png, Paimbnails shows a thumbnail strip in the Details tab. Click a thumbnail to open a full-screen gallery with prev/next navigation. Toggle it from the Mod Previews setting.
-- Based on the original idea and design by Alphalaneous (Mod-Previews), reimplemented natively for Geode v5 (no extra dependencies).
+- Inspired by Alphalaneous (Mod-Previews).
 
 **Paimon Agent Mode**
 - New Agent Mode toggle button under Paimon in the guide chat. Pink (agent:off) means Paimon answers questions and shows you the way; blue (agent:on) means Paimon executes actions for you.
@@ -427,7 +464,7 @@
 
 **Mod Previews**
 - Nueva funcion Mod Previews: al abrir un mod de Geode, si su repositorio tiene una carpeta previews/ con preview-1.png ... preview-10.png, Paimbnails muestra una tira de thumbnails en la pestana de Details. Toca un thumbnail para abrir una galeria a pantalla completa con navegacion anterior/siguiente. Se activa desde el ajuste Mod Previews.
-- Basado en la idea y diseno original de Alphalaneous (Mod-Previews), reimplementado de forma nativa para Geode v5 (sin dependencias extra).
+- Inspired by Alphalaneous (Mod-Previews).
 
 **Paimon Agent Mode**
 - Nuevo boton de Agent Mode bajo Paimon en el chat de la guia. Rosa (agent:off) significa que Paimon responde preguntas y te muestra el camino; azul (agent:on) significa que Paimon ejecuta acciones por vos.

@@ -47,6 +47,7 @@ ccColor3B sourceColor(ExpSource source) {
         case ExpSource::Demons:        return {235,  90,  90};
         case ExpSource::CreatorPoints: return {130, 240, 150};
         case ExpSource::Mastery:       return {190, 140, 255};
+        case ExpSource::Versus:        return {255, 130, 200};
     }
     return {255, 255, 255};
 }

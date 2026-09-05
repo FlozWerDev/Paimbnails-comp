@@ -562,6 +562,22 @@
       "default": "Ctrl+P",
       "allow-in-text-inputs": false
     },
+    "versus-card-1-keybind": {
+      "type": "keybind",
+      "name": "Play Versus Card 1",
+      "description": "Casts the first card in your Versus hand.",
+      "default": "Q",
+      "category": "gameplay",
+      "allow-in-text-inputs": false
+    },
+    "versus-card-2-keybind": {
+      "type": "keybind",
+      "name": "Play Versus Card 2",
+      "description": "Casts the second card in your Versus hand.",
+      "default": "E",
+      "category": "gameplay",
+      "allow-in-text-inputs": false
+    },
     "capture-keybind": {
       "type": "keybind",
       "name": "Capture Thumbnail",

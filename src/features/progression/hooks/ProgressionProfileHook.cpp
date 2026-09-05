@@ -10,6 +10,8 @@
 #include "../ui/GDProgressBar.hpp"
 #include "../ui/ProgressionPopup.hpp"
 #include "../ui/TierBadgeNode.hpp"
+#include "../../versus/services/VersusClient.hpp"
+#include "../../../core/modules/ModuleRegistry.hpp"
 #include "../../../framework/HookConventions.hpp"
 #include "../../../utils/SpriteHelper.hpp"
 
@@ -91,6 +93,29 @@ class $modify(ProgressionProfilePage, ProfilePage) {
         if (score) m_fields->m_username = score->m_userName;
 
         applyLevelChip();
+        if (!this->m_ownProfile && score) topUpVersusExp(score->m_accountID);
+    }
+
+    // Versus XP is the one source the game does not publish, so another
+    // player's level is short until the duel server answers. The chip is drawn
+    // twice rather than made to wait on a request.
+    void topUpVersusExp(int accountId) {
+        if (accountId <= 0) return;
+        if (!paimon::modules::isEnabled("paimbnails.versus.menu")) return;
+
+        auto self = Ref<ProgressionProfilePage>(this);
+        paimon::versus::VersusClient::get().fetchProfile(accountId,
+            [self](bool ok, paimon::versus::ModeProfile const& classic,
+                   paimon::versus::ModeProfile const& platformer) {
+                if (!ok || !self->isRunning()) return;
+                if (classic.xpTotal + platformer.xpTotal == 0) return;
+
+                auto stats = self->m_fields->m_ctx.stats;
+                stats.versusExp = classic.xpTotal + platformer.xpTotal;
+                stats.versusWins = classic.wins + platformer.wins;
+                self->m_fields->m_ctx = makeContext(stats);
+                self->applyLevelChip();
+            });
     }
 
     void applyLevelChip() {

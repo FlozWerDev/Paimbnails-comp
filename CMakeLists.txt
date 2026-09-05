@@ -256,4 +256,10 @@ add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 
 setup_geode_mod(${PROJECT_NAME})
 
+# Globed is an optional dependency; its headers are only needed for the soft
+# link API, and every use of them is behind __has_include so the mod still
+# builds if the dependency is not fetched.
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/geode-deps/dankmeme.globed2/include)
+
 message(STATUS "Paimbnails: ${CMAKE_SYSTEM_NAME} | HW decoder: native | SW fallback: pl_mpeg")

@@ -1,4 +1,5 @@
 #include "ProgressionService.hpp"
+#include "../../versus/services/VersusStore.hpp"
 #include "../data/ProgressionTiers.hpp"
 #include "../../../core/modules/ModuleRegistry.hpp"
 
@@ -68,6 +69,11 @@ BadgeContext ProgressionService::ownContext() {
     if (!platInfo.empty()) {
         stats.platformerInfo = parseDifficultyInfo(platInfo, &stats.hasPlatformerInfo);
     }
+
+    auto const& versus = versus::VersusStore::get();
+    stats.versusExp = versus.versusExp();
+    stats.versusWins = versus.profile(versus::Mode::Classic).wins
+                     + versus.profile(versus::Mode::Platformer).wins;
 
     return makeContext(stats);
 }

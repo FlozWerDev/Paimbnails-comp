@@ -1,4 +1,5 @@
 #include <Geode/Geode.hpp>
+#include "../features/versus/VersusInit.hpp"
 #include "../features/backgrounds/services/LayerBackgroundManager.hpp"
 #include "../features/transitions/services/TransitionManager.hpp"
 #include "../features/cursor/services/CursorManager.hpp"
@@ -85,6 +86,8 @@ void bootstrap() {
 
     paimon::blur::BlurDiskCache::get().init();
     paimon::gd::GDRobTopCache::get().init();
+
+    paimon::versus::init();
 
     bool const clearCacheAtStartup = paimon::settings::general::clearCacheOnExit();
 

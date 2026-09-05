@@ -189,6 +189,10 @@ ExpReport computeExp(PlayerStats const& stats) {
     int64_t const masteryCount = stats.classicInfo.counted() + stats.platformerInfo.counted();
     set(7, ExpSource::Mastery, mastery, masteryCount);
 
+    // Versus XP is the one source the game does not publish, so it arrives from
+    // the duel server and is zero for anyone who has never queued.
+    set(8, ExpSource::Versus, stats.versusExp, stats.versusWins);
+
     return report;
 }
 
@@ -230,6 +234,7 @@ char const* sourceId(ExpSource source) {
         case ExpSource::Demons:        return "demons";
         case ExpSource::CreatorPoints: return "creator-points";
         case ExpSource::Mastery:       return "mastery";
+        case ExpSource::Versus:        return "versus";
     }
     return "stars";
 }
@@ -244,6 +249,7 @@ char const* sourceIconFrame(ExpSource source) {
         case ExpSource::Demons:        return "GJ_demonIcon_001.png";
         case ExpSource::CreatorPoints: return "GJ_pointsIcon_001.png";
         case ExpSource::Mastery:       return "GJ_completesIcon_001.png";
+        case ExpSource::Versus:        return "GJ_starBtn_001.png";
     }
     return "GJ_starsIcon_001.png";
 }

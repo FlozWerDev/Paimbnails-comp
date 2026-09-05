@@ -95,6 +95,10 @@ struct PlayerStats {
     int creatorPoints = 0;
     int globalRank = 0;
 
+    // Filled from the versus server, not from anything the game publishes.
+    int64_t versusExp = 0;
+    int versusWins = 0;
+
     DemonBreakdown demonInfo;
     DifficultyBreakdown classicInfo;
     DifficultyBreakdown platformerInfo;
@@ -113,9 +117,10 @@ enum class ExpSource {
     Demons,
     CreatorPoints,
     Mastery,
+    Versus,
 };
 
-inline constexpr int kExpSourceCount = 8;
+inline constexpr int kExpSourceCount = 9;
 
 struct ExpEntry {
     ExpSource source = ExpSource::Stars;
