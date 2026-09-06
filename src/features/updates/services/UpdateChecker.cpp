@@ -270,9 +270,10 @@ void UpdateChecker::onReleasesResponse(web::WebResponse& res) {
     }
 
     // The API sorts by creation date, which drifts from the version order once a
-    // patch for an older branch is published late.
+    // patch for an older branch is published late. compareVersions(a, b) is
+    // positive when b is newer than a, so negative means a belongs first here.
     std::stable_sort(list.begin(), list.end(), [](ReleaseInfo const& a, ReleaseInfo const& b) {
-        return compareVersions(a.version, b.version) > 0;
+        return compareVersions(a.version, b.version) < 0;
     });
 
     m_releases = std::move(list);

@@ -1,6 +1,6 @@
 #pragma once
 
-// REST against paimon-versus. Everything slow, durable or contested lives on
+// REST against the Paimon Versus server. Everything slow, durable or contested lives on
 // the server: the queue, Elo, history, seasons and the level pool. The fast
 // channel inside a level is VersusNet.
 

@@ -16,7 +16,8 @@ namespace paimon::versus {
 
 namespace {
 
-constexpr char const* kDefaultBase = "https://paimon-versus.vercel.app";
+constexpr char const* kDefaultBase = "https://vs-paimbnails.vercel.app";
+constexpr char const* kLegacyBase = "https://paimon-versus.vercel.app";
 constexpr auto kTimeout = std::chrono::seconds(12);
 
 std::string trimSlash(std::string url) {
@@ -97,9 +98,13 @@ VersusClient& VersusClient::get() {
 }
 
 std::string VersusClient::baseUrl() const {
-    auto configured = Mod::get()->getSavedValue<std::string>("versus-server-url", "");
-    if (configured.empty()) configured = kDefaultBase;
-    return trimSlash(std::move(configured));
+    auto configured = trimSlash(
+        Mod::get()->getSavedValue<std::string>("versus-server-url", "")
+    );
+    // Migrate the old hidden override as well as fresh installs. Otherwise a
+    // player who connected before the rename would keep using the dead host.
+    if (configured.empty() || configured == kLegacyBase) return kDefaultBase;
+    return configured;
 }
 
 bool VersusClient::authenticated() const {
