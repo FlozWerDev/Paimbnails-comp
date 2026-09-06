@@ -31,6 +31,7 @@
 #include "../features/dev-tools/ui/GifToSheetPopup.hpp"
 #include "../features/updates/services/UpdateChecker.hpp"
 #include "../features/updates/ui/UpdateProgressPopup.hpp"
+#include "../features/updates/ui/UpdateCenterPopup.hpp"
 #include "../ui/FeatureInfoPopup.hpp"
 #include "../ui/FeatureConfigPopup.hpp"
 #include "../ui/SmoothUIConfigPopup.hpp"
@@ -199,6 +200,9 @@ std::vector<HubActionMeta> getHubActions(int categoryIndex) {
                     if (scene) CCDirector::get()->pushScene(scene);
                 }, 0, "Activa o desactiva funciones"},
                 {"Configurar", "GJ_button_01.png", [](PaimonHubLayer*) { SettingsPanelManager::get().open(0); }, 0, "Idioma, updates y basicos"},
+                {"Actualizaciones", "GJ_button_02.png", [](PaimonHubLayer*) {
+                    if (auto popup = paimon::updates::UpdateCenterPopup::create()) popup->show();
+                }, 0, "Nueva version y versiones antiguas"},
                 {"PaiDraw", "GJ_button_05.png", [](PaimonHubLayer* self) { self->onOpenPaiDraw(nullptr); }, 0, "Dibuja con la comunidad"},
                 {"Soporte", "GJ_button_04.png", [](PaimonHubLayer* self) { self->onOpenSupport(nullptr); }, 0, "Ayuda y contacto"},
                 {"Reiniciar ajustes", "GJ_button_03.png", [](PaimonHubLayer*) {
@@ -263,50 +267,6 @@ std::vector<HubActionMeta> getHubActions(int categoryIndex) {
                     }
                 }, 5, "Luz trazada en todo el juego"},
                 {"Perfil", "GJ_button_05.png", [](PaimonHubLayer* self) { self->onOpenProfiles(nullptr); }, 5, "Editor de foto de perfil"},
-                {"Actualizar", "GJ_button_02.png", [](PaimonHubLayer*) {
-                    auto& chk = paimon::updates::UpdateChecker::get();
-                    auto state = chk.state();
-
-                    if (state == paimon::updates::UpdateChecker::State::UpdateAvailable) {
-                        if (auto popup = paimon::updates::UpdateProgressPopup::create()) popup->show();
-                        return;
-                    }
-
-                    if (chk.hasPendingInstall()) {
-                        PopupManager::get().quickPopup(
-                            "Actualizar",
-                            fmt::format(
-                                "La version <cy>{}</c> ya esta descargada.\n<cg>Reiniciar para instalar?</c>",
-                                chk.remoteVersion()
-                            ),
-                            "No", "Reiniciar",
-                            [](auto*, bool yes) {
-                                if (!yes) return;
-                                auto& c = paimon::updates::UpdateChecker::get();
-                                if (!c.restartToApplyPendingUpdate()) {
-                                    geode::utils::game::restart(true);
-                                }
-                            }
-                        ).showInstant();
-                        return;
-                    }
-
-                    if (state == paimon::updates::UpdateChecker::State::UpToDate) {
-                        PaimonNotify::create(
-                            fmt::format("Ya tienes la ultima version ({})", chk.localVersion()),
-                            NotificationIcon::Success
-                        )->show();
-                        return;
-                    }
-
-                    if (state == paimon::updates::UpdateChecker::State::Checking) {
-                        PaimonNotify::create("Comprobando actualizaciones...", NotificationIcon::Loading)->show();
-                        return;
-                    }
-
-                    chk.checkAsync();
-                    PaimonNotify::create("Buscando actualizaciones... pulsa de nuevo en unos segundos.", NotificationIcon::Loading)->show();
-                }, 5, "Busca nueva version"},
             };
         case 6: // Discord
             return {
@@ -493,6 +453,13 @@ bool PaimonHubLayer::init() {
     uiBtn->setPosition({winSize.width - 58.f, top - 20.f});
     m_mainMenu->addChild(uiBtn);
 
+    auto updSpr = ButtonSprite::create(tr("pai.hub.btn.updates", "Updates").c_str(), "bigFont.fnt", "GJ_button_02.png", .8f);
+    updSpr->setScale(0.34f);
+    auto updBtn = CCMenuItemSpriteExtra::create(updSpr, this, menu_selector(PaimonHubLayer::onCheckUpdate));
+    updBtn->setID("updates-btn"_spr);
+    updBtn->setPosition({winSize.width - 108.f, top - 20.f});
+    m_mainMenu->addChild(updBtn);
+
     float tabY = top - 20.f;
     std::vector<std::string> tabNames = {
         tr("pai.hub.tab.home", "Home"),
@@ -548,6 +515,8 @@ bool PaimonHubLayer::init() {
     buildNewsTab();
     buildForumTab();
     switchTab(0);
+    this->schedule(schedule_selector(PaimonHubLayer::refreshUpdateBadge), 1.f);
+    refreshUpdateBadge(0.f);
     return true;
 }
 
@@ -805,8 +774,13 @@ void PaimonHubLayer::buildHomeTab() {
         auto* versionLabel = CCLabelBMFont::create(verText.c_str(), "bigFont.fnt");
         versionLabel->setScale(0.24f);
         versionLabel->setColor({120, 130, 150});
-        versionLabel->setPosition({15.f + 135.f / 2.f, 13.f});
-        m_homeTab->addChild(versionLabel, 2);
+
+        auto* versionBtn = CCMenuItemExt::createSpriteExtra(versionLabel, [](CCMenuItemSpriteExtra*) {
+            if (auto popup = paimon::updates::UpdateCenterPopup::create()) popup->show();
+        });
+        versionBtn->setID("hub-version-btn"_spr);
+        versionBtn->setPosition({15.f + 135.f / 2.f, 13.f});
+        m_sidebarMenu->addChild(versionBtn);
     }
 
     switchHomeCategory(0);
@@ -1614,37 +1588,35 @@ void PaimonHubLayer::onBack(CCObject*) {
 
 void PaimonHubLayer::onCheckUpdate(CCObject*) {
     auto& checker = paimon::updates::UpdateChecker::get();
-    auto winSize = CCDirector::get()->getWinSize();
+    if (checker.state() == paimon::updates::UpdateChecker::State::Idle) {
+        checker.checkAsync();
+    }
+    if (auto popup = paimon::updates::UpdateCenterPopup::create()) popup->show();
+}
 
-    auto flash = [&](char const* text, cocos2d::ccColor3B color) {
-        auto msg = CCLabelBMFont::create(text, "bigFont.fnt");
-        msg->setScale(0.45f);
-        msg->setPosition({winSize.width / 2, winSize.height / 2});
-        msg->setColor(color);
-        this->addChild(msg, 100);
-        msg->runAction(CCSequence::create(CCDelayTime::create(1.8f), CCRemoveSelf::create(), nullptr));
-    };
+void PaimonHubLayer::refreshUpdateBadge(float) {
+    if (!m_mainMenu) return;
+    auto* btn = m_mainMenu->getChildByID("updates-btn"_spr);
+    if (!btn) return;
 
-    using S = paimon::updates::UpdateChecker::State;
-    switch (checker.state()) {
-        case S::Idle:
-        case S::Failed:
-            checker.checkAsync();
-            [[fallthrough]];
-        case S::Checking:
-            flash(tr("pai.update.checking", "Checking for updates...").c_str(), {100, 200, 255});
-            return;
-        case S::UpdateAvailable:
-            if (checker.downloadUrl().empty()) {
-                flash(tr("pai.update.failed", "Error: no download URL").c_str(), {255, 110, 110});
-                return;
-            }
-            if (auto popup = paimon::updates::UpdateProgressPopup::create()) popup->show();
-            return;
-        case S::UpToDate:
-        default:
-            flash(tr("pai.update.uptodate", "You're up to date!").c_str(), {120, 255, 120});
-            return;
+    auto& chk = paimon::updates::UpdateChecker::get();
+    bool wanted = chk.hasUpdate() || chk.hasPendingInstall();
+    auto* dot = btn->getChildByID("updates-btn-dot"_spr);
+
+    if (wanted && !dot) {
+        auto* mark = paimon::SpriteHelper::createColorPanel(9.f, 9.f, {255, 70, 70}, 255, 4.5f);
+        mark->setID("updates-btn-dot"_spr);
+        mark->setAnchorPoint({0.5f, 0.5f});
+        auto size = btn->getContentSize();
+        mark->setPosition({size.width - 3.f, size.height - 3.f});
+        btn->addChild(mark, 100);
+        mark->runAction(CCRepeatForever::create(CCSequence::create(
+            CCScaleTo::create(0.45f, 1.3f),
+            CCScaleTo::create(0.45f, 1.f),
+            nullptr
+        )));
+    } else if (!wanted && dot) {
+        dot->removeFromParent();
     }
 }
 

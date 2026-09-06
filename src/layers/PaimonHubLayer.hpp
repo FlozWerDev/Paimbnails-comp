@@ -103,6 +103,7 @@ public:
     void onOpenSupport(cocos2d::CCObject*);
     void onOpenDiscordConfig(cocos2d::CCObject*);
     void onCheckUpdate(cocos2d::CCObject*);
+    void refreshUpdateBadge(float dt);
     void onBack(cocos2d::CCObject*);
 
 protected:

@@ -29,8 +29,15 @@ std::string formatBytes(uint64_t b) {
 }
 
 UpdateProgressPopup* UpdateProgressPopup::create() {
+    auto& checker = UpdateChecker::get();
+    return create(checker.downloadUrl(), checker.remoteVersion(), nullptr);
+}
+
+UpdateProgressPopup* UpdateProgressPopup::create(
+    std::string url, std::string version, std::function<void()> onInstalled
+) {
     auto ret = new UpdateProgressPopup();
-    if (ret && ret->init()) {
+    if (ret && ret->init(std::move(url), std::move(version), std::move(onInstalled))) {
         ret->autorelease();
         return ret;
     }
@@ -38,10 +45,16 @@ UpdateProgressPopup* UpdateProgressPopup::create() {
     return nullptr;
 }
 
-bool UpdateProgressPopup::init() {
+bool UpdateProgressPopup::init(
+    std::string url, std::string version, std::function<void()> onInstalled
+) {
     if (!Popup::init(360.f, 200.f)) return false;
     paimon::markDynamicPopup(this);
     this->setTitle(tr("pai.update.title", "Downloading update"));
+
+    m_url = std::move(url);
+    m_version = std::move(version);
+    m_onInstalled = std::move(onInstalled);
 
     auto content = m_mainLayer->getContentSize();
     float cx = content.width / 2.f;
@@ -49,8 +62,8 @@ bool UpdateProgressPopup::init() {
     auto& checker = UpdateChecker::get();
 
     std::string verLine;
-    if (!checker.remoteVersion().empty()) {
-        verLine = fmt::format("{} -> {}", checker.localVersion(), checker.remoteVersion());
+    if (!m_version.empty()) {
+        verLine = fmt::format("{} -> {}", checker.localVersion(), m_version);
     } else {
         verLine = checker.localVersion();
     }
@@ -130,20 +143,21 @@ bool UpdateProgressPopup::init() {
 }
 
 void UpdateProgressPopup::startDownload() {
-    auto& checker = UpdateChecker::get();
-    if (checker.downloadUrl().empty()) {
+    if (m_url.empty()) {
         this->onDone(false, "no download url");
         return;
     }
 
     // WeakRef (not Ref): these callbacks are wrapped and held by the WebRequest,
     // whose progress callback runs off the main thread (see the queueInMainThread
-    // in UpdateChecker::downloadUpdate). A strong Ref could run cocos2d's
+    // in UpdateChecker::downloadRelease). A strong Ref could run cocos2d's
     // non-atomic release() off the main thread when the request tears down. We
     // lock() back on the main thread; a closed popup simply skips the update.
     WeakRef<UpdateProgressPopup> self = this;
 
-    checker.downloadUpdate(
+    UpdateChecker::get().downloadRelease(
+        m_url,
+        m_version,
         [self](uint64_t received, uint64_t total) {
             if (auto p = self.lock()) p->onProgress(received, total);
         },
@@ -201,6 +215,7 @@ void UpdateProgressPopup::onDone(bool ok, std::string const& msgOrPath) {
         if (m_percentLabel) m_percentLabel->setString("100%");
         if (m_cancelBtn) m_cancelBtn->setVisible(false);
         if (m_restartBtn) m_restartBtn->setVisible(true);
+        if (m_onInstalled) m_onInstalled();
     } else {
         if (m_statusLabel) {
             m_statusLabel->setString(

@@ -19,6 +19,8 @@ namespace {
 
 constexpr auto kReleasesApiUrl =
     "https://api.github.com/repos/FlozWerDev/Paimbnails/releases/latest";
+constexpr auto kReleaseListUrl =
+    "https://api.github.com/repos/FlozWerDev/Paimbnails/releases?per_page=60";
 constexpr auto kAssetName = "flozwer.paimbnails2.geode";
 
 // Strip 'v'/'V' prefix and surrounding whitespace from a version string.
@@ -29,19 +31,63 @@ std::string sanitizeVersion(std::string v) {
     return v;
 }
 
+std::string jsonString(matjson::Value const& obj, char const* key) {
+    if (!obj[key].isString()) return "";
+    return obj[key].asString().unwrapOr("");
+}
+
+// Older releases were published under other asset names, so fall back to any
+// .geode in the release rather than dropping it from the history.
+std::string pickGeodeAsset(matjson::Value const& release, uint64_t& outSize) {
+    if (!release["assets"].isArray()) return "";
+
+    std::string fallbackUrl;
+    uint64_t fallbackSize = 0;
+    for (auto const& asset : release["assets"]) {
+        auto name = jsonString(asset, "name");
+        auto url  = jsonString(asset, "browser_download_url");
+        if (url.empty()) continue;
+
+        uint64_t size = asset["size"].isNumber()
+            ? static_cast<uint64_t>(asset["size"].asUInt().unwrapOr(0)) : 0;
+
+        if (name == kAssetName) {
+            outSize = size;
+            return url;
+        }
+        if (fallbackUrl.empty() && name.size() > 6 &&
+            name.compare(name.size() - 6, 6, ".geode") == 0) {
+            fallbackUrl = url;
+            fallbackSize = size;
+        }
+    }
+    outSize = fallbackSize;
+    return fallbackUrl;
+}
+
+} // namespace
+
+UpdateChecker::UpdateChecker()
+    : m_localVersion(Mod::get()->getVersion().toVString(false)) {}
+
+UpdateChecker& UpdateChecker::get() {
+    static UpdateChecker s;
+    return s;
+}
+
 // Hierarchical semver comparison.
-// Returns >0 if remote > local, 0 if equal, <0 if remote < local.
+// Returns >0 if other > base, 0 if equal, <0 if other < base.
 // Uses Geode VersionInfo if parseable; falls back to numeric component comparison.
-int compareVersions(std::string const& localStr, std::string const& remoteStr) {
-    auto local  = sanitizeVersion(localStr);
-    auto remote = sanitizeVersion(remoteStr);
+int UpdateChecker::compareVersions(std::string const& baseStr, std::string const& otherStr) {
+    auto base  = sanitizeVersion(baseStr);
+    auto other = sanitizeVersion(otherStr);
 
-    auto localRes  = VersionInfo::parse("v" + local);
-    auto remoteRes = VersionInfo::parse("v" + remote);
+    auto baseRes  = VersionInfo::parse("v" + base);
+    auto otherRes = VersionInfo::parse("v" + other);
 
-    if (localRes.isOk() && remoteRes.isOk()) {
-        auto const& l = localRes.unwrap();
-        auto const& r = remoteRes.unwrap();
+    if (baseRes.isOk() && otherRes.isOk()) {
+        auto const& l = baseRes.unwrap();
+        auto const& r = otherRes.unwrap();
         if (r > l) return 1;
         if (r < l) return -1;
         return 0;
@@ -65,8 +111,8 @@ int compareVersions(std::string const& localStr, std::string const& remoteStr) {
         return out;
     };
 
-    auto la = split(local);
-    auto ra = split(remote);
+    auto la = split(base);
+    auto ra = split(other);
     size_t n = std::max(la.size(), ra.size());
     la.resize(n, 0);
     ra.resize(n, 0);
@@ -77,15 +123,9 @@ int compareVersions(std::string const& localStr, std::string const& remoteStr) {
     return 0;
 }
 
-} // namespace
-
-UpdateChecker& UpdateChecker::get() {
-    static UpdateChecker s;
-    return s;
-}
-
-void UpdateChecker::checkAsync() {
-    if (m_checkLaunched) return;
+void UpdateChecker::checkAsync(bool force) {
+    if (m_state.load() == State::Checking) return;
+    if (m_checkLaunched && !force) return;
     m_checkLaunched = true;
     m_state.store(State::Checking);
 
@@ -132,10 +172,7 @@ void UpdateChecker::onCheckResponse(web::WebResponse& res) {
     }
     auto json = parsed.unwrap();
 
-    std::string tag;
-    if (json["tag_name"].isString()) {
-        tag = json["tag_name"].asString().unwrapOr("");
-    }
+    std::string tag = jsonString(json, "tag_name");
     if (tag.empty()) {
         m_lastError = "no tag_name";
         m_state.store(State::Failed);
@@ -145,19 +182,8 @@ void UpdateChecker::onCheckResponse(web::WebResponse& res) {
     m_remoteVersion = sanitizeVersion(tag);
 
     // Build download URL: prefer the expected asset name, fall back to the known release URL pattern.
-    m_downloadUrl.clear();
-    if (json["assets"].isArray()) {
-        for (auto const& asset : json["assets"]) {
-            std::string name = asset["name"].isString()
-                ? asset["name"].asString().unwrapOr("") : "";
-            std::string url  = asset["browser_download_url"].isString()
-                ? asset["browser_download_url"].asString().unwrapOr("") : "";
-            if (name == kAssetName && !url.empty()) {
-                m_downloadUrl = url;
-                break;
-            }
-        }
-    }
+    uint64_t assetSize = 0;
+    m_downloadUrl = pickGeodeAsset(json, assetSize);
     if (m_downloadUrl.empty()) {
         m_downloadUrl = fmt::format(
             "https://github.com/FlozWerDev/Paimbnails/releases/download/{}/{}",
@@ -182,17 +208,114 @@ void UpdateChecker::onCheckResponse(web::WebResponse& res) {
     }
 }
 
+void UpdateChecker::fetchReleasesAsync(std::function<void(bool, std::string)> onDone) {
+    if (m_releasesLoading) {
+        if (onDone) m_releaseWaiters.push_back(std::move(onDone));
+        return;
+    }
+
+    m_releasesLoading = true;
+    if (onDone) m_releaseWaiters.push_back(std::move(onDone));
+
+    auto req = web::WebRequest()
+        .timeout(std::chrono::seconds(20))
+        .userAgent("Paimbnails-UpdateChecker/1.0")
+        .header("Accept", "application/vnd.github+json");
+
+    WebHelper::dispatchOwned(
+        m_releasesTask,
+        std::move(req),
+        "GET",
+        kReleaseListUrl,
+        [this](web::WebResponse res) {
+            if (paimon::isRuntimeShuttingDown()) return;
+            this->onReleasesResponse(res);
+        }
+    );
+}
+
+void UpdateChecker::onReleasesResponse(web::WebResponse& res) {
+    if (!res.ok()) {
+        this->finishReleasesFetch(false, fmt::format("HTTP {}", res.code()));
+        return;
+    }
+
+    auto parsed = matjson::parse(res.string().unwrapOr(""));
+    if (!parsed.isOk() || !parsed.unwrap().isArray()) {
+        this->finishReleasesFetch(false, "invalid json");
+        return;
+    }
+
+    std::vector<ReleaseInfo> list;
+    for (auto const& entry : parsed.unwrap()) {
+        if (entry["draft"].isBool() && entry["draft"].asBool().unwrapOr(false)) continue;
+
+        ReleaseInfo info;
+        info.tag = jsonString(entry, "tag_name");
+        if (info.tag.empty()) continue;
+
+        info.version = sanitizeVersion(info.tag);
+        info.name = jsonString(entry, "name");
+        if (info.name.empty()) info.name = info.tag;
+        info.notes = jsonString(entry, "body");
+        info.prerelease = entry["prerelease"].isBool()
+            && entry["prerelease"].asBool().unwrapOr(false);
+
+        // published_at is ISO-8601; only the day matters in the picker.
+        auto published = jsonString(entry, "published_at");
+        info.date = published.size() >= 10 ? published.substr(0, 10) : published;
+
+        info.downloadUrl = pickGeodeAsset(entry, info.size);
+        list.push_back(std::move(info));
+    }
+
+    // The API sorts by creation date, which drifts from the version order once a
+    // patch for an older branch is published late.
+    std::stable_sort(list.begin(), list.end(), [](ReleaseInfo const& a, ReleaseInfo const& b) {
+        return compareVersions(a.version, b.version) > 0;
+    });
+
+    m_releases = std::move(list);
+    m_releasesLoaded = true;
+    log::info("[UpdateChecker] {} releases listed", m_releases.size());
+    this->finishReleasesFetch(true, "");
+}
+
+void UpdateChecker::finishReleasesFetch(bool ok, std::string error) {
+    m_releasesLoading = false;
+    if (!ok) {
+        m_lastError = error;
+        log::warn("[UpdateChecker] release list failed: {}", error);
+    }
+
+    auto waiters = std::move(m_releaseWaiters);
+    m_releaseWaiters.clear();
+    for (auto const& cb : waiters) {
+        if (cb) cb(ok, error);
+    }
+}
+
 void UpdateChecker::downloadUpdate(
     std::function<void(uint64_t, uint64_t)> onProgress,
     std::function<void(bool, std::string)> onDone
 ) {
-    if (m_downloadUrl.empty()) {
+    this->downloadRelease(m_downloadUrl, m_remoteVersion, std::move(onProgress), std::move(onDone));
+}
+
+void UpdateChecker::downloadRelease(
+    std::string url,
+    std::string version,
+    std::function<void(uint64_t, uint64_t)> onProgress,
+    std::function<void(bool, std::string)> onDone
+) {
+    if (url.empty()) {
         if (onDone) onDone(false, "no download url");
         return;
     }
 
     m_downloadCancelled.store(false);
     m_installedPendingRestart.store(false);
+    m_pendingVersion.clear();
 
     // Progress callback dispatches to the main thread before touching UI.
     auto progressShared = std::make_shared<std::function<void(uint64_t, uint64_t)>>(std::move(onProgress));
@@ -215,8 +338,8 @@ void UpdateChecker::downloadUpdate(
         m_downloadTask,
         std::move(req),
         "GET",
-        m_downloadUrl,
-        [this, doneShared](web::WebResponse res) {
+        url,
+        [this, doneShared, version](web::WebResponse res) {
             auto fail = [doneShared](std::string err) {
                 if (doneShared && *doneShared) (*doneShared)(false, std::move(err));
             };
@@ -257,8 +380,9 @@ void UpdateChecker::downloadUpdate(
                 return;
             }
 
+            m_pendingVersion = version;
             m_installedPendingRestart.store(true);
-            log::info("[UpdateChecker] Update written in place at {}",
+            log::info("[UpdateChecker] Version {} written in place at {}", version,
                 geode::utils::string::pathToString(packagePath));
 
             if (doneShared && *doneShared) {

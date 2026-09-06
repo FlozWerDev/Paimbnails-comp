@@ -4,6 +4,7 @@
 #include "../features/guide/services/PaimonGuideService.hpp"
 #include "../features/guide/GuideEvents.hpp"
 #include "../features/updates/services/UpdateChecker.hpp"
+#include "../features/updates/ui/UpdateCenterPopup.hpp"
 #include "../ui/FeatureInfoPopup.hpp"
 #include "../ui/FeatureConfigPopup.hpp"
 #include "../utils/SpriteHelper.hpp"
@@ -193,6 +194,13 @@ void PaimonHubLayer::buildGDShell() {
     uiBtn->setPosition({winSize.width - 42.f, top - 20.f});
     m_mainMenu->addChild(uiBtn);
 
+    auto updSpr = ButtonSprite::create(tr("pai.hub.btn.updates", "Updates").c_str(), "bigFont.fnt", "GJ_button_02.png", .8f);
+    updSpr->setScale(0.32f);
+    auto updBtn = CCMenuItemSpriteExtra::create(updSpr, this, menu_selector(PaimonHubLayer::onCheckUpdate));
+    updBtn->setID("updates-btn"_spr);
+    updBtn->setPosition({winSize.width - 100.f, top - 20.f});
+    m_mainMenu->addChild(updBtn);
+
     auto addTab = [this](CCLayerRGBA*& tab, CCMenu*& menu, char const* tabId, char const* menuId, bool visible) {
         tab = CCLayerRGBA::create();
         tab->setID(tabId);
@@ -221,10 +229,18 @@ void PaimonHubLayer::buildGDShell() {
         verLbl->setScale(0.2f);
         verLbl->setColor({180, 195, 235});
         verLbl->setOpacity(160);
-        verLbl->setAnchorPoint({0.f, 0.5f});
-        verLbl->setPosition({17.f, 7.f});
-        this->addChild(verLbl, 2);
+
+        auto* verBtn = CCMenuItemExt::createSpriteExtra(verLbl, [](CCMenuItemSpriteExtra*) {
+            if (auto popup = paimon::updates::UpdateCenterPopup::create()) popup->show();
+        });
+        verBtn->setID("hub-version-btn"_spr);
+        verBtn->setAnchorPoint({0.f, 0.5f});
+        verBtn->setPosition({17.f, 7.f});
+        m_mainMenu->addChild(verBtn);
     }
+
+    this->schedule(schedule_selector(PaimonHubLayer::refreshUpdateBadge), 1.f);
+    refreshUpdateBadge(0.f);
 
     if (!Mod::get()->getSavedValue<bool>("hub-gd-tour-done", false)) {
         this->runAction(CCSequence::create(

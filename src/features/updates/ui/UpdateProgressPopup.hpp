@@ -3,6 +3,8 @@
 #include <Geode/ui/Popup.hpp>
 #include <Geode/binding/CCMenuItemSpriteExtra.hpp>
 #include <Geode/binding/ButtonSprite.hpp>
+#include <functional>
+#include <string>
 
 namespace paimon::updates {
 
@@ -11,8 +13,14 @@ class UpdateProgressPopup : public geode::Popup {
 public:
     static UpdateProgressPopup* create();
 
+    // Descarga una version concreta del historial; onInstalled avisa al Centro
+    // de Actualizaciones para que refresque sus botones.
+    static UpdateProgressPopup* create(
+        std::string url, std::string version, std::function<void()> onInstalled = nullptr
+    );
+
 protected:
-    bool init() override;
+    bool init(std::string url, std::string version, std::function<void()> onInstalled);
 
     void startDownload();
     void onProgress(uint64_t received, uint64_t total);
@@ -31,6 +39,10 @@ private:
     cocos2d::CCMenu* m_actionMenu = nullptr;
     CCMenuItemSpriteExtra* m_cancelBtn = nullptr;
     CCMenuItemSpriteExtra* m_restartBtn = nullptr;
+
+    std::string m_url;
+    std::string m_version;
+    std::function<void()> m_onInstalled;
 
     bool m_finished = false;
     bool m_succeeded = false;

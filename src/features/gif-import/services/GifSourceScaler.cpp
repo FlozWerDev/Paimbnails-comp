@@ -23,6 +23,19 @@ namespace {
 // va a acabar viendo.
 constexpr int kWorkingFactor = 4;
 constexpr int kMinWorking = 128;
+// The importer ignores alpha below this value by default. If the GPU path
+// returns only weaker alpha, the next stage reports a perfectly good image as
+// completely transparent, so treat that result as unusable and retry on CPU.
+constexpr std::uint8_t kImportAlphaThreshold = 96;
+
+bool hasVisibleAlpha(SourceAnimation const& animation) {
+    for (auto const& frame : animation.frames) {
+        for (std::size_t index = 3; index < frame.rgba.size(); index += 4) {
+            if (frame.rgba[index] >= kImportAlphaThreshold) return true;
+        }
+    }
+    return false;
+}
 
 // Cada frame deja media docena de render targets por el camino. Sin una piscina
 // propia no se sueltan hasta el final del fotograma, y un video entero se come
@@ -179,6 +192,13 @@ bool reduceOnGpu(
         }
         image->release();
         if (!usable) return false;
+    }
+    // Some drivers/FBO combinations can complete the render pass while
+    // returning a transparent readback. Do not let that poison every large
+    // image: the caller will replace the target with the CPU reduction.
+    if (hasVisibleAlpha(source) && !hasVisibleAlpha(target)) {
+        log::warn("[GifImport] GPU downscale returned no visible alpha; using CPU fallback");
+        return false;
     }
     return true;
 }

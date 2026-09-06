@@ -249,6 +249,24 @@ std::vector<std::uint8_t> backgroundMask(
         if (y > 0) tryPush(x, y - 1);
         if (y + 1 < height) tryPush(x, y + 1);
     }
+
+    // A flat image has the same colour on every border pixel, so the automatic
+    // detector quite correctly identifies the whole canvas as background. It
+    // must not turn a valid solid image into the "completely transparent"
+    // error, though. Keep the original pixels when the mask removed every
+    // visible pixel; genuinely empty images still remain empty and are rejected
+    // by the palette stage.
+    std::size_t visible = 0;
+    std::size_t kept = 0;
+    for (std::size_t index = 0; index < removed.size(); ++index) {
+        auto const pixel = sourcePixel(frame, index);
+        if (pixel.a < options.alphaThreshold) continue;
+        ++visible;
+        if (!removed[index]) ++kept;
+    }
+    if (visible > 0 && kept == 0) {
+        std::fill(removed.begin(), removed.end(), 0);
+    }
     return removed;
 }
 

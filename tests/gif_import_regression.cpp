@@ -116,6 +116,16 @@ bool borderBackgroundIsRemoved() {
     return pass;
 }
 
+bool automaticBackgroundKeepsSolidImage() {
+    auto source = animation(8, 8, 1, 70, 145, 230);
+    auto options = exactOptions(8);
+    options.background = BackgroundMode::AutoBorder;
+    auto result = buildPlan(source, options);
+    bool const pass = result && !result.plan.staticObjects.empty();
+    std::cout << "background-solid: " << (pass ? "kept" : result.error) << '\n';
+    return pass;
+}
+
 bool temporalStrategyKeepsStaticArt() {
     auto source = animation(4, 2, 2, 0, 0, 0, 0);
     for (int frame = 0; frame < 2; ++frame) {
@@ -1380,6 +1390,7 @@ int main() {
     bool const watermark = imageWatermarkIsDistributedAndDetectable();
     bool const blockSweeps = blockPackingAvoidsDirectionBias();
     bool const background = borderBackgroundIsRemoved();
+    bool const backgroundSolid = automaticBackgroundKeepsSolidImage();
     bool const temporal = temporalStrategyKeepsStaticArt();
     bool const duplicates = duplicateFramesCollapse();
     bool const schedule = frameZeroDoesNotNeedAFullReset();
@@ -1426,6 +1437,7 @@ int main() {
     if (!watermark) std::cerr << "FAIL: image watermark was not distributed or detected\n";
     if (!blockSweeps) std::cerr << "FAIL: block packing kept avoidable thin strips\n";
     if (!background) std::cerr << "FAIL: connected border background was not removed\n";
+    if (!backgroundSolid) std::cerr << "FAIL: automatic background removed a solid image\n";
     if (!temporal) std::cerr << "FAIL: temporal optimization did not preserve static art\n";
     if (!duplicates) std::cerr << "FAIL: duplicate frames were not collapsed\n";
     if (!schedule) std::cerr << "FAIL: frame zero still emits redundant reset triggers\n";
@@ -1467,7 +1479,7 @@ int main() {
     if (!render) std::cerr << "FAIL: render mode did not refine within its object budget\n";
     if (!renderBalance) std::cerr << "FAIL: render mode kept adding objects after reaching its target\n";
     if (!renderAnimation) std::cerr << "FAIL: render animation exceeded its object budget\n";
-    return solid && watermark && blockSweeps && background && temporal && duplicates && schedule && noLoop && playback &&
+    return solid && watermark && blockSweeps && background && backgroundSolid && temporal && duplicates && schedule && noLoop && playback &&
         budget && circle && stroke && triangle && curve && colors && artAnimation &&
         motion && motionFrames && glow &&
         paintCoverage && paintStrokes && paintRepairs && paintSolidRect && paintMergedRects &&

@@ -26,6 +26,7 @@
 #include "../../colorful-icons/ui/PaimonIconsConfigPopup.hpp"
 #include "../../capture/ui/CaptureMenuPopup.hpp"
 #include "../../community/ui/CommunityHubLayer.hpp"
+#include "../../updates/ui/UpdateCenterPopup.hpp"
 #include "../../editor-filters/ui/MyLevelFilterPopup.hpp"
 #include "../../death-effects/ui/DeathEffectPopup.hpp"
 #include "../../gameplay-performance/ui/GameplayPerformancePopup.hpp"
@@ -1067,21 +1068,23 @@ void PopupRegistry::registerAll() {
         e.weight = 80;
         e.displayNameByLang["english"] = "Update Paimbnails";
         e.displayNameByLang["spanish"] = "Actualizar Paimbnails";
-        e.aliasesByLang["english"] = {"update", "updates", "version", "upgrade", "check for updates", "new version"};
-        e.aliasesByLang["spanish"] = {"actualizar", "actualizacion", "version", "nueva version", "buscar actualizaciones"};
+        e.aliasesByLang["english"] = {"update", "updates", "version", "upgrade", "check for updates", "new version", "old version", "downgrade", "rollback"};
+        e.aliasesByLang["spanish"] = {"actualizar", "actualizacion", "version", "nueva version", "buscar actualizaciones", "version antigua", "versiones antiguas", "volver atras"};
         e.searchPhrasesByLang["english"] = {
-            "update the mod", "is there a new version", "install latest paimbnails"
+            "update the mod", "is there a new version", "install latest paimbnails",
+            "go back to an old version"
         };
         e.searchPhrasesByLang["spanish"] = {
-            "actualizar el mod", "hay una version nueva", "instalar ultima version"
+            "actualizar el mod", "hay una version nueva", "instalar ultima version",
+            "volver a una version antigua"
         };
         e.descriptionByLang["english"] =
-            "<cy>Update Paimbnails!</c> Check for and install the latest version from "
-            "<cy>Paimon Hub > Extras > Actualizar</c>. Auto-update can be toggled in Mod Settings.";
+            "<cy>Updates!</c> The <cy>Updates</c> button in the Paimon Hub top bar checks for a new "
+            "version, lists every past release and lets you go back to an older one.";
         e.descriptionByLang["spanish"] =
-            "<cy>Actualizar Paimbnails!</c> Busca e instala la ultima version desde "
-            "<cy>Paimon Hub > Extras > Actualizar</c>. La auto-actualizacion se activa en Ajustes del Mod.";
-        e.open = openHub();
+            "<cy>Actualizaciones!</c> El boton <cy>Actualizar</c> de la barra superior del Paimon Hub "
+            "busca nueva version, lista todas las anteriores y te deja volver a una antigua.";
+        e.open = openSimple<paimon::updates::UpdateCenterPopup>();
         m_entries.push_back(std::move(e));
     }
 
