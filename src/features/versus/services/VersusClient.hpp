@@ -42,8 +42,18 @@ struct MatchInfo {
     uint64_t seed = 0;
     int countdownMs = 0;
     bool catchUp = true;
+    // The server decides this, not the format: every friendly is unranked even
+    // when it is played under Race.
+    bool ranked = true;
     std::vector<std::string> mutators;
     std::vector<LevelOffer> offers;
+};
+
+// Either half of a friendly. The server hands back a code to pass around when
+// nobody was named, and a match id when the duel is already open.
+struct ChallengeResult {
+    std::string code;
+    std::string matchId;
 };
 
 struct QueueTicket {
@@ -69,6 +79,8 @@ public:
     using MatchCallback  = geode::CopyableFunction<void(bool ok, MatchInfo const& match)>;
     using BoardCallback  = geode::CopyableFunction<void(bool ok, std::vector<LeaderboardRow> const& rows)>;
     using PoolCallback   = geode::CopyableFunction<void(bool ok, std::vector<LevelOffer> const& levels)>;
+    using ChallengeCallback = geode::CopyableFunction<void(bool ok, ChallengeResult const& result,
+                                                           std::string const& message)>;
     // Someone else's profile never touches the local store: that cache is for
     // the player's own rank and overwriting it from a profile visit would show
     // them a stranger's ladder.
@@ -98,7 +110,9 @@ public:
                       SideState const& rival, Outcome outcome, OkCallback cb);
     void forfeit(std::string const& matchId, OkCallback cb);
 
-    void challenge(std::string const& username, Mode mode, Format format, MatchCallback cb);
+    // An empty target asks for a code to share; a six character code joins the
+    // invite behind it; anything else is read as a username.
+    void challenge(std::string const& target, Mode mode, Format format, ChallengeCallback cb);
 
     void fetchProfile(int accountId, ProfileCallback cb);
     void fetchLeaderboard(Mode mode, std::string const& scope, BoardCallback cb);

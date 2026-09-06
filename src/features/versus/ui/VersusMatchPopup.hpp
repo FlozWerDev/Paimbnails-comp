@@ -6,13 +6,15 @@
 #include <Geode/Geode.hpp>
 #include <Geode/binding/CCMenuItemSpriteExtra.hpp>
 
+#include <string>
 #include <vector>
 
 namespace paimon::versus {
 
 // One modal for the whole run-up to a duel: the rival appears, both accept,
 // each vetoes a level, and the level opens. Splitting it in three popups would
-// only make the screen flicker between steps that are seconds apart.
+// only make the screen flicker between steps that are seconds apart, so instead
+// the three steps are drawn as a strip at the top and the one in play is lit.
 class VersusMatchPopup : public geode::Popup {
 public:
     static VersusMatchPopup* create();
@@ -24,6 +26,7 @@ protected:
 
     void rebuild();
     uint32_t offerStamp() const;
+    void buildSteps(cocos2d::CCNode* page, Phase phase);
     void buildFound(cocos2d::CCNode* page);
     void buildBanning(cocos2d::CCNode* page);
     void buildLoading(cocos2d::CCNode* page);

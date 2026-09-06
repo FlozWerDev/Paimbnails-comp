@@ -1,9 +1,11 @@
 #include "VersusHubLayer.hpp"
 #include "VersusDeckPopup.hpp"
+#include "VersusFriendlyPopup.hpp"
 #include "VersusHistoryPopup.hpp"
 #include "VersusLeaderboardLayer.hpp"
 #include "VersusMatchPopup.hpp"
 #include "VersusSeasonPopup.hpp"
+#include "VersusUIKit.hpp"
 #include "../data/VersusModes.hpp"
 #include "../services/VersusClient.hpp"
 #include "../services/VersusGlobed.hpp"
@@ -11,7 +13,6 @@
 #include "../services/VersusStore.hpp"
 #include "../../backgrounds/services/LayerBackgroundManager.hpp"
 #include "../../../utils/Localization.hpp"
-#include "../../../utils/PaimonNotification.hpp"
 #include "../../../utils/SpriteHelper.hpp"
 
 #include <Geode/ui/BasedButtonSprite.hpp>
@@ -29,11 +30,76 @@ namespace {
 constexpr int kModeTag = 4000;
 constexpr int kFormatTag = 4100;
 
-CCLabelBMFont* makeLabel(char const* text, char const* font, float scale, CCPoint const& pos) {
-    auto* label = CCLabelBMFont::create(text, font);
-    label->setScale(scale);
-    label->setPosition(pos);
-    return label;
+constexpr float kMargin = 12.f;
+constexpr float kGap = 8.f;
+constexpr float kRankW = 150.f;
+constexpr float kMoreW = 112.f;
+constexpr float kRowH = 44.f;
+
+// What the format costs you in time or in tries, which is the one thing the
+// win condition never says.
+std::string limitText(FormatDef const& def) {
+    auto& loc = Localization::get();
+    if (def.attemptLimit > 0) {
+        return fmt::format(fmt::runtime(loc.getString("versus.limit.attempts")), def.attemptLimit);
+    }
+    if (def.timeLimit > 0) {
+        return fmt::format("{}:{:02d}", def.timeLimit / 60, def.timeLimit % 60);
+    }
+    return loc.getString("versus.limit.none");
+}
+
+CCNode* buildFormatRow(FormatDef const& def, float width, bool selected) {
+    auto* row = CCNode::create();
+    row->setContentSize({width, kRowH});
+    row->setAnchorPoint({0.5f, 0.5f});
+
+    if (auto* bg = paimon::SpriteHelper::createDarkPanel(width, kRowH - 4.f,
+                                                         selected ? 165 : 85, 4.f)) {
+        bg->setPosition({0.f, 2.f});
+        row->addChild(bg, 0);
+    }
+
+    if (selected) {
+        auto* mark = CCLayerColor::create(ccColor4B{255, 226, 140, 235}, 3.f, kRowH - 12.f);
+        mark->setPosition({4.f, 6.f});
+        row->addChild(mark, 1);
+    }
+
+    float textX = 14.f;
+    if (auto* glyph = paimon::SpriteHelper::safeCreate(formatSprite(def).c_str())) {
+        glyph->setScale(26.f / std::max(1.f, glyph->getContentSize().width));
+        glyph->setPosition({28.f, kRowH / 2.f});
+        if (!selected) glyph->setColor({198, 204, 220});
+        row->addChild(glyph, 1);
+        textX = 46.f;
+    }
+
+    auto* limit = CCLabelBMFont::create(limitText(def).c_str(), "chatFont.fnt");
+    limit->setAnchorPoint({1.f, 0.5f});
+    limit->setScale(0.38f);
+    limit->setOpacity(selected ? 210 : 150);
+    limit->setPosition({width - 10.f, kRowH - 15.f});
+    row->addChild(limit, 1);
+
+    float const textW = width - textX - limit->getScaledContentSize().width - 18.f;
+
+    auto* name = CCLabelBMFont::create(formatName(def).c_str(), "bigFont.fnt");
+    name->setAnchorPoint({0.f, 0.5f});
+    name->setScale(std::min(0.44f, textW / std::max(1.f, name->getContentSize().width)));
+    name->setColor(selected ? ui::kAccent : ccColor3B{235, 238, 246});
+    name->setPosition({textX, kRowH - 15.f});
+    row->addChild(name, 1);
+
+    auto* rule = CCLabelBMFont::create(formatWinCondition(def).c_str(), "chatFont.fnt");
+    rule->setAnchorPoint({0.f, 0.5f});
+    rule->setScale(std::min(0.4f, (width - textX - 12.f) /
+                                  std::max(1.f, rule->getContentSize().width)));
+    rule->setOpacity(selected ? 220 : 165);
+    rule->setPosition({textX, 15.f});
+    row->addChild(rule, 1);
+
+    return row;
 }
 
 } // namespace
@@ -64,12 +130,21 @@ bool VersusHubLayer::init() {
     m_menu->setPosition(0.f, 0.f);
     this->addChild(m_menu, 20);
 
+    auto const winSize = CCDirector::get()->getWinSize();
+    float const top = winSize.height - 46.f;
+    float const bottom = 74.f;
+    float const height = top - bottom;
+    float const midW = std::max(170.f, winSize.width - 2.f * kMargin - kRankW - kMoreW - 2.f * kGap);
+
     buildChrome();
-    buildRankPanel();
-    buildFormatGrid();
-    buildActions();
+    buildRankPanel({kMargin, bottom, kRankW, height});
+    buildFormatPanel({kMargin + kRankW + kGap, bottom, midW, height});
+    buildShortcuts({winSize.width - kMargin - kMoreW, bottom, kMoreW, height});
+    buildActions(48.f);
+
     refreshRank();
     refreshFormats();
+    refreshPlayButton();
     return true;
 }
 
@@ -84,9 +159,9 @@ void VersusHubLayer::buildChrome() {
     }
 
     if (auto* logo = paimon::SpriteHelper::safeCreate("paim_vsLogo.png"_spr)) {
-        logo->setScale(46.f / std::max(1.f, logo->getContentSize().height));
-        logo->setPosition({winSize.width / 2.f, winSize.height - 26.f});
-        logo->setColor({255, 226, 140});
+        logo->setScale(34.f / std::max(1.f, logo->getContentSize().height));
+        logo->setPosition({winSize.width / 2.f, winSize.height - 24.f});
+        logo->setColor(ui::kAccent);
         this->addChild(logo, 10);
     }
 
@@ -98,113 +173,145 @@ void VersusHubLayer::buildChrome() {
     backBtn->setPosition(25.f, winSize.height - 25.f);
     m_menu->addChild(backBtn);
 
-    m_status = makeLabel("", "chatFont.fnt", 0.5f, {winSize.width / 2.f, 14.f});
-    m_status->setOpacity(150);
+    // The fast channel is a rule of the ladder, so it says so up here instead
+    // of only turning up as an error the moment somebody presses play.
+    m_globedLabel = ui::makeText("", "chatFont.fnt", 0.42f,
+                                 {winSize.width - 14.f, winSize.height - 22.f});
+    m_globedLabel->setAnchorPoint({1.f, 0.5f});
+    this->addChild(m_globedLabel, 10);
+    refreshGlobed();
+
+    m_status = ui::makeText("", "chatFont.fnt", 0.46f, {winSize.width / 2.f, 12.f});
+    m_status->setOpacity(190);
     this->addChild(m_status, 10);
 }
 
-void VersusHubLayer::buildRankPanel() {
-    auto const winSize = CCDirector::get()->getWinSize();
+void VersusHubLayer::buildRankPanel(CCRect const& area) {
+    auto& loc = Localization::get();
 
-    m_rankPanel = CCNode::create();
-    m_rankPanel->setPosition({winSize.width * 0.26f, winSize.height * 0.5f});
+    m_rankPanel = ui::makePanel(area.size, loc.getString("versus.hub.rank"));
+    m_rankPanel->setPosition({area.getMidX(), area.getMidY()});
     this->addChild(m_rankPanel, 5);
 
-    if (auto* panel = paimon::SpriteHelper::safeCreateScale9("square02b_001.png")) {
-        panel->setContentSize({168.f, 190.f});
-        panel->setPosition({0.f, 0.f});
-        panel->setColor({0, 0, 0});
-        panel->setOpacity(120);
-        m_rankPanel->addChild(panel, -1);
-    }
+    auto const body = ui::panelBody(area.size);
 
-    m_badge = VersusRankBadgeNode::create(VersusStore::get().rank(m_mode), 92.f);
-    m_badge->setPosition({0.f, 34.f});
-    m_rankPanel->addChild(m_badge, 1);
-
-    m_rankLabel = makeLabel("", "goldFont.fnt", 0.62f, {0.f, -32.f});
-    m_rankPanel->addChild(m_rankLabel, 1);
-
-    m_eloLabel = makeLabel("", "bigFont.fnt", 0.44f, {0.f, -52.f});
-    m_rankPanel->addChild(m_eloLabel, 1);
-
-    m_recordLabel = makeLabel("", "chatFont.fnt", 0.52f, {0.f, -70.f});
-    m_recordLabel->setOpacity(190);
-    m_rankPanel->addChild(m_recordLabel, 1);
-
-    // Mode toggle sits above the badge: the two ladders never mix, so switching
-    // here swaps everything the panel shows.
+    // The two ladders never mix, so the toggle lives inside the panel it
+    // rewrites rather than floating above it.
     char const* labels[] = {"Classic", "Platformer"};
+    float const tabW = (body.size.width - 4.f) / 2.f;
     for (int i = 0; i < 2; i++) {
-        auto* face = ButtonSprite::create(labels[i], 74, true, "bigFont.fnt", "GJ_button_04.png", 24.f, 0.4f);
-        auto* btn = CCMenuItemSpriteExtra::create(face, this, menu_selector(VersusHubLayer::onMode));
+        auto* btn = ui::makeTab(labels[i], tabW, this, menu_selector(VersusHubLayer::onMode));
         btn->setTag(kModeTag + i);
-        btn->setPosition(m_rankPanel->getPositionX() + (i == 0 ? -40.f : 40.f),
-                         m_rankPanel->getPositionY() + 112.f);
+        btn->setPosition({
+            area.origin.x + body.origin.x + tabW / 2.f + i * (tabW + 4.f),
+            area.origin.y + body.getMaxY() - 14.f,
+        });
         m_menu->addChild(btn);
         m_modeButtons.push_back(btn);
     }
+
+    float const centerX = area.size.width / 2.f;
+
+    m_badge = VersusRankBadgeNode::create(VersusStore::get().rank(m_mode), 80.f);
+    m_badge->setPosition({centerX, body.getMaxY() - 70.f});
+    m_rankPanel->addChild(m_badge, 1);
+
+    m_rankLabel = ui::makeText("", "goldFont.fnt", 0.56f,
+                               {centerX, body.origin.y + 46.f});
+    m_rankPanel->addChild(m_rankLabel, 1);
+
+    m_eloLabel = ui::makeText("", "bigFont.fnt", 0.44f,
+                              {centerX, body.origin.y + 26.f});
+    m_rankPanel->addChild(m_eloLabel, 1);
+
+    if (auto* rule = ui::makeDivider(body.size.width - 20.f)) {
+        rule->setPosition({body.origin.x + 10.f, body.origin.y + 16.f});
+        m_rankPanel->addChild(rule, 1);
+    }
+
+    m_recordLabel = ui::makeText("", "chatFont.fnt", 0.5f,
+                                 {centerX, body.origin.y + 6.f});
+    m_recordLabel->setOpacity(200);
+    m_rankPanel->addChild(m_recordLabel, 1);
 }
 
-void VersusHubLayer::buildFormatGrid() {
-    auto const winSize = CCDirector::get()->getWinSize();
+void VersusHubLayer::buildFormatPanel(CCRect const& area) {
+    auto& loc = Localization::get();
 
-    m_formatPanel = CCNode::create();
-    m_formatPanel->setPosition({winSize.width * 0.66f, winSize.height * 0.5f});
+    m_formatPanel = ui::makePanel(area.size, loc.getString("versus.formats"));
+    m_formatPanel->setPosition({area.getMidX(), area.getMidY()});
     this->addChild(m_formatPanel, 5);
 
-    auto* title = makeLabel(Localization::get().getString("versus.formats").c_str(),
-                            "goldFont.fnt", 0.5f, {0.f, 92.f});
-    m_formatPanel->addChild(title, 1);
+    auto const body = ui::panelBody(area.size);
+
+    auto* hint = ui::makeText(loc.getString("versus.hub.pick-format"), "chatFont.fnt", 0.4f,
+                              {area.size.width / 2.f, body.getMaxY() - 8.f});
+    hint->setOpacity(160);
+    m_formatPanel->addChild(hint, 1);
+
+    m_formatList = ScrollLayer::create({body.size.width, body.size.height - 20.f});
+    m_formatList->setPosition({body.origin.x, body.origin.y});
+    m_formatPanel->addChild(m_formatList, 1);
 }
 
-void VersusHubLayer::buildActions() {
+void VersusHubLayer::buildShortcuts(CCRect const& area) {
+    auto& loc = Localization::get();
+
+    auto* panel = ui::makePanel(area.size, loc.getString("versus.hub.more"));
+    panel->setPosition({area.getMidX(), area.getMidY()});
+    this->addChild(panel, 5);
+
+    auto const body = ui::panelBody(area.size);
+    float const rowW = body.size.width - 6.f;
+
+    struct Shortcut {
+        char const* icon;
+        char const* key;
+        SEL_MenuHandler handler;
+    };
+    Shortcut const shortcuts[] = {
+        {"GJ_rankIcon_001.png",      "versus.hub.board",   menu_selector(VersusHubLayer::onLeaderboard)},
+        {"GJ_sTrendingIcon_001.png", "versus.hub.season",  menu_selector(VersusHubLayer::onSeason)},
+        {"GJ_timeIcon_001.png",      "versus.hub.history", menu_selector(VersusHubLayer::onHistory)},
+        {"paim_vsCardBack.png"_spr,  "versus.hub.deck",    menu_selector(VersusHubLayer::onDeck)},
+    };
+
+    float y = area.origin.y + body.getMaxY() - 22.f;
+    for (auto const& shortcut : shortcuts) {
+        auto* btn = ui::makeIconRow(shortcut.icon, loc.getString(shortcut.key), rowW,
+                                    this, shortcut.handler);
+        btn->setPosition({area.getMidX(), y});
+        m_menu->addChild(btn);
+        y -= 38.f;
+    }
+}
+
+void VersusHubLayer::buildActions(float centerY) {
     auto const winSize = CCDirector::get()->getWinSize();
     auto& loc = Localization::get();
 
-    auto* playFace = ButtonSprite::create(loc.getString("versus.play").c_str(), 150, true,
-                                          "bigFont.fnt", "GJ_button_01.png", 30.f, 0.7f);
-    auto* playBtn = CCMenuItemSpriteExtra::create(playFace, this, menu_selector(VersusHubLayer::onPlay));
-    playBtn->setPosition({winSize.width * 0.66f, winSize.height * 0.5f - 118.f});
-    m_menu->addChild(playBtn);
+    float const rankedX = winSize.width / 2.f - 92.f;
+    float const friendlyX = winSize.width / 2.f + 92.f;
 
-    auto* challengeFace = ButtonSprite::create(loc.getString("versus.challenge").c_str(), 92, true,
-                                               "bigFont.fnt", "GJ_button_05.png", 26.f, 0.45f);
-    auto* challengeBtn = CCMenuItemSpriteExtra::create(challengeFace, this,
-                                                       menu_selector(VersusHubLayer::onChallenge));
-    challengeBtn->setPosition({winSize.width * 0.66f - 62.f, winSize.height * 0.5f - 150.f});
-    m_menu->addChild(challengeBtn);
+    m_playButton = ui::makeAction(loc.getString("versus.play"), 150, "GJ_button_01.png", 0.6f,
+                                  this, menu_selector(VersusHubLayer::onPlay));
+    m_playButton->setPosition({rankedX, centerY});
+    m_menu->addChild(m_playButton);
 
-    auto* deckFace = ButtonSprite::create(loc.getString("versus.deck").c_str(), 92, true,
-                                          "bigFont.fnt", "GJ_button_05.png", 26.f, 0.45f);
-    auto* deckBtn = CCMenuItemSpriteExtra::create(deckFace, this, menu_selector(VersusHubLayer::onDeck));
-    deckBtn->setPosition({winSize.width * 0.66f + 62.f, winSize.height * 0.5f - 150.f});
-    m_menu->addChild(deckBtn);
+    auto* rankedNote = ui::makeText(loc.getString("versus.hub.ranked-note"), "chatFont.fnt", 0.38f,
+                                    {rankedX, centerY - 24.f});
+    rankedNote->setOpacity(160);
+    this->addChild(rankedNote, 10);
 
-    if (auto* seasonFace = paimon::SpriteHelper::safeCreateWithFrameName("GJ_sTrendingIcon_001.png")) {
-        seasonFace->setScale(0.8f);
-        auto* seasonBtn = CCMenuItemSpriteExtra::create(seasonFace, this,
-                                                        menu_selector(VersusHubLayer::onSeason));
-        seasonBtn->setPosition({winSize.width - 28.f, winSize.height - 98.f});
-        m_menu->addChild(seasonBtn);
-    }
+    auto* friendly = ui::makeAction(loc.getString("versus.friendly"), 130, "GJ_button_05.png", 0.6f,
+                                    this, menu_selector(VersusHubLayer::onFriendly));
+    friendly->setPosition({friendlyX, centerY});
+    m_menu->addChild(friendly);
 
-    if (auto* histFace = paimon::SpriteHelper::safeCreateWithFrameName("GJ_timeIcon_001.png")) {
-        histFace->setScale(0.8f);
-        auto* histBtn = CCMenuItemSpriteExtra::create(histFace, this,
-                                                      menu_selector(VersusHubLayer::onHistory));
-        histBtn->setPosition({winSize.width - 28.f, winSize.height - 62.f});
-        m_menu->addChild(histBtn);
-    }
-
-    auto* boardFace = paimon::SpriteHelper::safeCreateWithFrameName("GJ_rankIcon_001.png");
-    if (boardFace) {
-        boardFace->setScale(0.85f);
-        auto* boardBtn = CCMenuItemSpriteExtra::create(boardFace, this,
-                                                       menu_selector(VersusHubLayer::onLeaderboard));
-        boardBtn->setPosition({winSize.width - 28.f, winSize.height - 26.f});
-        m_menu->addChild(boardBtn);
-    }
+    auto* friendlyNote = ui::makeText(loc.getString("versus.hub.friendly-note"), "chatFont.fnt",
+                                      0.38f, {friendlyX, centerY - 24.f});
+    friendlyNote->setOpacity(160);
+    this->addChild(friendlyNote, 10);
 }
 
 void VersusHubLayer::refreshRank() {
@@ -213,6 +320,7 @@ void VersusHubLayer::refreshRank() {
     auto const rank = store.rank(m_mode);
 
     m_badge->setRank(rank);
+    m_badge->setDim(profile.wins + profile.losses == 0);
     m_rankLabel->setString(rankName(rank).c_str());
     m_rankLabel->setColor(rankColor(rank));
 
@@ -227,54 +335,73 @@ void VersusHubLayer::refreshRank() {
     m_recordLabel->setString(fmt::format("{}W - {}L", profile.wins, profile.losses).c_str());
 
     for (size_t i = 0; i < m_modeButtons.size(); i++) {
-        bool const active = static_cast<int>(i) == static_cast<int>(m_mode);
-        m_modeButtons[i]->setOpacity(active ? 255 : 140);
-        m_modeButtons[i]->setColor(active ? ccColor3B{255, 255, 255} : ccColor3B{150, 150, 150});
+        ui::styleTab(m_modeButtons[i], static_cast<int>(i) == static_cast<int>(m_mode));
     }
 }
 
 void VersusHubLayer::refreshFormats() {
-    for (auto* btn : m_formatButtons) btn->removeFromParent();
-    m_formatButtons.clear();
+    m_formatRows.clear();
+    m_formatList->m_contentLayer->removeAllChildren();
 
     auto const formats = queueableFormats(m_mode);
     auto const selected = VersusStore::get().preferredFormat(m_mode);
 
-    int const columns = 4;
-    float const step = 58.f;
-    float const originY = 52.f;
+    float const listW = m_formatList->getContentSize().width;
+    float const listH = m_formatList->getContentSize().height;
+    float const height = std::max(listH, formats.size() * kRowH);
+    m_formatList->m_contentLayer->setContentSize({listW, height});
+
+    auto* rowMenu = CCMenu::create();
+    rowMenu->setPosition({0.f, 0.f});
+    m_formatList->m_contentLayer->addChild(rowMenu, 1);
 
     for (size_t i = 0; i < formats.size(); i++) {
         auto const* def = formats[i];
-        auto* glyph = paimon::SpriteHelper::safeCreate(formatSprite(*def).c_str());
-        if (!glyph) continue;
-
-        glyph->setScale(38.f / std::max(1.f, glyph->getContentSize().width));
-        glyph->setColor(def->id == selected ? ccColor3B{255, 226, 140} : ccColor3B{190, 196, 214});
-
-        auto* btn = CCMenuItemSpriteExtra::create(glyph, this, menu_selector(VersusHubLayer::onFormat));
+        auto* face = buildFormatRow(*def, listW - 6.f, def->id == selected);
+        auto* btn = CCMenuItemSpriteExtra::create(face, this,
+                                                  menu_selector(VersusHubLayer::onFormat));
         btn->setTag(kFormatTag + static_cast<int>(def->id));
-
-        int const row = static_cast<int>(i) / columns;
-        int const col = static_cast<int>(i) % columns;
-        int const inRow = std::min<int>(columns, static_cast<int>(formats.size()) - row * columns);
-        float const rowWidth = (inRow - 1) * step;
-
-        btn->setPosition({
-            m_formatPanel->getPositionX() - rowWidth / 2.f + col * step,
-            m_formatPanel->getPositionY() + originY - row * step,
-        });
-        m_menu->addChild(btn);
-        m_formatButtons.push_back(btn);
+        btn->setPosition({listW / 2.f, height - kRowH * (i + 0.5f)});
+        rowMenu->addChild(btn);
+        m_formatRows.push_back(btn);
     }
 
-    auto const& def = formatAt(selected);
-    setStatus(formatName(def) + " - " + formatWinCondition(def));
+    m_formatList->moveToTop();
+}
+
+void VersusHubLayer::refreshPlayButton() {
+    if (!m_playButton) return;
+
+    bool const queued = VersusSession::get().phase() == Phase::Queued;
+    auto const key = queued ? "versus.cancel-search" : "versus.play";
+
+    if (auto* face = typeinfo_cast<ButtonSprite*>(m_playButton->getNormalImage())) {
+        face->setString(Localization::get().getString(key).c_str());
+    }
+}
+
+void VersusHubLayer::refreshGlobed() {
+    auto& loc = Localization::get();
+
+    if (!gl::present()) {
+        m_globedLabel->setString(loc.getString("versus.globed.missing").c_str());
+        m_globedLabel->setColor({200, 160, 240});
+    } else if (!gl::connected()) {
+        m_globedLabel->setString(loc.getString("versus.globed.off").c_str());
+        m_globedLabel->setColor(ui::kBad);
+    } else {
+        m_globedLabel->setString(loc.getString("versus.globed.on").c_str());
+        m_globedLabel->setColor(ui::kGood);
+    }
+}
+
+void VersusHubLayer::tickChrome(float) {
+    refreshGlobed();
 }
 
 void VersusHubLayer::setStatus(std::string const& text, bool error) {
     m_status->setString(text.c_str());
-    m_status->setColor(error ? ccColor3B{255, 120, 120} : ccColor3B{255, 255, 255});
+    m_status->setColor(error ? ui::kBad : ccColor3B{255, 255, 255});
 }
 
 void VersusHubLayer::onEnterTransitionDidFinish() {
@@ -284,13 +411,28 @@ void VersusHubLayer::onEnterTransitionDidFinish() {
     VersusSession::get().addListener(this, [self]() {
         if (self->isRunning()) self->onSessionChanged();
     });
+    VersusSession::get().beginWatch();
+
+    this->schedule(schedule_selector(VersusHubLayer::tickChrome), 1.f);
+    refreshGlobed();
     onSessionChanged();
 
-    if (!gl::present()) {
-        setStatus(Localization::get().getString("versus.no-globed"), true);
-    } else if (!gl::connected()) {
-        setStatus(Localization::get().getString("versus.globed-offline"), true);
+    if (VersusSession::get().idle()) {
+        auto const& def = formatAt(VersusStore::get().preferredFormat(m_mode));
+        setStatus(formatName(def) + " - " + formatWinCondition(def));
     }
+
+    // Nothing happens without a token, and the invite that arrives while the
+    // hub sits idle needs one as much as the queue does.
+    if (!VersusClient::get().authenticated()) {
+        authenticateThen([]() {});
+    }
+}
+
+void VersusHubLayer::onExit() {
+    VersusSession::get().removeListener(this);
+    VersusSession::get().endWatch();
+    CCLayer::onExit();
 }
 
 void VersusHubLayer::onMode(CCObject* sender) {
@@ -301,12 +443,18 @@ void VersusHubLayer::onMode(CCObject* sender) {
     VersusStore::get().setPreferredMode(mode);
     refreshRank();
     refreshFormats();
+
+    auto const& def = formatAt(VersusStore::get().preferredFormat(m_mode));
+    setStatus(formatName(def) + " - " + formatWinCondition(def));
 }
 
 void VersusHubLayer::onFormat(CCObject* sender) {
     auto const format = static_cast<Format>(sender->getTag() - kFormatTag);
     VersusStore::get().setPreferredFormat(m_mode, format);
     refreshFormats();
+
+    auto const& def = formatAt(format);
+    setStatus(formatName(def) + " - " + formatWinCondition(def));
 }
 
 void VersusHubLayer::authenticateThen(std::function<void()> next) {
@@ -335,17 +483,23 @@ void VersusHubLayer::authenticateThen(std::function<void()> next) {
 
 void VersusHubLayer::onSessionChanged() {
     auto& session = VersusSession::get();
+    auto const phase = session.phase();
 
-    if (session.phase() == Phase::Found && !m_matchPopupOpen) {
+    // A friendly joined by code lands past the accept step, so the modal opens
+    // for any of the three lobby phases and not only for Found.
+    bool const inLobby = phase == Phase::Found || phase == Phase::Banning ||
+                         phase == Phase::Loading;
+    if (inLobby && !m_matchPopupOpen) {
         m_matchPopupOpen = true;
         if (auto* popup = VersusMatchPopup::create()) popup->show();
     }
     if (session.idle()) m_matchPopupOpen = false;
 
     refreshRank();
+    refreshPlayButton();
     if (session.idle()) return;
 
-    if (session.phase() == Phase::Queued) {
+    if (phase == Phase::Queued) {
         auto const& ticket = session.ticket();
         setStatus(fmt::format(fmt::runtime(Localization::get().getString("versus.searching")),
                               ticket.waiting, ticket.estimateSeconds));
@@ -367,6 +521,7 @@ void VersusHubLayer::onPlay(CCObject*) {
     // Ranked needs the fast channel: the Roulette feels like mud without it,
     // and a ladder with two qualities of experience is worse than one rule.
     if (!gl::connected()) {
+        refreshGlobed();
         setStatus(Localization::get().getString("versus.globed-required"), true);
         return;
     }
@@ -378,9 +533,13 @@ void VersusHubLayer::onPlay(CCObject*) {
     });
 }
 
-void VersusHubLayer::onChallenge(CCObject*) {
-    PaimonNotify::show(Localization::get().getString("versus.soon-challenge").c_str(),
-                       NotificationIcon::Info);
+void VersusHubLayer::onFriendly(CCObject*) {
+    if (m_busy) return;
+
+    auto self = Ref<VersusHubLayer>(this);
+    authenticateThen([self]() {
+        if (auto* popup = VersusFriendlyPopup::create(self->m_mode)) popup->show();
+    });
 }
 
 void VersusHubLayer::onDeck(CCObject*) {
@@ -391,6 +550,7 @@ void VersusHubLayer::onLeaderboard(CCObject*) {
     auto* scene = VersusLeaderboardLayer::scene(m_mode);
     if (!scene) return;
     VersusSession::get().removeListener(this);
+    VersusSession::get().endWatch();
     CCDirector::get()->pushScene(CCTransitionFade::create(0.4f, scene));
 }
 
@@ -408,6 +568,7 @@ void VersusHubLayer::onBack(CCObject*) {
 
 void VersusHubLayer::keyBackClicked() {
     VersusSession::get().removeListener(this);
+    VersusSession::get().endWatch();
     CCDirector::get()->popSceneWithTransition(0.5f, PopTransition::kPopTransitionFade);
 }
 

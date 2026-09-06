@@ -1,5 +1,6 @@
 #include "VersusLeaderboardLayer.hpp"
 #include "VersusRankBadgeNode.hpp"
+#include "VersusUIKit.hpp"
 #include "../data/VersusRanks.hpp"
 #include "../services/VersusStore.hpp"
 #include "../../backgrounds/services/LayerBackgroundManager.hpp"
@@ -117,25 +118,29 @@ void VersusLeaderboardLayer::buildTabs() {
     auto const winSize = CCDirector::get()->getWinSize();
     auto& loc = Localization::get();
 
+    float const rowY = winSize.height - 56.f;
+
     char const* modeLabels[] = {"Classic", "Platformer"};
     for (int i = 0; i < 2; i++) {
-        auto* face = ButtonSprite::create(modeLabels[i], 72, true, "bigFont.fnt",
-                                          "GJ_button_04.png", 22.f, 0.34f);
-        auto* btn = CCMenuItemSpriteExtra::create(face, this,
-                                                  menu_selector(VersusLeaderboardLayer::onMode));
+        auto* btn = ui::makeTab(modeLabels[i], 72.f, this,
+                                menu_selector(VersusLeaderboardLayer::onMode));
         btn->setTag(kModeTag + i);
-        btn->setPosition({winSize.width / 2.f - 130.f + i * 76.f, winSize.height - 56.f});
+        btn->setPosition({winSize.width / 2.f - 130.f + i * 76.f, rowY});
         m_menu->addChild(btn);
         m_modeButtons.push_back(btn);
     }
 
+    // The two rows of tabs answer different questions, and side by side with no
+    // gap they read as one row of five that happens to have two lit.
+    auto* split = CCLayerColor::create(ccColor4B{255, 255, 255, 60}, 1.f, 22.f);
+    split->setPosition({winSize.width / 2.f - 6.f, rowY - 11.f});
+    this->addChild(split, 10);
+
     for (int i = 0; i < 3; i++) {
-        auto* face = ButtonSprite::create(loc.getString(kScopeKeys[i]).c_str(), 66, true,
-                                          "bigFont.fnt", "GJ_button_04.png", 22.f, 0.32f);
-        auto* btn = CCMenuItemSpriteExtra::create(face, this,
-                                                  menu_selector(VersusLeaderboardLayer::onScope));
+        auto* btn = ui::makeTab(loc.getString(kScopeKeys[i]), 66.f, this,
+                                menu_selector(VersusLeaderboardLayer::onScope));
         btn->setTag(kScopeTag + i);
-        btn->setPosition({winSize.width / 2.f + 40.f + i * 70.f, winSize.height - 56.f});
+        btn->setPosition({winSize.width / 2.f + 40.f + i * 70.f, rowY});
         m_menu->addChild(btn);
         m_scopeButtons.push_back(btn);
     }
@@ -150,12 +155,10 @@ void VersusLeaderboardLayer::load() {
     setStatus(Localization::get().getString("versus.board.loading"));
 
     for (size_t i = 0; i < m_modeButtons.size(); i++) {
-        m_modeButtons[i]->setColor(static_cast<int>(i) == static_cast<int>(m_mode)
-            ? ccColor3B{255, 255, 255} : ccColor3B{140, 145, 160});
+        ui::styleTab(m_modeButtons[i], static_cast<int>(i) == static_cast<int>(m_mode));
     }
     for (size_t i = 0; i < m_scopeButtons.size(); i++) {
-        m_scopeButtons[i]->setColor(m_scope == kScopes[i]
-            ? ccColor3B{255, 255, 255} : ccColor3B{140, 145, 160});
+        ui::styleTab(m_scopeButtons[i], m_scope == kScopes[i]);
     }
 
     auto self = Ref<VersusLeaderboardLayer>(this);

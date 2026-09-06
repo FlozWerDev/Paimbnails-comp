@@ -42,6 +42,12 @@ public:
     QueueTicket const& ticket() const { return m_ticket; }
     void cancelQueue();
 
+    // A friendly arrives at the lobby with nothing of ours in flight, so while
+    // the hub is open it keeps one slow poll running to catch it. Everything
+    // else polls fast enough on its own and this stands down for it.
+    void beginWatch();
+    void endWatch();
+
     void accept(bool yes);
     void ban(int levelId);
     // Loads the level and pushes PlayLayer. Answers false if the level is not
@@ -84,6 +90,8 @@ private:
     void setPhase(Phase phase);
     void schedulePoll(float delay);
     void poll();
+    void scheduleWatch(float delay);
+    void watchTick();
     void applyLobby(MatchInfo const& info);
     void wireNet();
     void pushTick(bool force);
@@ -133,6 +141,8 @@ private:
     int m_extraAttempts = 0;
 
     uint64_t m_pollGeneration = 0;
+    uint64_t m_watchGeneration = 0;
+    bool m_watching = false;
     std::vector<std::pair<void const*, std::function<void()>>> m_listeners;
 };
 

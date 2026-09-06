@@ -29,6 +29,8 @@ namespace {
 constexpr float kTickInterval = 0.25f;
 constexpr float kLobbyPoll = 2.0f;
 constexpr float kFoundPoll = 1.0f;
+// Watching for an incoming friendly, which is nobody's hurry.
+constexpr float kWatchPoll = 4.0f;
 
 // A rival that stops ticking for this long is treated as gone; the server still
 // decides what that costs them.
@@ -132,6 +134,49 @@ void VersusSession::cancelQueue() {
     notifyListeners();
 }
 
+void VersusSession::beginWatch() {
+    if (m_watching) return;
+    m_watching = true;
+    scheduleWatch(kWatchPoll);
+}
+
+void VersusSession::endWatch() {
+    m_watching = false;
+    m_watchGeneration++;
+}
+
+void VersusSession::scheduleWatch(float delay) {
+    uint64_t const generation = ++m_watchGeneration;
+    paimon::scheduleMainThreadDelay(delay, [this, generation]() {
+        if (paimon::isRuntimeShuttingDown()) return;
+        if (!m_watching || generation != m_watchGeneration) return;
+        watchTick();
+    });
+}
+
+void VersusSession::watchTick() {
+    // The queue and the duel run their own poll; doubling it here would only
+    // spend requests, so the watch idles until they are done.
+    if (!idle() || !VersusClient::get().authenticated()) {
+        scheduleWatch(kWatchPoll);
+        return;
+    }
+
+    VersusClient::get().pollLobby([this](bool ok, MatchInfo const& info) {
+        // Only the two phases an invite can land in. Past the veto it is a duel
+        // we already walked out of, and adopting it would reopen the lobby on
+        // top of a match that is over for us.
+        bool const joinable = info.serverPhase == "found" || info.serverPhase == "banning";
+        if (ok && !info.id.empty() && joinable && idle()) {
+            applyLobby(info);
+            // From here the duel owns the lobby: the watch stands down and only
+            // the fast poll moves the phase on.
+            schedulePoll(kFoundPoll);
+        }
+        scheduleWatch(kWatchPoll);
+    });
+}
+
 void VersusSession::schedulePoll(float delay) {
     uint64_t const generation = ++m_pollGeneration;
     paimon::scheduleMainThreadDelay(delay, [this, generation]() {
@@ -177,7 +222,11 @@ void VersusSession::applyLobby(MatchInfo const& info) {
     if (isNew) {
         net::setRival(info.rival.accountId);
         wireNet();
-        setPhase(Phase::Found);
+        // A friendly opened with a code is already a yes from both sides, so it
+        // arrives past the accept step and there is nothing to agree to.
+        setPhase(info.serverPhase == "banning" ? Phase::Banning
+                 : info.levelId != 0           ? Phase::Loading
+                                               : Phase::Found);
         PaimonNotify::show(Localization::get().getString("versus.match-found").c_str(),
                            NotificationIcon::Info);
         return;

@@ -1,5 +1,6 @@
 #include "VersusDeckPopup.hpp"
 #include "VersusCardNode.hpp"
+#include "VersusUIKit.hpp"
 #include "../../../utils/DynamicPopupRegistry.hpp"
 #include "../../../utils/Localization.hpp"
 #include "../../../utils/SpriteHelper.hpp"
@@ -18,7 +19,7 @@ namespace {
 constexpr float kPopupW = 430.f;
 constexpr float kPopupH = 290.f;
 constexpr float kListW = 404.f;
-constexpr float kListH = 194.f;
+constexpr float kListH = 186.f;
 constexpr float kRowH = 62.f;
 constexpr float kCardW = 34.f;
 
@@ -44,9 +45,19 @@ bool VersusDeckPopup::init() {
 
     buildFilters();
 
+    auto* hint = ui::makeText(Localization::get().getString("versus.deck.hint"), "chatFont.fnt",
+                              0.42f, {kPopupW / 2.f, kPopupH - 78.f});
+    hint->setOpacity(170);
+    m_mainLayer->addChild(hint, 3);
+
     m_scroll = ScrollLayer::create({kListW, kListH});
     m_scroll->setPosition({(kPopupW - kListW) / 2.f, 14.f});
     m_mainLayer->addChild(m_scroll, 1);
+
+    auto* borders = ListBorders::create();
+    borders->setContentSize({kListW, kListH});
+    borders->setPosition({kPopupW / 2.f, 14.f + kListH / 2.f});
+    m_mainLayer->addChild(borders, 4);
 
     rebuildGrid();
     return true;
@@ -62,9 +73,8 @@ void VersusDeckPopup::buildFilters() {
 
     float const step = 82.f;
     for (int i = 0; i < 5; i++) {
-        auto* face = ButtonSprite::create(Localization::get().getString(keys[i]).c_str(),
-                                          72, true, "bigFont.fnt", "GJ_button_04.png", 22.f, 0.34f);
-        auto* btn = CCMenuItemSpriteExtra::create(face, this, menu_selector(VersusDeckPopup::onFilter));
+        auto* btn = ui::makeTab(Localization::get().getString(keys[i]), 74.f, this,
+                                menu_selector(VersusDeckPopup::onFilter));
         btn->setTag(kFilterTag + i - 1);
         btn->setPosition({(i - 2) * step, 0.f});
         menu->addChild(btn);
@@ -79,8 +89,7 @@ void VersusDeckPopup::onFilter(CCObject* sender) {
 
 void VersusDeckPopup::rebuildGrid() {
     for (size_t i = 0; i < m_filterButtons.size(); i++) {
-        bool const active = static_cast<int>(i) - 1 == m_filter;
-        m_filterButtons[i]->setColor(active ? ccColor3B{255, 255, 255} : ccColor3B{140, 145, 160});
+        ui::styleTab(m_filterButtons[i], static_cast<int>(i) - 1 == m_filter);
     }
 
     m_scroll->m_contentLayer->removeAllChildren();

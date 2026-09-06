@@ -30,6 +30,9 @@ std::vector<FormatDef const*> rankedFormats(Mode mode);
 // The same list minus the ones a disabled module would turn into a race under
 // another name. Everything that opens a queue asks this, not rankedFormats.
 std::vector<FormatDef const*> queueableFormats(Mode mode);
+// What a friendly may be played under: the queueable set plus Friendly, which
+// has no rules of its own and is the point of the whole thing for some people.
+std::vector<FormatDef const*> friendlyFormats(Mode mode);
 
 std::string formatName(FormatDef const& def);
 std::string formatWinCondition(FormatDef const& def);

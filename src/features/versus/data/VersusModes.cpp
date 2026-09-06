@@ -87,6 +87,12 @@ std::vector<FormatDef const*> queueableFormats(Mode mode) {
     return formats;
 }
 
+std::vector<FormatDef const*> friendlyFormats(Mode mode) {
+    auto formats = queueableFormats(mode);
+    formats.push_back(&formatAt(Format::Friendly));
+    return formats;
+}
+
 std::string formatName(FormatDef const& def) {
     return Localization::get().getString(std::string("versus.format.") + def.key);
 }

@@ -129,10 +129,12 @@ void VersusProfilePopup::onChallenge(CCObject*) {
     auto const format = VersusStore::get().preferredFormat(mode);
 
     VersusClient::get().challenge(m_username, mode, format,
-        [](bool ok, MatchInfo const& match) {
-            if (!ok || match.id.empty()) {
-                PaimonNotify::show(Localization::get().getString("versus.challenge-failed").c_str(),
-                                   NotificationIcon::Error);
+        [](bool ok, ChallengeResult const& result, std::string const& message) {
+            if (!ok || result.matchId.empty()) {
+                PaimonNotify::show(
+                    message.empty()
+                        ? Localization::get().getString("versus.challenge-failed") : message,
+                    NotificationIcon::Error);
                 return;
             }
             PaimonNotify::show(Localization::get().getString("versus.challenge-sent").c_str(),

@@ -1,4 +1,5 @@
 #include "VersusSeasonPopup.hpp"
+#include "VersusUIKit.hpp"
 #include "../data/VersusRanks.hpp"
 #include "../services/VersusClient.hpp"
 #include "../services/VersusStore.hpp"
@@ -15,8 +16,9 @@ namespace paimon::versus {
 
 namespace {
 
-constexpr float kPopupW = 340.f;
-constexpr float kPopupH = 240.f;
+constexpr float kPopupW = 360.f;
+constexpr float kPopupH = 260.f;
+constexpr float kPanelW = 332.f;
 
 std::string mutatorLabel(std::string const& id) {
     auto const key = "versus.mutator." + id;
@@ -48,6 +50,14 @@ bool VersusSeasonPopup::init() {
 
     buildSeason();
     buildMutators();
+
+    auto* reset = CCLabelBMFont::create(
+        Localization::get().getString("versus.season.reset").c_str(), "chatFont.fnt",
+        kPanelW, kCCTextAlignmentCenter);
+    reset->setScale(0.4f);
+    reset->setOpacity(170);
+    reset->setPosition({kPopupW / 2.f, 14.f});
+    m_mainLayer->addChild(reset, 2);
     return true;
 }
 
@@ -62,67 +72,71 @@ void VersusSeasonPopup::buildSeason() {
     auto const& best = classic.best >= platformer.best ? classic : platformer;
     auto const rank = rankFor(best.best);
 
-    if (auto* badge = VersusRankBadgeNode::create(rank, 72.f)) {
+    CCSize const size = {kPanelW, 92.f};
+    auto* panel = ui::makePanel(size, loc.getString("versus.season.best"));
+    panel->setPosition({kPopupW / 2.f, 172.f});
+    m_mainLayer->addChild(panel, 2);
+
+    auto const body = ui::panelBody(size);
+
+    if (auto* badge = VersusRankBadgeNode::create(rank, 56.f)) {
         badge->setShowPips(false);
         badge->setDim(best.wins + best.losses == 0);
-        badge->setPosition({66.f, kPopupH - 108.f});
-        m_mainLayer->addChild(badge, 2);
+        badge->setPosition({44.f, body.getMidY()});
+        panel->addChild(badge, 1);
     }
 
-    auto* caption = CCLabelBMFont::create(loc.getString("versus.season.best").c_str(), "chatFont.fnt");
-    caption->setScale(0.42f);
-    caption->setOpacity(180);
-    caption->setPosition({66.f, kPopupH - 154.f});
-    m_mainLayer->addChild(caption, 2);
-
-    auto* name = CCLabelBMFont::create(rankName(rank).c_str(), "goldFont.fnt");
-    name->setScale(std::min(0.5f, 120.f / std::max(1.f, name->getContentSize().width)));
+    auto* name = ui::makeText(rankName(rank), "goldFont.fnt", 0.5f, {162.f, body.getMidY() + 10.f});
+    name->setAnchorPoint({0.f, 0.5f});
+    name->setScale(std::min(0.5f, 130.f / std::max(1.f, name->getContentSize().width)));
     name->setColor(rankColor(rank));
-    name->setPosition({66.f, kPopupH - 174.f});
-    m_mainLayer->addChild(name, 2);
+    panel->addChild(name, 1);
 
-    auto* left = CCLabelBMFont::create(
+    auto* elo = ui::makeText(fmt::format("{} Elo", best.best), "chatFont.fnt", 0.44f,
+                             {162.f, body.getMidY() - 10.f});
+    elo->setAnchorPoint({0.f, 0.5f});
+    elo->setOpacity(190);
+    panel->addChild(elo, 1);
+
+    auto* left = ui::makeText(
         season.daysLeft > 0
-            ? fmt::format(fmt::runtime(loc.getString("versus.season.ends")), season.daysLeft).c_str()
-            : loc.getString("versus.board.loading").c_str(),
-        "bigFont.fnt");
-    left->setScale(0.5f);
-    left->setPosition({kPopupW * 0.66f, kPopupH - 78.f});
-    m_mainLayer->addChild(left, 2);
-
-    auto* reset = CCLabelBMFont::create(loc.getString("versus.season.reset").c_str(),
-                                        "chatFont.fnt", 180.f, kCCTextAlignmentCenter);
-    reset->setScale(0.4f);
-    reset->setOpacity(180);
-    reset->setPosition({kPopupW * 0.66f, kPopupH - 122.f});
-    m_mainLayer->addChild(reset, 2);
+            ? fmt::format(fmt::runtime(loc.getString("versus.season.ends")), season.daysLeft)
+            : loc.getString("versus.board.loading"),
+        "bigFont.fnt", 0.44f, {size.width - 20.f, body.getMidY()});
+    left->setAnchorPoint({1.f, 0.5f});
+    left->setScale(std::min(0.44f, 110.f / std::max(1.f, left->getContentSize().width)));
+    left->setColor(ui::kAccent);
+    panel->addChild(left, 1);
 }
 
 void VersusSeasonPopup::buildMutators() {
     auto& loc = Localization::get();
     auto const& mutators = VersusClient::get().season().mutators;
 
-    auto* heading = CCLabelBMFont::create(loc.getString("versus.mutators").c_str(), "goldFont.fnt");
-    heading->setScale(0.44f);
-    heading->setPosition({kPopupW / 2.f, 62.f});
-    m_mainLayer->addChild(heading, 2);
+    CCSize const size = {kPanelW, 84.f};
+    auto* panel = ui::makePanel(size, loc.getString("versus.mutators"));
+    panel->setPosition({kPopupW / 2.f, 74.f});
+    m_mainLayer->addChild(panel, 2);
+
+    auto const body = ui::panelBody(size);
 
     if (mutators.empty()) {
-        auto* none = CCLabelBMFont::create(loc.getString("versus.mutator.none").c_str(), "chatFont.fnt");
-        none->setScale(0.44f);
+        auto* none = ui::makeText(loc.getString("versus.mutator.none"), "chatFont.fnt", 0.44f,
+                                  {size.width / 2.f, body.getMidY()});
         none->setOpacity(170);
-        none->setPosition({kPopupW / 2.f, 40.f});
-        m_mainLayer->addChild(none, 2);
+        panel->addChild(none, 1);
         return;
     }
 
-    for (size_t i = 0; i < mutators.size(); i++) {
-        auto* label = CCLabelBMFont::create(mutatorLabel(mutators[i]).c_str(), "chatFont.fnt",
-                                            290.f, kCCTextAlignmentCenter);
+    float y = body.getMaxY() - 12.f;
+    for (auto const& id : mutators) {
+        auto* label = CCLabelBMFont::create(mutatorLabel(id).c_str(), "chatFont.fnt",
+                                            size.width - 24.f, kCCTextAlignmentCenter);
         label->setScale(0.44f);
         label->setColor({255, 200, 130});
-        label->setPosition({kPopupW / 2.f, 40.f - static_cast<float>(i) * 18.f});
-        m_mainLayer->addChild(label, 2);
+        label->setPosition({size.width / 2.f, y});
+        panel->addChild(label, 1);
+        y -= 20.f;
     }
 }
 

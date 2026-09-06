@@ -108,9 +108,11 @@ void VersusEndPopup::buildRankStrip() {
     name->setPosition({64.f, 50.f});
     m_mainLayer->addChild(name, 2);
 
+    // The server, not the format, decides whether this moved anything: a
+    // friendly played under Race is still a friendly.
     int const delta = session.eloDelta();
     auto* eloLabel = CCLabelBMFont::create(
-        session.format().ranked
+        session.match().ranked
             ? fmt::format("{}{} Elo", delta >= 0 ? "+" : "", delta).c_str()
             : Localization::get().getString("versus.end.unranked").c_str(),
         "bigFont.fnt");
@@ -174,10 +176,27 @@ void VersusEndPopup::onRematch(CCObject*) {
     auto const& session = VersusSession::get();
     auto const mode = session.match().mode;
     auto const format = session.match().format;
+    auto const rival = session.match().rival.name;
+    bool const ranked = session.match().ranked;
 
     VersusSession::get().reset();
-    VersusSession::get().beginQueue(mode, format);
 
+    // A friendly goes back to the same person; the queue would hand it to a
+    // stranger under rules it never offers.
+    if (!ranked && !rival.empty()) {
+        VersusClient::get().challenge(rival, mode, format,
+            [](bool ok, ChallengeResult const&, std::string const& message) {
+                PaimonNotify::show(
+                    ok ? Localization::get().getString("versus.challenge-sent")
+                       : (message.empty()
+                            ? Localization::get().getString("versus.challenge-failed") : message),
+                    ok ? NotificationIcon::Success : NotificationIcon::Error);
+            });
+        Popup::onClose(nullptr);
+        return;
+    }
+
+    VersusSession::get().beginQueue(mode, format);
     PaimonNotify::show(Localization::get().getString("versus.status.queued").c_str(),
                        NotificationIcon::Info);
     Popup::onClose(nullptr);

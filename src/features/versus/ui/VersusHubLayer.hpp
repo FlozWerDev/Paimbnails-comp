@@ -5,11 +5,17 @@
 
 #include <Geode/Geode.hpp>
 #include <Geode/binding/CCMenuItemSpriteExtra.hpp>
+#include <Geode/ui/ScrollLayer.hpp>
 
+#include <string>
 #include <vector>
 
 namespace paimon::versus {
 
+// Three titled columns, left to right: who you are on the ladder, what the duel
+// would be played under, and everything that is not a duel. The two ways in sit
+// on the row below them, ranked and friendly side by side, so neither one is a
+// button whose meaning has to be guessed.
 class VersusHubLayer : public cocos2d::CCLayer {
 public:
     static VersusHubLayer* create();
@@ -18,22 +24,29 @@ public:
 protected:
     bool init() override;
     void onEnterTransitionDidFinish() override;
+    void onExit() override;
     void keyBackClicked() override;
 
     void buildChrome();
-    void buildRankPanel();
-    void buildFormatGrid();
-    void buildActions();
+    void buildRankPanel(cocos2d::CCRect const& area);
+    void buildFormatPanel(cocos2d::CCRect const& area);
+    void buildShortcuts(cocos2d::CCRect const& area);
+    void buildActions(float centerY);
 
     void refreshRank();
     void refreshFormats();
+    void refreshPlayButton();
+    void refreshGlobed();
+    // Globed can drop or come back while the hub sits open, and the pill is the
+    // only place that says whether the ladder will let you in.
+    void tickChrome(float dt);
     void setStatus(std::string const& text, bool error = false);
 
     void onBack(cocos2d::CCObject* sender);
     void onMode(cocos2d::CCObject* sender);
     void onFormat(cocos2d::CCObject* sender);
     void onPlay(cocos2d::CCObject* sender);
-    void onChallenge(cocos2d::CCObject* sender);
+    void onFriendly(cocos2d::CCObject* sender);
     void onDeck(cocos2d::CCObject* sender);
     void onLeaderboard(cocos2d::CCObject* sender);
     void onHistory(cocos2d::CCObject* sender);
@@ -49,13 +62,16 @@ protected:
     cocos2d::CCMenu* m_menu = nullptr;
     cocos2d::CCNode* m_rankPanel = nullptr;
     cocos2d::CCNode* m_formatPanel = nullptr;
+    geode::ScrollLayer* m_formatList = nullptr;
     VersusRankBadgeNode* m_badge = nullptr;
     cocos2d::CCLabelBMFont* m_rankLabel = nullptr;
     cocos2d::CCLabelBMFont* m_eloLabel = nullptr;
     cocos2d::CCLabelBMFont* m_recordLabel = nullptr;
     cocos2d::CCLabelBMFont* m_status = nullptr;
+    cocos2d::CCLabelBMFont* m_globedLabel = nullptr;
+    CCMenuItemSpriteExtra* m_playButton = nullptr;
     std::vector<CCMenuItemSpriteExtra*> m_modeButtons;
-    std::vector<CCMenuItemSpriteExtra*> m_formatButtons;
+    std::vector<CCMenuItemSpriteExtra*> m_formatRows;
 };
 
 } // namespace paimon::versus

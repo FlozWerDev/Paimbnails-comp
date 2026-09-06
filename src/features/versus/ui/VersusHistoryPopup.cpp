@@ -1,4 +1,5 @@
 #include "VersusHistoryPopup.hpp"
+#include "VersusUIKit.hpp"
 #include "../data/VersusModes.hpp"
 #include "../services/VersusStore.hpp"
 #include "../../../utils/DynamicPopupRegistry.hpp"
@@ -75,19 +76,26 @@ bool VersusHistoryPopup::init() {
 
     char const* labels[] = {"Classic", "Platformer"};
     for (int i = 0; i < 2; i++) {
-        auto* face = ButtonSprite::create(labels[i], 76, true, "bigFont.fnt",
-                                          "GJ_button_04.png", 22.f, 0.34f);
-        auto* btn = CCMenuItemSpriteExtra::create(face, this,
-                                                  menu_selector(VersusHistoryPopup::onMode));
+        auto* btn = ui::makeTab(labels[i], 78.f, this, menu_selector(VersusHistoryPopup::onMode));
         btn->setTag(kModeTag + i);
         btn->setPosition({(i - 0.5f) * 84.f, 0.f});
         menu->addChild(btn);
         m_modeButtons.push_back(btn);
     }
 
+    auto* legend = ui::makeText(Localization::get().getString("versus.history.legend"),
+                                "chatFont.fnt", 0.4f, {kPopupW / 2.f, kPopupH - 76.f});
+    legend->setOpacity(160);
+    m_mainLayer->addChild(legend, 3);
+
     m_scroll = ScrollLayer::create({kListW, kListH});
     m_scroll->setPosition({(kPopupW - kListW) / 2.f, 14.f});
     m_mainLayer->addChild(m_scroll, 1);
+
+    auto* borders = ListBorders::create();
+    borders->setContentSize({kListW, kListH});
+    borders->setPosition({kPopupW / 2.f, 14.f + kListH / 2.f});
+    m_mainLayer->addChild(borders, 4);
 
     buildRows();
     return true;
@@ -102,8 +110,7 @@ void VersusHistoryPopup::onMode(CCObject* sender) {
 
 void VersusHistoryPopup::buildRows() {
     for (size_t i = 0; i < m_modeButtons.size(); i++) {
-        m_modeButtons[i]->setColor(static_cast<int>(i) == static_cast<int>(m_mode)
-            ? ccColor3B{255, 255, 255} : ccColor3B{140, 145, 160});
+        ui::styleTab(m_modeButtons[i], static_cast<int>(i) == static_cast<int>(m_mode));
     }
 
     m_scroll->m_contentLayer->removeAllChildren();

@@ -154,6 +154,7 @@ MatchInfo VersusClient::parseMatch(matjson::Value const& v) {
     match.seed = static_cast<uint64_t>(intField(v, "seed"));
     match.countdownMs = static_cast<int>(intField(v, "countdownMs"));
     match.catchUp = boolField(v, "catchUp", true);
+    match.ranked = boolField(v, "ranked", true);
     if (v.contains("mutators") && v["mutators"].isArray()) {
         for (auto const& entry : v["mutators"]) {
             match.mutators.push_back(entry.asString().unwrapOr(""));
@@ -292,15 +293,22 @@ void VersusClient::forfeit(std::string const& matchId, OkCallback cb) {
         });
 }
 
-void VersusClient::challenge(std::string const& username, Mode mode, Format format, MatchCallback cb) {
+void VersusClient::challenge(std::string const& target, Mode mode, Format format,
+                             ChallengeCallback cb) {
     auto const body = matjson::makeObject({
-        {"target", username},
+        {"target", target},
         {"mode", modeId(mode)},
         {"format", formatId(format)},
     });
     send("POST", "/api/challenge", body,
-        [cb = std::move(cb)](bool ok, matjson::Value const& json, std::string const&) mutable {
-            cb(ok, ok ? parseMatch(json) : MatchInfo{});
+        [cb = std::move(cb)](bool ok, matjson::Value const& json,
+                             std::string const& message) mutable {
+            ChallengeResult result;
+            if (ok) {
+                result.code = stringField(json, "code");
+                result.matchId = stringField(json, "id");
+            }
+            cb(ok, result, message);
         });
 }
 
