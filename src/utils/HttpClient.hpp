@@ -56,6 +56,19 @@ public:
     void startModCodeSetup(std::string const& username, int accountID, GenericCallback callback);
     void completeModCodeSetup(std::string const& challengeToken, GenericCallback callback);
 
+    // Verificacion de cuenta para usuarios normales. El servidor da un codigo que hay que
+    // publicar como comentario en el propio perfil de GD; al comprobarlo devuelve un token
+    // firmado de 30 dias que prueba la propiedad de la cuenta. Sin el, votar o cambiar el
+    // fondo de perfil solo se apoyaba en una consulta publica a los servidores de GD, que
+    // no demuestra nada. Es el equivalente del mod code para quien no es moderador.
+    std::string getViewerToken() const { return m_viewerToken; }
+    void setViewerToken(std::string const& token);
+    bool hasViewerToken() const { return !m_viewerToken.empty(); }
+    // Devuelve el codigo a publicar en el perfil.
+    void startAccountVerification(std::string const& username, GenericCallback callback);
+    // Comprueba el comentario y, si esta, guarda el token.
+    void checkAccountVerification(std::string const& username, GenericCallback callback);
+
     void cleanTasks(bool allowNewRequests = true);
 
 
@@ -255,6 +268,11 @@ private:
     std::string m_forumServerURL;
     std::string m_apiKey;
     std::string m_modCode;
+    std::string m_viewerToken;
+
+    // Las credenciales solo salen hacia los backends propios (worker y foro), nunca
+    // hacia el CDN ni hacia URLs que vengan en una respuesta.
+    bool isTrustedBackendUrl(std::string const& url) const;
     
     struct ExistsCacheEntry {
         bool exists;
@@ -312,6 +330,17 @@ private:
         std::string const& url,
         std::vector<std::string> const& headers,
         geode::CopyableFunction<void(bool, std::vector<uint8_t> const&)> callback,
+        int timeoutSeconds = 15,
+        bool includeModCode = false
+    );
+
+    // Igual, pero pasa el codigo HTTP. Hace falta para no confundir un 404 (la miniatura
+    // no existe, cachear el negativo) con un 500/timeout (fallo pasajero, reintentar).
+    using BinaryStatusCallback = geode::CopyableFunction<void(bool, std::vector<uint8_t> const&, int status)>;
+    void performBinaryRequestEx(
+        std::string const& url,
+        std::vector<std::string> const& headers,
+        BinaryStatusCallback callback,
         int timeoutSeconds = 15,
         bool includeModCode = false
     );

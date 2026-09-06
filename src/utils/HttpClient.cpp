@@ -59,6 +59,13 @@ std::string getSafeAccountUsername() {
     return "";
 }
 
+// Solo estos codigos significan "esto no existe" y valen para cachear el negativo. Un 0
+// (timeout o corte de red), un 5xx o un 429 son transitorios: tratarlos como ausencia
+// dejaba el nivel en blanco durante NOT_FOUND_TTL_SECONDS por un hipo del servidor.
+bool isMissingStatus(int status) {
+    return status == 404 || status == 410;
+}
+
 bool decodeBase64(std::string const& input, std::vector<uint8_t>& out) {
     static int8_t const* T = []() {
         static int8_t arr[256];
@@ -95,6 +102,7 @@ HttpClient::HttpClient() {
     m_apiKey = "074b91c9-6631-4670-a6f08a2ce970-0183-471b";
 
     m_modCode = Mod::get()->getSavedValue<std::string>("mod-code", "");
+    m_viewerToken = Mod::get()->getSavedValue<std::string>("viewer-token", "");
     m_callbackGate = std::make_shared<std::atomic<bool>>(true);
 
     loadManifestFromDisk();
@@ -161,6 +169,43 @@ void HttpClient::setModCode(std::string const& code) {
     PaimonDebug::log("[HttpClient] Mod code updated.");
 }
 
+void HttpClient::setViewerToken(std::string const& token) {
+    m_viewerToken = token;
+    Mod::get()->setSavedValue("viewer-token", token);
+    PaimonDebug::log("[HttpClient] Viewer token {}.", token.empty() ? "cleared" : "updated");
+}
+
+void HttpClient::startAccountVerification(std::string const& username, GenericCallback callback) {
+    matjson::Value body = matjson::makeObject({ {"username", username} });
+    std::vector<std::string> headers = {
+        "X-API-Key: " + m_apiKey,
+        "Content-Type: application/json",
+        "Accept: application/json"
+    };
+    performRequest(m_serverURL + "/api/request-verify/start", "POST", body.dump(), headers,
+                   std::move(callback), false);
+}
+
+void HttpClient::checkAccountVerification(std::string const& username, GenericCallback callback) {
+    matjson::Value body = matjson::makeObject({ {"username", username} });
+    std::vector<std::string> headers = {
+        "X-API-Key: " + m_apiKey,
+        "Content-Type: application/json",
+        "Accept: application/json"
+    };
+    performRequest(m_serverURL + "/api/request-verify/check", "POST", body.dump(), headers,
+        [callback = std::move(callback)](bool success, std::string const& response) {
+            if (success) {
+                auto parsed = matjson::parse(response);
+                if (parsed.isOk()) {
+                    auto token = parsed.unwrap()["token"].asString().unwrapOr("");
+                    if (!token.empty()) HttpClient::get().setViewerToken(token);
+                }
+            }
+            if (callback) callback(success, response);
+        }, false);
+}
+
 void HttpClient::startModCodeSetup(std::string const& username, int accountID, GenericCallback callback) {
     matjson::Value body = matjson::makeObject({
         {"username", username},
@@ -176,20 +221,55 @@ void HttpClient::completeModCodeSetup(std::string const& challengeToken, Generic
     postWithoutModCode("/api/mod-auth/complete", body.dump(), std::move(callback));
 }
 
+// Cabeceras que identifican o autentican al usuario. Varios metodos publicos aceptan una
+// URL completa (get, post, postWithAuth) y metian estas a mano en la lista, asi que apuntar
+// uno de ellos al CDN o al servidor del foro mandaba la credencial a un tercero. Se filtran
+// en el unico sitio por el que pasan todas.
+static bool isCredentialHeader(std::string const& key) {
+    static constexpr std::string_view kCredentialKeys[] = {
+        "x-mod-code", "x-viewer-token", "x-api-key",
+        "authorization", "x-admin-user", "x-bot-service-secret"
+    };
+    std::string lower = key;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (auto const& candidate : kCredentialKeys) {
+        if (lower == candidate) return true;
+    }
+    return false;
+}
+
 // Apply headers and detect an explicit X-Mod-Code.
 static void applyHeaderList(web::WebRequest& req, std::vector<std::string> const& headers,
-                            bool* outHasModCode = nullptr) {
+                            bool* outHasModCode = nullptr, bool allowCredentials = true) {
     for (auto const& header : headers) {
         size_t colonPos = header.find(':');
         if (colonPos == std::string::npos) continue;
         std::string key = header.substr(0, colonPos);
         std::string value = header.substr(colonPos + 1);
         value.erase(0, value.find_first_not_of(" \t"));
+        if (!allowCredentials && isCredentialHeader(key)) {
+            PaimonDebug::log("[HttpClient] Dropping credential header '{}' for third-party host", key);
+            continue;
+        }
         req.header(key, value);
         if (outHasModCode && (key == "X-Mod-Code" || key == "x-mod-code")) {
             *outHasModCode = true;
         }
     }
+}
+
+// Que hosts pueden recibir credenciales. Son los dos backends propios: el worker y el
+// servidor del foro, que necesita el mod code para autenticar acciones de moderacion.
+// Todo lo demas queda fuera: performRequest se usa tambien contra el CDN de Bunny y
+// contra URLs que vienen en respuestas del servidor, y mandarles la cabecera dejaba el
+// mod code (una credencial de 180 dias) en los logs de un tercero.
+bool HttpClient::isTrustedBackendUrl(std::string const& url) const {
+    if (url.empty()) return false;
+    if (!url.starts_with("http://") && !url.starts_with("https://")) return true;  // ruta relativa
+    if (!m_serverURL.empty() && url.starts_with(m_serverURL)) return true;
+    if (!m_forumServerURL.empty() && url.starts_with(m_forumServerURL)) return true;
+    return url.find("://api.flozwer.org") != std::string::npos;
 }
 
 void HttpClient::performRequest(
@@ -206,11 +286,17 @@ void HttpClient::performRequest(
     req.acceptEncoding("gzip, deflate");
 
     bool hasExplicitModCodeHeader = false;
+    bool trustedHost = isTrustedBackendUrl(url);
 
-    applyHeaderList(req, headers, &hasExplicitModCodeHeader);
+    applyHeaderList(req, headers, &hasExplicitModCodeHeader, trustedHost);
 
-    if (includeStoredModCode && !hasExplicitModCodeHeader && !m_modCode.empty()) {
+    if (includeStoredModCode && !hasExplicitModCodeHeader && !m_modCode.empty() && trustedHost) {
         req.header("X-Mod-Code", m_modCode);
+    }
+    // Prueba de propiedad de la cuenta de GD; el servidor la exige para votar y para
+    // cambiar el fondo de perfil cuando REQUIRE_VERIFIED_IDENTITY esta activado.
+    if (trustedHost && !m_viewerToken.empty()) {
+        req.header("X-Viewer-Token", m_viewerToken);
     }
 
     if (method == "POST" && !postData.empty()) {
@@ -270,10 +356,26 @@ void HttpClient::performRequest(
     });
 }
 
+// Reenvia a la version con codigo de estado. La mayoria de llamantes solo miran si fue
+// bien, pero la cadena de descarga necesita distinguir un 404 real de un fallo pasajero.
 void HttpClient::performBinaryRequest(
     std::string const& url,
     std::vector<std::string> const& headers,
     geode::CopyableFunction<void(bool, std::vector<uint8_t> const&)> callback,
+    int timeoutSeconds,
+    bool includeModCode
+) {
+    performBinaryRequestEx(url, headers,
+        [callback = std::move(callback)](bool success, std::vector<uint8_t> const& data, int) {
+            if (callback) callback(success, data);
+        },
+        timeoutSeconds, includeModCode);
+}
+
+void HttpClient::performBinaryRequestEx(
+    std::string const& url,
+    std::vector<std::string> const& headers,
+    BinaryStatusCallback callback,
     int timeoutSeconds,
     bool includeModCode
 ) {
@@ -285,9 +387,10 @@ void HttpClient::performBinaryRequest(
 
     req.header("Accept", "image/webp,image/png,image/gif,*/*");
 
-    applyHeaderList(req, headers);
+    bool trustedHost = isTrustedBackendUrl(url);
+    applyHeaderList(req, headers, nullptr, trustedHost);
 
-    if (includeModCode && !m_modCode.empty()) {
+    if (includeModCode && !m_modCode.empty() && trustedHost) {
         req.header("X-Mod-Code", m_modCode);
     }
 
@@ -330,7 +433,7 @@ void HttpClient::performBinaryRequest(
         }
 
         if (paimon::isRuntimeShuttingDown()) return;
-        if (callback) callback(success, data);
+        if (callback) callback(success, data, statusCode);
     });
 }
 
@@ -357,7 +460,12 @@ void HttpClient::performUpload(
     req.timeout(std::chrono::seconds(30));
     req.acceptEncoding("gzip, deflate");
 
-    applyHeaderList(req, headers);
+    bool trustedHost = isTrustedBackendUrl(url);
+    applyHeaderList(req, headers, nullptr, trustedHost);
+
+    if (trustedHost && !m_viewerToken.empty()) {
+        req.header("X-Viewer-Token", m_viewerToken);
+    }
 
     req.bodyMultipart(form);
 
@@ -1370,14 +1478,20 @@ void HttpClient::downloadThumbnail(int levelId, DownloadCallback callback) {
                 };
                 std::string url = m_serverURL + "/t/" + std::to_string(levelId);
 
-                performBinaryRequest(url, headers, [this, levelId](bool ws, std::vector<uint8_t> const& wd) {
+                performBinaryRequestEx(url, headers, [this, levelId](bool ws, std::vector<uint8_t> const& wd, int status) {
                     if (ws && !wd.empty()) {
                         PaimonDebug::log("[HttpClient] Worker fallback success for level {}: {} bytes", levelId, wd.size());
                         resolveInflight(levelId, true, wd);
-                    } else {
-                        PaimonDebug::warn("[HttpClient] No thumbnail found for level {} (CDN + Worker both failed)", levelId);
+                    } else if (isMissingStatus(status)) {
+                        PaimonDebug::warn("[HttpClient] Level {} has no thumbnail (HTTP {})", levelId, status);
                         markThumbnailNotFound(levelId);
                         removeManifestEntry(levelId);
+                        resolveInflight(levelId, false, {});
+                    } else {
+                        // Timeout, 5xx, 429 o corte de red: no es "no existe". Cachear el
+                        // negativo aqui dejaba el nivel en blanco cinco minutos y ademas
+                        // tiraba la entrada buena del manifiesto.
+                        PaimonDebug::warn("[HttpClient] Transient failure for level {} (HTTP {}), not caching as missing", levelId, status);
                         resolveInflight(levelId, false, {});
                     }
                 });
@@ -1412,13 +1526,16 @@ void HttpClient::downloadThumbnail(int levelId, DownloadCallback callback) {
                 };
                 std::string url = m_serverURL + "/t/" + std::to_string(levelId);
 
-                performBinaryRequest(url, headers, [this, levelId](bool ws, std::vector<uint8_t> const& wd) {
+                performBinaryRequestEx(url, headers, [this, levelId](bool ws, std::vector<uint8_t> const& wd, int status) {
                     if (ws && !wd.empty()) {
                         PaimonDebug::log("[HttpClient] Worker fallback success for level {}: {} bytes", levelId, wd.size());
                         resolveInflight(levelId, true, wd);
-                    } else {
-                        PaimonDebug::warn("[HttpClient] No thumbnail found for level {} (CDN + Worker both failed)", levelId);
+                    } else if (isMissingStatus(status)) {
+                        PaimonDebug::warn("[HttpClient] Level {} has no thumbnail (HTTP {})", levelId, status);
                         markThumbnailNotFound(levelId);
+                        resolveInflight(levelId, false, {});
+                    } else {
+                        PaimonDebug::warn("[HttpClient] Transient failure for level {} (HTTP {}), not caching as missing", levelId, status);
                         resolveInflight(levelId, false, {});
                     }
                 });
@@ -1436,13 +1553,16 @@ void HttpClient::downloadThumbnail(int levelId, DownloadCallback callback) {
 
     std::string url = m_serverURL + "/t/" + std::to_string(levelId);
 
-    performBinaryRequest(url, headers, [this, levelId](bool success, std::vector<uint8_t> const& data) {
+    performBinaryRequestEx(url, headers, [this, levelId](bool success, std::vector<uint8_t> const& data, int status) {
         if (success && !data.empty()) {
             PaimonDebug::log("[HttpClient] Found thumbnail for level {}", levelId);
             resolveInflight(levelId, true, data);
-        } else {
-            PaimonDebug::warn("[HttpClient] No thumbnail found for level {}", levelId);
+        } else if (isMissingStatus(status)) {
+            PaimonDebug::warn("[HttpClient] Level {} has no thumbnail (HTTP {})", levelId, status);
             markThumbnailNotFound(levelId);
+            resolveInflight(levelId, false, {});
+        } else {
+            PaimonDebug::warn("[HttpClient] Transient failure for level {} (HTTP {}), not caching as missing", levelId, status);
             resolveInflight(levelId, false, {});
         }
     });
@@ -2830,6 +2950,13 @@ std::string buildBatchIdsJson(std::string const& key, std::vector<int> const& id
 }
 }
 
+// El servidor lee un objeto de Bunny por id y cada lectura cuenta contra el limite de 50
+// subrequests por invocacion, asi que el tamano del lote es un contrato entre las dos
+// partes: estos numeros son los mismos que MAX_BATCH_ASSET_FETCHES y
+// MAX_BATCH_LIST_FETCHES del worker. Pasarse hacia fallar el lote entero con un 500.
+static constexpr size_t MAX_ASSET_BATCH = 15;
+static constexpr size_t MAX_PROFILE_BATCH = 10;
+
 void HttpClient::downloadThumbnailsBatch(std::vector<int> const& levelIds,
                                          BatchDownloadCallback callback) {
     if (levelIds.empty()) {
@@ -2842,8 +2969,7 @@ void HttpClient::downloadThumbnailsBatch(std::vector<int> const& levelIds,
         return;
     }
 
-    static constexpr size_t MAX_BATCH = 40;
-    std::string body = buildBatchIdsJson("ids", levelIds, MAX_BATCH);
+    std::string body = buildBatchIdsJson("ids", levelIds, MAX_ASSET_BATCH);
     std::string url = m_serverURL + "/api/thumbnails/batch";
 
     std::vector<std::string> headers = {
@@ -2871,8 +2997,7 @@ void HttpClient::getThumbnailsBatch(std::vector<int> const& levelIds, BatchListC
         return;
     }
 
-    static constexpr size_t MAX_BATCH = 40;
-    std::string body = buildBatchIdsJson("ids", levelIds, MAX_BATCH);
+    std::string body = buildBatchIdsJson("ids", levelIds, MAX_ASSET_BATCH);
     std::string url = m_serverURL + "/api/thumbnails/list-batch";
 
     std::vector<std::string> headers = {
@@ -2930,8 +3055,7 @@ void HttpClient::downloadProfileBackgroundsBatch(std::vector<int> const& account
         return;
     }
 
-    static constexpr size_t MAX_BATCH = 40;
-    std::string body = buildBatchIdsJson("accountIDs", accountIDs, MAX_BATCH);
+    std::string body = buildBatchIdsJson("accountIDs", accountIDs, MAX_PROFILE_BATCH);
     std::string url = m_serverURL + "/api/profilebackground/batch";
 
     std::vector<std::string> headers = {
@@ -2964,8 +3088,7 @@ void HttpClient::downloadProfileImgsBatch(std::vector<int> const& accountIDs,
         return;
     }
 
-    static constexpr size_t MAX_BATCH = 40;
-    std::string body = buildBatchIdsJson("accountIDs", accountIDs, MAX_BATCH);
+    std::string body = buildBatchIdsJson("accountIDs", accountIDs, MAX_PROFILE_BATCH);
     std::string url = m_serverURL + "/api/profileimgs/batch";
 
     std::vector<std::string> headers = {

@@ -246,7 +246,10 @@ private:
     std::vector<BatchPending> m_batchPendingDownloads;
     std::mutex m_batchPendingMutex;
     std::atomic<bool> m_batchFlushScheduled{false};
-    static constexpr int BATCH_FLUSH_THRESHOLD = 40;
+    // Tiene que coincidir con MAX_ASSET_BATCH de HttpClient.cpp, que a su vez es el
+    // MAX_BATCH_ASSET_FETCHES del worker: el servidor lee un objeto por id y con 40 se
+    // pasaba del limite de 50 subrequests por invocacion, tumbando el lote entero.
+    static constexpr int BATCH_FLUSH_THRESHOLD = 15;
     static constexpr int BATCH_FLUSH_DELAY_MS = 50;
     void scheduleBatchFlush();
     void flushBatchDownloads();
