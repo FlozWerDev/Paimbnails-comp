@@ -114,7 +114,8 @@ bool VersusClient::authenticated() const {
 void VersusClient::send(std::string const& method, std::string const& path,
                         matjson::Value const& body,
                         geode::CopyableFunction<void(bool, matjson::Value const&,
-                                                     std::string const&)> cb) {
+                                                     std::string const&)> cb,
+                        bool allowRetry) {
     auto req = web::WebRequest();
     req.timeout(kTimeout);
     req.header("Content-Type", "application/json");
@@ -126,7 +127,7 @@ void VersusClient::send(std::string const& method, std::string const& path,
     if (method != "GET") req.bodyString(body.dump(matjson::NO_INDENTATION));
 
     WebHelper::dispatch(std::move(req), method, baseUrl() + path,
-        [cb = std::move(cb)](web::WebResponse res) mutable {
+        [method, path, body, allowRetry, cb = std::move(cb)](web::WebResponse res) mutable {
             if (paimon::isRuntimeShuttingDown()) return;
 
             auto const text = res.string().unwrapOr("");
@@ -137,6 +138,23 @@ void VersusClient::send(std::string const& method, std::string const& path,
                 auto message = json.contains("error")
                     ? json["error"].asString().unwrapOr("")
                     : fmt::format("HTTP {}", res.code());
+
+                auto& self = VersusClient::get();
+                if (res.code() == 401 && allowRetry && !self.m_token.empty()) {
+                    log::warn("[Versus][Client] Session refused on {}, signing in again", path);
+                    self.m_token.clear();
+                    self.m_authenticated = false;
+                    self.authenticate([method, path, body, cb = std::move(cb)](
+                                          bool ok, std::string const& authMessage) mutable {
+                        if (!ok) {
+                            cb(false, matjson::Value(), authMessage);
+                            return;
+                        }
+                        VersusClient::get().send(method, path, body, std::move(cb), false);
+                    });
+                    return;
+                }
+
                 cb(false, json, message);
                 return;
             }

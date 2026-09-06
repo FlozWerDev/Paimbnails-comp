@@ -134,10 +134,14 @@ private:
     std::unordered_map<int, ProfileCacheEntry> m_profileCache;
     std::unordered_map<int, std::vector<ProfileCallback>> m_profileWaiters;
 
+    // A session only lives in the server's store, so it can be gone while the
+    // client still believes in it. allowRetry is what stops the re-auth that
+    // follows a 401 from recursing when the new token is refused too.
     void send(std::string const& method, std::string const& path,
               matjson::Value const& body,
               geode::CopyableFunction<void(bool ok, matjson::Value const& json,
-                                           std::string const& message)> cb);
+                                           std::string const& message)> cb,
+              bool allowRetry = true);
 
     static MatchInfo parseMatch(matjson::Value const& v);
 
