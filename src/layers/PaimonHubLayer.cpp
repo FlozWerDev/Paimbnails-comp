@@ -29,6 +29,8 @@
 #include "../features/forum/ui/CreatePostPopup.hpp"
 #include "../features/forum/ui/PostDetailPopup.hpp"
 #include "../features/dev-tools/ui/GifToSheetPopup.hpp"
+#include "../features/thumb-requests/ui/ThumbRequestsPopup.hpp"
+#include "../core/modules/ModuleRegistry.hpp"
 #include "../features/updates/services/UpdateChecker.hpp"
 #include "../features/updates/ui/UpdateProgressPopup.hpp"
 #include "../features/updates/ui/UpdateCenterPopup.hpp"
@@ -209,11 +211,18 @@ std::vector<HubActionMeta> getHubActions(int categoryIndex) {
                     paimon::factory_reset::requestWithConfirmation();
                 }, 0, "Restaura todo por defecto"},
             };
-        case 1: // Thumbnails
-            return {
+        case 1: { // Thumbnails
+            std::vector<HubActionMeta> actions = {
                 {"Configurar", "GJ_button_02.png", [](PaimonHubLayer*) { SettingsPanelManager::get().open(1); }, 1, "Tamano y estilo de celdas"},
                 {"Efectos", "GJ_button_03.png", [](PaimonHubLayer*) { SettingsPanelManager::get().open(2); }, 1, "Animaciones y transiciones"},
             };
+            if (paimon::modules::isEnabled(paimon::thumbreq::kModuleId)) {
+                actions.push_back({"Peticiones", "GJ_button_04.png", [](PaimonHubLayer*) {
+                    if (auto popup = paimon::thumbreq::ThumbRequestsPopup::create()) popup->show();
+                }, 1, "Lo que se pide por Discord"});
+            }
+            return actions;
+        }
         case 2: // Level
             return {
                 {"Configurar", "GJ_button_01.png", [](PaimonHubLayer*) { SettingsPanelManager::get().open(3); }, 2, "Fondo y efectos del nivel"},

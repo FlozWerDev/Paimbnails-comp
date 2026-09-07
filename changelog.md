@@ -127,6 +127,15 @@
 
 ---
 
+## ![](frame:GJ_starsIcon_001.png?height=18) <cy>Peticiones de Miniatura</c>
+
+- Llega el sistema de <cg>peticiones desde Discord</c>. En el servidor se pulsa un boton, se rellena un formulario con el <cg>ID del nivel</c>, la <cg>dificultad</c> - que se elige con las caras del propio juego -, si es <cg>platformer o classic</c>, una descripcion y un video opcional. La peticion se guarda y el equipo la revisa.
+- En <cg>Paimon Hub > Miniaturas > Peticiones</c> se ve la cola entera desde el juego, con la <cg>cara de dificultad</c> y su brillo de rate, el tipo de nivel, quien la pidio y en que quedo. Se filtra por todas, pendientes o enviadas, cada fila abre el nivel y, si la peticion traia video, tambien lo abre.
+- Cuando el equipo la acepta elige <cg>dificultad y rate</c>, de star rate a mythic, y esa es la cara que el mod dibuja. Mientras nadie decida se ensena la que pidio quien la mando.
+- Se apaga desde <cg>Modulos > Miniaturas > Peticiones de Miniatura</c>.
+
+---
+
 ## ![](frame:GJ_infoIcon_001.png?height=18) <cy>Avisos de Miniaturas Nuevas</c>
 
 - La tarjeta pasa a llevar <cg>marco blanco de popup</c>. El borde se pintaba con el color dominante de la miniatura, asi que cada aviso salia de un color distinto y ninguno se parecia a las ventanas del juego. Ahora va el marco claro con una sombra por detras, que se ve igual sobre un menu claro que sobre uno oscuro.

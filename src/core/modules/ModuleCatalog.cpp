@@ -386,6 +386,9 @@ std::vector<Module> buildCatalog() {
         setting("paimbnails.thumbalerts.social", "New Thumbnail Alerts",
                 "Announces thumbnails that just went live, over the thumbnail itself.",
                 "thumbalert-enabled", "Thumbnails", S::Social, true),
+        saved("paimbnails.thumbrequests.social", "Thumbnail Requests",
+              "The requests filed from Discord and what the team decided about each one.",
+              "module-thumb-requests", "Thumbnails", S::Social, true),
 
         setting("paimbnails.autobuild.editor", "Autobuild",
                 "Learns a decorated area and rebuilds it on markers, selections or areas.",
