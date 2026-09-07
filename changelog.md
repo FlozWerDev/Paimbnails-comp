@@ -145,6 +145,16 @@
 
 ---
 
+## ![](frame:GJ_sDownloadIcon_001.png?height=18) <cy>Tienda de Iconos</c>
+
+- <cr>Un icono descargado desaparecia al reiniciar el juego</c>, y ademas se quedaba desequipado. La tienda solo le recordaba a <cl>More Icons</c> nuestra carpeta al abrirla, pero More Icons resuelve el icono que llevas puesto durante la pantalla de carga y, si no lo encuentra, <cr>da el guardado por muerto y lo borra</c>. Ahora cada icono deja un <cg>install.json</c> al bajarse y todos se registran <cg>en la pantalla de carga</c>, antes de que More Icons pase por ahi. Los que ya tenias instalados se recuperan solos.
+- <cg>La tienda se rediseno</c>. Arriba y abajo van dos <cg>bandas</c> con linea dorada que separan la rejilla del fondo: en la de arriba quedan el titulo, el buscador, los filtros y el contador del catalogo, y en la de abajo los resultados, el orden y el paginador dentro de una <cg>pastilla</c>. Con eso entran <cg>cinco iconos por fila y dos filas enteras</c> en vez de una y media.
+- Las tarjetas se rehicieron: <cr>el nombre se montaba encima del hueco de la vista previa</c>, asi que el icono y el texto se pisaban. Ahora el hueco, el nombre y el autor tienen su franja, y lo que ya tienes descargado se marca con un <cg>borde verde</c> ademas del tilde de la esquina, que se ve sin leer la tarjeta.
+- El boton de <cg>Filtros</c> lleva un <cg>punto dorado</c> cuando hay un gamemode filtrado: antes el filtro se quedaba puesto y la unica pista estaba dentro del popup.
+- La ficha del icono es <cg>mas grande</c>, con la vista previa a mayor tamano y el <cg>gamemode en una chapa debajo</c>, que libera una fila entera para la descripcion.
+
+---
+
 ## ![](frame:chestIcon_001.png?height=18) <cy>Compatibilidad</c>
 
 - <cl>Level Thumbnails</c>: ya es <cg>compatible</c>. Se quita el cartel de inicio que pedia desactivarlo y se pueden tener los dos mods puestos a la vez.

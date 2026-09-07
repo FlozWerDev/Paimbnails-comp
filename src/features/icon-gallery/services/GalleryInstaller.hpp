@@ -41,9 +41,11 @@ public:
     // True si el icono equipado en `type` es este.
     static bool isEquipped(std::string const& slug, IconType type);
 
-    // Vuelve a registrar en More Icons todo lo que hay en installed/.
-    // Se llama una vez al abrir la tienda: More Icons no conoce nuestra
-    // carpeta, asi que tras reiniciar el juego hay que recordarselo.
+    // Vuelve a registrar en More Icons todo lo que hay en installed/, leyendo
+    // el install.json de cada carpeta. More Icons no conoce la nuestra, y en
+    // loadAssets resuelve el icono equipado contra su lista: si todavia no
+    // estamos ahi, da el guardado por muerto y lo borra. De ahi que esto corra
+    // en LoadingLayer::init y no cuando se abre la tienda.
     static void registerAllInstalled();
 
 private:

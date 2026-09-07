@@ -41,6 +41,7 @@ protected:
     cocos2d::CCNode* m_previewBox = nullptr;
     cocos2d::CCSprite* m_preview = nullptr;
     cocos2d::CCNode* m_spinner = nullptr;
+    cocos2d::CCLabelBMFont* m_typeChip = nullptr;
     cocos2d::CCNode* m_infoHost = nullptr;
     cocos2d::CCNode* m_actionHost = nullptr;
     cocos2d::CCLabelBMFont* m_status = nullptr;

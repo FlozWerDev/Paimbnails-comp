@@ -17,6 +17,13 @@ namespace {
 
 constexpr cocos2d::ccColor3B kAuthorColor = {166, 195, 235};
 constexpr cocos2d::ccColor3B kBadgeColor = {255, 215, 110};
+constexpr cocos2d::ccColor4F kInstalledEdge = {0.38f, 0.86f, 0.45f, 1.f};
+
+// Margenes de la tarjeta: el hueco de la vista previa manda, y lo que sobra
+// abajo se reparte entre nombre y autor.
+constexpr float kSideMargin = 8.f;
+constexpr float kTopMargin = 6.f;
+constexpr float kTextBand = 36.f;
 
 // Tag del interrogante que se pinta cuando el icono no se pudo bajar.
 constexpr int kFailMarkTag = 77;
@@ -76,20 +83,30 @@ void IconStoreCard::buildFrame() {
         addChild(plate, -1);
     }
 
-    float const boxSize = m_width - 18.f;
-    float const boxCY = m_height - 10.f - boxSize / 2.f;
+    // Borde verde de "ya lo tienes": se ve de un vistazo sin leer la tarjeta.
+    m_installedEdge = paimon::SpriteHelper::createRoundedRectOutline(
+        m_width, m_height, 6.f, kInstalledEdge, 1.8f);
+    if (m_installedEdge) {
+        m_installedEdge->setPosition({0.f, 0.f});
+        m_installedEdge->setVisible(false);
+        addChild(m_installedEdge, 3);
+    }
+
+    float const boxW = m_width - kSideMargin * 2.f;
+    float const boxH = m_height - kTextBand - kTopMargin;
+    float const boxCY = m_height - kTopMargin - boxH / 2.f;
 
     // Hueco oscuro detras de la vista previa: da profundidad y deja claro
     // donde va el icono mientras carga.
     if (auto* well = paimon::SpriteHelper::createColorPanel(
-            boxSize, boxSize, {0, 0, 0}, 110, 6.f)) {
+            boxW, boxH, {0, 0, 0}, 110, 6.f)) {
         well->setAnchorPoint({0.f, 0.f});
-        well->setPosition({9.f, boxCY - boxSize / 2.f});
+        well->setPosition({kSideMargin, boxCY - boxH / 2.f});
         addChild(well);
     }
 
     m_previewBox = CCNode::create();
-    m_previewBox->setContentSize({boxSize, boxSize});
+    m_previewBox->setContentSize({boxW, boxH});
     m_previewBox->setAnchorPoint({0.5f, 0.5f});
     m_previewBox->setPosition({m_width / 2.f, boxCY});
     addChild(m_previewBox, 1);
@@ -97,34 +114,35 @@ void IconStoreCard::buildFrame() {
     m_name = CCLabelBMFont::create("", "bigFont.fnt");
     if (m_name) {
         m_name->setAnchorPoint({0.5f, 0.5f});
-        m_name->setPosition({m_width / 2.f, 26.f});
+        m_name->setPosition({m_width / 2.f, 21.f});
         addChild(m_name, 2);
     }
 
     m_author = CCLabelBMFont::create("", "chatFont.fnt");
     if (m_author) {
         m_author->setAnchorPoint({0.5f, 0.5f});
-        m_author->setScale(0.36f);
+        m_author->setScale(0.34f);
         m_author->setColor(kAuthorColor);
-        m_author->setPosition({m_width / 2.f, 12.f});
+        m_author->setPosition({m_width / 2.f, 9.f});
         addChild(m_author, 2);
     }
 
-    // Chapa del gamemode, sobre la esquina superior izquierda.
+    // Chapa del gamemode, pegada a la esquina superior izquierda del hueco.
+    float const badgeY = m_height - kTopMargin - 7.f;
     m_typeBadgeBg = paimon::SpriteHelper::createColorPanel(
-        44.f, 13.f, {0, 0, 0}, 140, 4.f);
+        40.f, 12.f, {0, 0, 0}, 165, 4.f);
     if (m_typeBadgeBg) {
         m_typeBadgeBg->setAnchorPoint({0.f, 0.5f});
-        m_typeBadgeBg->setPosition({7.f, m_height - 13.f});
+        m_typeBadgeBg->setPosition({kSideMargin + 2.f, badgeY});
         m_typeBadgeBg->setVisible(false);
         addChild(m_typeBadgeBg, 3);
     }
     m_typeBadge = CCLabelBMFont::create("", "chatFont.fnt");
     if (m_typeBadge) {
         m_typeBadge->setAnchorPoint({0.5f, 0.5f});
-        m_typeBadge->setScale(0.32f);
+        m_typeBadge->setScale(0.3f);
         m_typeBadge->setColor(kBadgeColor);
-        m_typeBadge->setPosition({29.f, m_height - 13.f});
+        m_typeBadge->setPosition({kSideMargin + 22.f, badgeY});
         m_typeBadge->setVisible(false);
         addChild(m_typeBadge, 4);
     }
@@ -132,8 +150,8 @@ void IconStoreCard::buildFrame() {
     m_installedMark = paimon::SpriteHelper::safeCreateWithFrameName(
         "GJ_completesIcon_001.png");
     if (m_installedMark) {
-        m_installedMark->setScale(0.5f);
-        m_installedMark->setPosition({m_width - 12.f, m_height - 12.f});
+        m_installedMark->setScale(0.45f);
+        m_installedMark->setPosition({m_width - 11.f, badgeY});
         m_installedMark->setVisible(false);
         addChild(m_installedMark, 4);
     }
@@ -148,7 +166,7 @@ CCPoint IconStoreCard::boxCenter() const {
 void IconStoreCard::setLoading(bool loading) {
     if (loading) {
         if (m_spinner || !m_previewBox) return;
-        m_spinner = LoadingSpinner::create(22.f);
+        m_spinner = LoadingSpinner::create(20.f);
         if (!m_spinner) return;
         m_spinner->setPosition(boxCenter());
         // Debajo de la vista previa: si por lo que sea sobrevive un frame de
@@ -171,8 +189,9 @@ void IconStoreCard::showPreview(CCTexture2D* texture) {
     auto const size = sprite->getContentSize();
     if (size.width <= 0.f || size.height <= 0.f) return;
 
-    float const box = m_previewBox->getContentSize().width;
-    float const targetScale = std::min(box / size.width, box / size.height);
+    auto const box = m_previewBox->getContentSize();
+    float const targetScale = std::min((box.width - 8.f) / size.width,
+                                       (box.height - 8.f) / size.height);
     sprite->setPosition(boxCenter());
     m_previewBox->addChild(sprite, 1);
 
@@ -215,23 +234,24 @@ void IconStoreCard::refresh() {
         m_metaShown = true;
         if (m_author && !icon->author.empty()) {
             m_author->setString(("by " + icon->author).c_str());
-            m_author->limitLabelWidth(m_width - 12.f, 0.36f, 0.14f);
+            m_author->limitLabelWidth(m_width - 12.f, 0.34f, 0.13f);
         }
         if (m_typeBadge && m_typeBadgeBg) {
             m_typeBadge->setString(iconTypeLabel(icon->type).c_str());
-            m_typeBadge->limitLabelWidth(40.f, 0.32f, 0.2f);
+            m_typeBadge->limitLabelWidth(36.f, 0.3f, 0.18f);
             m_typeBadge->setVisible(true);
             m_typeBadgeBg->setVisible(true);
         }
     }
 
+    bool const installed = store.isInstalled(m_slug);
+    if (m_installedEdge) m_installedEdge->setVisible(installed);
     if (m_installedMark) {
-        bool const installed = store.isInstalled(m_slug);
         bool const wasVisible = m_installedMark->isVisible();
         m_installedMark->setVisible(installed);
         if (installed && !wasVisible) {
             m_installedMark->setScale(0.f);
-            m_installedMark->runAction(CCEaseBackOut::create(CCScaleTo::create(0.2f, 0.5f)));
+            m_installedMark->runAction(CCEaseBackOut::create(CCScaleTo::create(0.2f, 0.45f)));
         }
     }
 }

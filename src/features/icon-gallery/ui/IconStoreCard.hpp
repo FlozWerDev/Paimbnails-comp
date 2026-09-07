@@ -49,6 +49,7 @@ private:
     cocos2d::CCLabelBMFont* m_author = nullptr;
     cocos2d::CCLabelBMFont* m_typeBadge = nullptr;
     cocos2d::CCNode* m_typeBadgeBg = nullptr;
+    cocos2d::CCNode* m_installedEdge = nullptr;
     cocos2d::CCSprite* m_installedMark = nullptr;
 };
 

@@ -24,9 +24,10 @@ namespace paimon::icon_gallery {
 
 namespace {
 
-constexpr float kWidth = 360.f;
-constexpr float kHeight = 220.f;
-constexpr float kPreviewBox = 100.f;
+constexpr float kWidth = 380.f;
+constexpr float kHeight = 250.f;
+constexpr float kPreviewBox = 118.f;
+constexpr float kInfoGap = 16.f;
 
 std::string tr(char const* key) {
     return Localization::get().getString(key);
@@ -131,8 +132,8 @@ void IconDetailPopup::awaitMeta(float) {
 void IconDetailPopup::buildStatic() {
     auto const content = m_mainLayer->getContentSize();
 
-    float const previewCX = 16.f + kPreviewBox / 2.f;
-    float const previewCY = content.height - 32.f - kPreviewBox / 2.f;
+    float const previewCX = 18.f + kPreviewBox / 2.f;
+    float const previewCY = content.height - 28.f - kPreviewBox / 2.f;
 
     if (auto* well = paimon::SpriteHelper::createColorPanel(
             kPreviewBox, kPreviewBox, {0, 0, 0}, 120, 8.f)) {
@@ -147,19 +148,37 @@ void IconDetailPopup::buildStatic() {
     m_previewBox->setPosition({previewCX, previewCY});
     m_mainLayer->addChild(m_previewBox, 2);
 
-    float const infoX = 16.f + kPreviewBox + 14.f;
-    float const infoW = content.width - infoX - 16.f;
+    // El gamemode cuelga de la vista previa en vez de gastar una fila de la
+    // columna de datos, que es la que se queda sin sitio con descripciones
+    // largas.
+    float const chipCY = previewCY - kPreviewBox / 2.f - 12.f;
+    if (auto* chip = paimon::SpriteHelper::createColorPanel(
+            kPreviewBox, 18.f, {0, 0, 0}, 140, 5.f)) {
+        chip->setAnchorPoint({0.5f, 0.5f});
+        chip->setPosition({previewCX, chipCY});
+        m_mainLayer->addChild(chip, 1);
+    }
+    m_typeChip = CCLabelBMFont::create("", "goldFont.fnt");
+    if (m_typeChip) {
+        m_typeChip->setAnchorPoint({0.5f, 0.5f});
+        m_typeChip->setScale(0.4f);
+        m_typeChip->setPosition({previewCX, chipCY});
+        m_mainLayer->addChild(m_typeChip, 2);
+    }
+
+    float const infoX = 18.f + kPreviewBox + kInfoGap;
+    float const infoW = content.width - infoX - 18.f;
 
     m_infoHost = CCNode::create();
     m_infoHost->setAnchorPoint({0.f, 1.f});
-    m_infoHost->setContentSize({infoW, kPreviewBox + 10.f});
-    m_infoHost->setPosition({infoX, content.height - 30.f});
+    m_infoHost->setContentSize({infoW, kPreviewBox + 22.f});
+    m_infoHost->setPosition({infoX, content.height - 28.f});
     m_mainLayer->addChild(m_infoHost, 2);
 
     m_actionHost = CCNode::create();
     m_actionHost->setAnchorPoint({0.5f, 0.5f});
-    m_actionHost->setContentSize({content.width - 32.f, 32.f});
-    m_actionHost->setPosition({content.width / 2.f, 30.f});
+    m_actionHost->setContentSize({content.width - 36.f, 32.f});
+    m_actionHost->setPosition({content.width / 2.f, 32.f});
     m_mainLayer->addChild(m_actionHost, 3);
 
     m_status = CCLabelBMFont::create("", "chatFont.fnt");
@@ -167,7 +186,7 @@ void IconDetailPopup::buildStatic() {
         m_status->setAnchorPoint({0.5f, 0.5f});
         m_status->setScale(0.38f);
         m_status->setColor({170, 195, 230});
-        m_status->setPosition({content.width / 2.f, 11.f});
+        m_status->setPosition({content.width / 2.f, 12.f});
         m_mainLayer->addChild(m_status, 3);
     }
 }
@@ -232,8 +251,8 @@ void IconDetailPopup::refresh() {
             m_infoHost->addChild(wait);
         }
     } else {
+        if (m_typeChip) m_typeChip->setString(iconTypeLabel(icon->type).c_str());
         addRow(tr("icon-gallery.field.author"), icon->author);
-        addRow(tr("icon-gallery.field.type"), iconTypeLabel(icon->type));
         addRow(tr("icon-gallery.field.date"), formatDate(icon->createdAtMs));
 
         if (icon->isCollab && !icon->collabWith.empty()) {

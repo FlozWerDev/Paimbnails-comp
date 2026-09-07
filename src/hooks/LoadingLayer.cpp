@@ -7,6 +7,7 @@
 #include <fmt/format.h>
 
 #include "../features/backgrounds/services/LayerBackgroundManager.hpp"
+#include "../features/icon-gallery/services/GalleryInstaller.hpp"
 #include "../framework/HookConventions.hpp"
 #include "../features/thumbnails/services/ThumbnailLoader.hpp"
 #include "../features/emotes/services/EmoteService.hpp"
@@ -54,6 +55,10 @@ class $modify(PaimonLoadingLayer, LoadingLayer) {
             return false;
         }
         paimon::captureMainThread();
+        // Antes de que More Icons recorra sus pasos de loadAssets: ahi resuelve
+        // el icono equipado y borra el guardado si el nuestro no esta en su
+        // lista todavia.
+        paimon::icon_gallery::GalleryInstaller::registerAllInstalled();
         LayerBackgroundManager::get().applyVanillaBackgroundTintFix(this);
         return true;
     }

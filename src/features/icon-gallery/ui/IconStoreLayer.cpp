@@ -28,18 +28,55 @@ namespace paimon::icon_gallery {
 
 namespace {
 
-constexpr float kCardW = 104.f;
-constexpr float kCardH = 118.f;
-constexpr float kCardGap = 8.f;
+constexpr float kCardW = 96.f;
+constexpr float kCardH = 108.f;
+constexpr float kCardGap = 6.f;
 
     // Paginate to keep live nodes and per-page downloads bounded.
-constexpr int kPageSize = 24;
+constexpr int kPageSize = 25;
 
-constexpr float kHeaderH = 76.f;
-constexpr float kFooterH = 40.f;
+// Las dos bandas y la rejilla se reparten los 320 de alto: con estas medidas
+// entran cinco tarjetas por fila y dos filas justas sin cortar la segunda.
+constexpr float kHeaderH = 62.f;
+constexpr float kFooterH = 32.f;
+constexpr float kSideMargin = 18.f;
+
+constexpr cocos2d::ccColor3B kBandColor = {10, 14, 38};
+constexpr cocos2d::ccColor3B kRuleColor = {255, 205, 61};
+constexpr cocos2d::ccColor3B kDimText = {170, 196, 232};
+
+// Banda opaca de arriba/abajo mas su linea dorada, para que la rejilla no
+// flote sobre el degradado.
+cocos2d::CCNode* makeBand(float width, float height, bool ruleOnTop) {
+    auto* band = cocos2d::CCNode::create();
+    band->setAnchorPoint({0.f, 0.f});
+    band->setContentSize({width, height});
+
+    if (auto* fill = paimon::SpriteHelper::createColorPanel(
+            width, height, kBandColor, 205, 0.f)) {
+        fill->setPosition({0.f, 0.f});
+        band->addChild(fill);
+    }
+    if (auto* rule = paimon::SpriteHelper::createColorPanel(
+            width, 1.5f, kRuleColor, 90, 0.f)) {
+        rule->setPosition({0.f, ruleOnTop ? height - 1.5f : 0.f});
+        band->addChild(rule, 1);
+    }
+    return band;
+}
 
 std::string tr(char const* key) {
     return Localization::get().getString(key);
+}
+
+std::string sortLabel(GallerySort sort) {
+    switch (sort) {
+        case GallerySort::Newest: return tr("icon-gallery.sort.newest");
+        case GallerySort::Oldest: return tr("icon-gallery.sort.oldest");
+        case GallerySort::NameAsc: return tr("icon-gallery.sort.name");
+        case GallerySort::AuthorAsc: return tr("icon-gallery.sort.author");
+    }
+    return {};
 }
 
 }
@@ -78,11 +115,12 @@ bool IconStoreLayer::init() {
 
     auto win = CCDirector::get()->getWinSize();
     m_scrollHost = CCNode::create();
-    m_scrollHost->setPosition({20.f, kFooterH});
+    m_scrollHost->setPosition({kSideMargin, kFooterH});
     addChild(m_scrollHost, 5);
 
     m_messageHost = CCNode::create();
-    m_messageHost->setPosition({win.width / 2.f, win.height / 2.f - 10.f});
+    m_messageHost->setPosition({win.width / 2.f,
+                                kFooterH + (win.height - kHeaderH - kFooterH) / 2.f});
     addChild(m_messageHost, 6);
 
     buildFooter();
@@ -130,57 +168,46 @@ void IconStoreLayer::buildBackground() {
 
 void IconStoreLayer::buildHeader() {
     auto win = CCDirector::get()->getWinSize();
-    float const rowY = win.height - 22.f;
+    float const titleY = win.height - 17.f;
+    float const toolY = win.height - 42.f;
+
+    if (auto* band = makeBand(win.width, kHeaderH, false)) {
+        band->setPosition({0.f, win.height - kHeaderH});
+        addChild(band, 4);
+    }
 
     auto* menu = CCMenu::create();
     menu->setPosition({0.f, 0.f});
     addChild(menu, 10);
 
     if (auto* spr = paimon::SpriteHelper::safeCreateWithFrameName("GJ_arrow_01_001.png")) {
-        spr->setScale(0.72f);
+        spr->setScale(0.68f);
         auto* back = CCMenuItemExt::createSpriteExtra(spr,
             [this](CCMenuItemSpriteExtra*) { this->onBack(); });
-        back->setPosition({20.f, rowY});
+        back->setPosition({20.f, titleY});
         menu->addChild(back);
     }
 
     if (auto* title = CCLabelBMFont::create(tr("icon-gallery.title").c_str(), "goldFont.fnt")) {
         title->setAnchorPoint({0.f, 0.5f});
-        title->setScale(0.68f);
-        title->setPosition({42.f, rowY});
+        title->setScale(0.62f);
+        title->setPosition({40.f, titleY});
         addChild(title, 5);
     }
 
-    float x = win.width - 22.f;
-
-    if (auto* base = CircleButtonSprite::createWithSpriteFrameName(
-            "GJ_infoIcon_001.png", 1.f, CircleBaseColor::Cyan, CircleBaseSize::Small)) {
-        base->setScale(0.78f);
-        auto* info = CCMenuItemExt::createSpriteExtra(base, [this](CCMenuItemSpriteExtra*) {
-            showMessage("", "");
-            FLAlertLayer::create(tr("icon-gallery.about.title").c_str(),
-                                 tr("icon-gallery.about.body").c_str(), "OK")->show();
-        });
-        x -= info->getScaledContentSize().width / 2.f;
-        info->setPosition({x, rowY});
-        menu->addChild(info);
-        x -= info->getScaledContentSize().width / 2.f + 8.f;
+    m_counter = CCLabelBMFont::create("", "chatFont.fnt");
+    if (m_counter) {
+        m_counter->setAnchorPoint({1.f, 0.5f});
+        m_counter->setScale(0.4f);
+        m_counter->setColor(kDimText);
+        m_counter->setPosition({win.width - kSideMargin, titleY});
+        addChild(m_counter, 5);
     }
 
-    if (auto* spr = ButtonSprite::create(tr("icon-gallery.filters.button").c_str(),
-                                         "goldFont.fnt", "GJ_button_05.png", 0.8f)) {
-        spr->setScale(0.6f);
-        auto* btn = CCMenuItemExt::createSpriteExtra(spr,
-            [this](CCMenuItemSpriteExtra*) { this->onFilters(); });
-        x -= btn->getScaledContentSize().width / 2.f;
-        btn->setPosition({x, rowY});
-        menu->addChild(btn);
-    }
-
-    float const searchW = std::min(230.f, win.width * 0.44f);
+    float const searchW = std::min(214.f, win.width * 0.42f);
     m_search = TextInput::create(searchW, tr("icon-gallery.search").c_str(), "chatFont.fnt");
     if (m_search) {
-        m_search->setPosition({24.f + searchW / 2.f, win.height - 54.f});
+        m_search->setPosition({kSideMargin + searchW / 2.f, toolY});
         Ref<IconStoreLayer> self = this;
         m_search->setCallback([self](std::string const& value) {
             if (paimon::isRuntimeShuttingDown() || !self) return;
@@ -195,7 +222,45 @@ void IconStoreLayer::buildHeader() {
         addChild(m_search, 6);
     }
 
-    float const tabsW = std::min(170.f, win.width * 0.32f);
+    float x = win.width - kSideMargin;
+
+    if (auto* base = CircleButtonSprite::createWithSpriteFrameName(
+            "GJ_infoIcon_001.png", 1.f, CircleBaseColor::Cyan, CircleBaseSize::Small)) {
+        base->setScale(0.62f);
+        auto* info = CCMenuItemExt::createSpriteExtra(base, [this](CCMenuItemSpriteExtra*) {
+            showMessage("", "");
+            FLAlertLayer::create(tr("icon-gallery.about.title").c_str(),
+                                 tr("icon-gallery.about.body").c_str(), "OK")->show();
+        });
+        x -= info->getScaledContentSize().width / 2.f;
+        info->setPosition({x, toolY});
+        menu->addChild(info);
+        x -= info->getScaledContentSize().width / 2.f + 6.f;
+    }
+
+    if (auto* spr = ButtonSprite::create(tr("icon-gallery.filters.button").c_str(),
+                                         "goldFont.fnt", "GJ_button_05.png", 0.8f)) {
+        spr->setScale(0.52f);
+        auto* btn = CCMenuItemExt::createSpriteExtra(spr,
+            [this](CCMenuItemSpriteExtra*) { this->onFilters(); });
+        x -= btn->getScaledContentSize().width / 2.f;
+        btn->setPosition({x, toolY});
+        menu->addChild(btn);
+
+        // Punto dorado sobre el boton: la unica pista de que hay un gamemode
+        // filtrado esta dentro del popup, y se olvida enseguida.
+        m_filterDot = paimon::SpriteHelper::createColorPanel(
+            7.f, 7.f, kRuleColor, 255, 3.5f);
+        if (m_filterDot) {
+            m_filterDot->setPosition({x + btn->getScaledContentSize().width / 2.f - 3.f,
+                                      toolY + 6.f});
+            m_filterDot->setVisible(false);
+            addChild(m_filterDot, 11);
+        }
+        x -= btn->getScaledContentSize().width / 2.f + 8.f;
+    }
+
+    float const tabsW = std::min(158.f, x - kSideMargin - searchW - 12.f);
     auto* tabs = ui::makeSegmentedBar(tabsW,
         {tr("icon-gallery.tab.all"), tr("icon-gallery.tab.installed")}, 0,
         [this](int index) {
@@ -208,21 +273,26 @@ void IconStoreLayer::buildHeader() {
             });
         });
     if (tabs) {
-        tabs->setPosition({win.width - 22.f - tabsW,
-                           win.height - 54.f - ui::kSegmentedBarHeight / 2.f});
+        tabs->setPosition({x - tabsW, toolY - ui::kSegmentedBarHeight / 2.f});
         addChild(tabs, 6);
     }
 }
 
 void IconStoreLayer::buildFooter() {
     auto win = CCDirector::get()->getWinSize();
+    float const rowY = kFooterH / 2.f;
+
+    if (auto* band = makeBand(win.width, kFooterH, true)) {
+        band->setPosition({0.f, 0.f});
+        addChild(band, 4);
+    }
 
     m_footer = CCLabelBMFont::create("", "chatFont.fnt");
     if (m_footer) {
         m_footer->setAnchorPoint({0.f, 0.5f});
-        m_footer->setScale(0.42f);
-        m_footer->setColor({170, 196, 232});
-        m_footer->setPosition({22.f, 18.f});
+        m_footer->setScale(0.4f);
+        m_footer->setColor(kDimText);
+        m_footer->setPosition({kSideMargin, rowY});
         addChild(m_footer, 6);
     }
 
@@ -230,24 +300,31 @@ void IconStoreLayer::buildFooter() {
     menu->setPosition({0.f, 0.f});
     addChild(menu, 10);
 
+    if (auto* pill = paimon::SpriteHelper::createColorPanel(
+            108.f, 22.f, {0, 0, 0}, 120, 6.f)) {
+        pill->setAnchorPoint({0.5f, 0.5f});
+        pill->setPosition({win.width / 2.f, rowY});
+        addChild(pill, 5);
+    }
+
     m_pageLabel = CCLabelBMFont::create("", "goldFont.fnt");
     if (m_pageLabel) {
         m_pageLabel->setAnchorPoint({0.5f, 0.5f});
-        m_pageLabel->setScale(0.44f);
-        m_pageLabel->setPosition({win.width / 2.f, 18.f});
+        m_pageLabel->setScale(0.4f);
+        m_pageLabel->setPosition({win.width / 2.f, rowY});
         addChild(m_pageLabel, 6);
     }
 
     auto makeArrow = [&](bool forward) -> CCMenuItemSpriteExtra* {
         auto* spr = paimon::SpriteHelper::safeCreateWithFrameName("GJ_arrow_03_001.png");
         if (!spr) return nullptr;
-        spr->setScale(0.6f);
+        spr->setScale(0.52f);
         spr->setFlipX(forward);
         auto* btn = CCMenuItemExt::createSpriteExtra(spr,
             [this, forward](CCMenuItemSpriteExtra*) {
                 this->setPage(m_page + (forward ? 1 : -1));
             });
-        btn->setPosition({win.width / 2.f + (forward ? 54.f : -54.f), 18.f});
+        btn->setPosition({win.width / 2.f + (forward ? 42.f : -42.f), rowY});
         menu->addChild(btn);
         return btn;
     };
@@ -294,8 +371,8 @@ void IconStoreLayer::showMessage(std::string const& title, std::string const& bo
     if (title.empty() && body.empty()) return;
 
     auto win = CCDirector::get()->getWinSize();
-    if (auto* node = mkui::makeEmptyState(win.width - 80.f, title.c_str(), body.c_str())) {
-        node->setPosition({-(win.width - 80.f) / 2.f, 0.f});
+    if (auto* node = mkui::makeEmptyState(win.width - 110.f, title.c_str(), body.c_str())) {
+        node->setPosition({-(win.width - 110.f) / 2.f, 0.f});
         m_messageHost->addChild(node);
     }
 }
@@ -326,7 +403,7 @@ void IconStoreLayer::rebuildGrid() {
     m_wheelTargetSet = false;
 
     auto win = CCDirector::get()->getWinSize();
-    float const scrollW = win.width - 40.f;
+    float const scrollW = win.width - kSideMargin * 2.f;
     float const scrollH = win.height - kHeaderH - kFooterH;
 
     if (m_results.empty()) {
@@ -405,11 +482,17 @@ void IconStoreLayer::rebuildGrid() {
 void IconStoreLayer::refreshFooter() {
     auto& store = GalleryStore::get();
 
-    if (m_footer) {
-        m_footer->setString(fmt::format("{} {}  -  {} {}",
+    if (m_counter) {
+        m_counter->setString(fmt::format("{} {}  -  {} {}",
             store.icons().size(), tr("icon-gallery.footer.icons"),
             store.installedCount(), tr("icon-gallery.footer.installed")).c_str());
     }
+    if (m_footer) {
+        m_footer->setString(fmt::format("{} {}  -  {}",
+            m_results.size(), tr("icon-gallery.footer.results"),
+            sortLabel(m_query.sort)).c_str());
+    }
+    if (m_filterDot) m_filterDot->setVisible(!m_query.types.empty());
     if (m_pageLabel) {
         m_pageLabel->setString(
             fmt::format("{} / {}", m_page + 1, pageCount()).c_str());

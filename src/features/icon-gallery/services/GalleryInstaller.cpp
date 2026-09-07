@@ -6,6 +6,8 @@
 #define MORE_ICONS_EVENTS
 #include <hiimjustin000.more_icons/include/MoreIcons.hpp>
 
+#include <matjson.hpp>
+
 #include <algorithm>
 #include <fstream>
 
@@ -16,6 +18,7 @@ namespace paimon::icon_gallery {
 namespace {
 
 constexpr std::string_view kNamePrefix = "paimbgallery-";
+constexpr char const* kRecordName = "install.json";
 
 bool writeBytes(std::filesystem::path const& path, std::vector<std::uint8_t> const& data) {
     std::error_code ec;
@@ -80,6 +83,58 @@ bool findInstalledSheet(std::string const& slug, SheetPaths& out, std::string& s
     return false;
 }
 
+// installed/<slug>/install.json: lo unico que hace falta para volver a
+// registrar el icono al arrancar, cuando no hay red ni catalogo cargado.
+struct InstallRecord {
+    std::string name;
+    IconType type = IconType::Cube;
+};
+
+std::string readText(std::filesystem::path const& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+}
+
+void writeRecord(std::string const& slug, InstallRecord const& rec) {
+    auto json = matjson::Value::object();
+    json["name"] = rec.name;
+    json["type"] = iconTypeName(rec.type);
+    auto dumped = json.dump(matjson::NO_INDENTATION);
+    writeBytes(GalleryStore::installDirFor(slug) / kRecordName,
+               std::vector<std::uint8_t>(dumped.begin(), dumped.end()));
+}
+
+bool readRecord(std::string const& slug, InstallRecord& out) {
+    auto text = readText(GalleryStore::installDirFor(slug) / kRecordName);
+    if (text.empty()) return false;
+
+    auto parsed = matjson::parse(text);
+    if (!parsed || !parsed.unwrap().isObject()) return false;
+
+    auto const& root = parsed.unwrap();
+    if (!iconTypeFromName(root["type"].asString().unwrapOr(""), out.type)) return false;
+    out.name = root["name"].asString().unwrapOr(slug);
+    if (out.name.empty()) out.name = slug;
+    return true;
+}
+
+// Instalaciones anteriores al install.json: el gamemode sale del icon.json que
+// la tienda dejo en cache al pintar la tarjeta.
+bool recordFromMetaCache(std::string const& slug, InstallRecord& out) {
+    auto text = readText(GalleryStore::metaDir() / (slug + ".json"));
+    if (text.empty()) return false;
+
+    auto meta = GalleryClient::parseMeta(text, slug);
+    if (!meta) return false;
+
+    auto icon = std::move(meta.unwrap());
+    out.name = icon.displayName();
+    out.type = icon.type;
+    return true;
+}
+
 }  // anonymous namespace
 
 bool GalleryInstaller::moreIconsAvailable() {
@@ -103,6 +158,7 @@ Result<std::filesystem::path> GalleryInstaller::saveOnly(GalleryPackage const& p
     if (!writeBytes(paths.plist, pkg.plist)) {
         return Err("No se pudo escribir {}", paths.plist.filename().string());
     }
+    writeRecord(slug, {pkg.meta.displayName(), pkg.meta.type});
     return Ok(GalleryStore::installDirFor(slug));
 }
 
@@ -177,24 +233,27 @@ bool GalleryInstaller::isEquipped(std::string const& slug, IconType type) {
 void GalleryInstaller::registerAllInstalled() {
     if (!moreIconsAvailable()) return;
 
-    auto& store = GalleryStore::get();
     std::error_code ec;
     auto dir = GalleryStore::installDir();
     if (!std::filesystem::is_directory(dir, ec)) return;
 
+    int registered = 0;
     bool touched = false;
     for (auto const& entry : std::filesystem::directory_iterator(dir, ec)) {
         if (ec) break;
         if (!entry.is_directory(ec)) continue;
 
         auto slug = entry.path().filename().string();
-        auto const* icon = store.find(slug);
-        // Sin metadatos no se sabe el gamemode; se registra al abrir la ficha,
-        // que es cuando la tienda ya bajo el icon.json.
-        if (!icon || !icon->metaLoaded) continue;
+        InstallRecord rec;
+        if (!readRecord(slug, rec)) {
+            if (!recordFromMetaCache(slug, rec)) continue;
+            // Se instalo antes de que existiera el install.json: se deja
+            // escrito para no depender de la cache de metadatos otra vez.
+            writeRecord(slug, rec);
+        }
 
         auto regName = registeredName(slug);
-        if (more_icons::getIcon(regName, icon->type)) continue;
+        if (more_icons::getIcon(regName, rec.type)) continue;
 
         SheetPaths paths;
         std::string stem;
@@ -205,12 +264,16 @@ void GalleryInstaller::registerAllInstalled() {
             touched = true;
         }
         more_icons::addIcon(
-            regName, icon->displayName(), icon->type,
+            regName, rec.name, rec.type,
             paths.png, paths.plist,
             qualityFromName(paths.plist.filename().string()),
             "flozwer.paimbnails2", "Icon Gallery");
+        ++registered;
     }
     if (touched) more_icons::refreshIcons();
+    if (registered > 0) {
+        log::info("[icon-gallery] {} iconos devueltos a More Icons", registered);
+    }
 }
 
 }  // namespace paimon::icon_gallery

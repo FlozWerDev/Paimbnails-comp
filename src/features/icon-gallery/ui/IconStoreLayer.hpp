@@ -69,6 +69,8 @@ protected:
     geode::ScrollLayer* m_scroll = nullptr;
     cocos2d::CCNode* m_messageHost = nullptr;
     geode::TextInput* m_search = nullptr;
+    cocos2d::CCLabelBMFont* m_counter = nullptr;
+    cocos2d::CCNode* m_filterDot = nullptr;
     cocos2d::CCLabelBMFont* m_footer = nullptr;
     cocos2d::CCLabelBMFont* m_pageLabel = nullptr;
     CCMenuItemSpriteExtra* m_prevBtn = nullptr;
