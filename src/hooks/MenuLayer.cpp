@@ -29,13 +29,10 @@
 #include "../utils/SpriteHelper.hpp"
 #include "../utils/Shaders.hpp"
 #include "../utils/PaimonNotification.hpp"
-#include "../utils/Localization.hpp"
 #include "../video/VideoPlayer.hpp"
 #include "../features/forum/services/ForumApi.hpp"
-#include "../features/guide/services/PaimonGuideService.hpp"
 #include "../features/guide/GuideEvents.hpp"
-#include "../features/guide/ui/AnimatedPaimon.hpp"
-#include "../features/guide/ui/PaimonGuideChatPopup.hpp"
+#include "../features/hidden-paimon/services/HiddenPaimon.hpp"
 #include "../utils/ThreadTracker.hpp"
 #include "../core/RuntimeLifecycle.hpp"
 #include <random>
@@ -234,81 +231,7 @@ class $modify(PaimonMenuLayer, MenuLayer) {
         this->updateBackground();
         this->updateProfileButton();
 
-        if (auto* title = this->getChildByID("main-title")) {
-            auto paimonSpr = CCSprite::create("paim_Paimon.png"_spr);
-            if (paimonSpr) {
-                auto titleSize = title->getContentSize();
-                auto titleScale = title->getScale();
-                float titleW = titleSize.width * titleScale;
-                float titleH = titleSize.height * titleScale;
-
-                float paimonMaxH = titleH * 0.7f;
-                float sprH = paimonSpr->getContentSize().height;
-                if (sprH <= 0.f) sprH = 1.f;
-                float paimonScale = paimonMaxH / sprH;
-                paimonSpr->setScale(paimonScale);
-
-                static std::mt19937 rng(std::random_device{}());
-                std::uniform_real_distribution<float> distX(-titleW * 0.35f, titleW * 0.35f);
-                std::uniform_real_distribution<float> distY(-titleH * 0.15f, titleH * 0.15f);
-                std::uniform_real_distribution<float> distRot(-45.f, 45.f);
-
-                auto titlePos = title->getPosition();
-                float px = titlePos.x + distX(rng);
-                float py = titlePos.y + distY(rng);
-                float rot = distRot(rng);
-
-                auto paimonBtn = CCMenuItemSpriteExtra::create(                    paimonSpr, this, menu_selector(PaimonMenuLayer::onPaimonClick));
-                paimonBtn->setRotation(rot);
-                paimonBtn->setID("paimon-hidden-btn"_spr);
-
-                auto paimonMenu = CCMenu::create();
-                paimonMenu->setPosition(ccp(px, py));
-                paimonMenu->setContentSize(paimonSpr->getScaledContentSize());
-                paimonMenu->setID("paimon-hidden-menu"_spr);
-                paimonMenu->addChild(paimonBtn);
-
-                bool guideOn = paimon::guide::PaimonGuideService::get().isEnabled();
-                if (guideOn) {
-                    paimonSpr->setOpacity(0);
-
-                    auto* animated = paimon::guide::AnimatedPaimon::create(paimonScale);
-                    if (animated) {
-                        animated->setLively(true);
-                        animated->play(paimon::guide::AnimatedPaimon::Animation::Idle);
-                        // Sin setRotation: es hijo de paimonBtn, que ya lleva rot.
-                        // Ponerlo aqui tambien duplicaba el angulo.
-                        animated->setAnchorPoint({0.5f, 0.5f});
-                        animated->setPosition(paimonBtn->getContentSize() * 0.5f);
-                        animated->setID("paimon-hidden-animated"_spr);
-                        paimonBtn->addChild(animated, 1);
-
-                        WeakRef<paimon::guide::AnimatedPaimon> weakAnim(animated);
-                        auto bubbleTick = CallFuncExt::create([weakAnim] {
-                            if (auto anim = weakAnim.lock()) {
-                                static std::mt19937 brng(std::random_device{}());
-                                std::uniform_int_distribution<int> chance(0, 99);
-                                if (chance(brng) < 30) {
-                                    auto txt = Localization::get().getString("pai.guide.bubble");
-                                    anim->showBubble(txt, 3.f);
-                                }
-                            }
-                        });
-                        animated->runAction(CCRepeatForever::create(
-                            CCSequence::create(
-                                CCDelayTime::create(30.f),
-                                bubbleTick,
-                                nullptr
-                            )
-                        ));
-                    }
-                } else {
-                    paimonSpr->setOpacity(180);
-                }
-
-                this->addChild(paimonMenu, 1);
-            }
-        }
+        paimon::hidden_paimon::attach(this);
 
         return true;
     }
@@ -478,63 +401,6 @@ class $modify(PaimonMenuLayer, MenuLayer) {
     void onPaimonHub(CCObject*) {
         auto scene = PaimonHubLayer::scene();
         CCDirector::get()->replaceScene(scene);
-    }
-
-    void onPaimonClick(CCObject* sender) {
-        auto* btn = typeinfo_cast<CCMenuItemSpriteExtra*>(sender);
-        if (!btn) return;
-
-// Guide mode turns the hidden sprite into the chat shortcut.
-        if (paimon::guide::PaimonGuideService::get().isEnabled()) {
-            if (auto* popup = paimon::guide::PaimonGuideChatPopup::create()) {
-                popup->show();
-            }
-            return;
-        }
-
-        auto* parent = btn->getParent();
-        CCPoint worldPos = parent
-            ? parent->convertToWorldSpace(btn->getPosition())
-            : btn->getPosition();
-
-        static std::string const explosionSounds[] = {
-            std::string("explode_11") + ".ogg",
-            std::string("quitSound_01") + ".ogg",
-            std::string("endStart_02") + ".ogg",
-            std::string("gold_02") + ".ogg",
-            std::string("crystalDestroy") + ".ogg",
-        };
-        static std::mt19937 rng(std::random_device{}());
-        std::uniform_int_distribution<int> soundDist(0, 4);
-        FMODAudioEngine::sharedEngine()->playEffect(explosionSounds[soundDist(rng)].c_str());
-
-        static char const* explosionEffects[] = {
-            "explodeEffect.plist",
-            "firework_01.plist",
-            "fireEffect_01.plist",
-            "chestOpen.plist",
-            "goldPickupEffect.plist",
-        };
-        std::uniform_int_distribution<int> fxDist(0, 4);
-        auto* particles = CCParticleSystemQuad::create(explosionEffects[fxDist(rng)], false);
-        if (particles) {
-            particles->setPosition(worldPos);
-            particles->setPositionType(kCCPositionTypeGrouped);
-            particles->setAutoRemoveOnFinish(true);
-            particles->setScale(1.5f);
-            this->addChild(particles, 100);
-        }
-
-        btn->runAction(CCSequence::create(
-            CCSpawn::create(
-                CCScaleTo::create(0.3f, 0.f),
-                CCRotateBy::create(0.3f, 360.f),
-                CCFadeOut::create(0.3f),
-                nullptr
-            ),
-            CCCallFunc::create(btn, callfunc_selector(CCNode::removeFromParent)),
-            nullptr
-        ));
     }
 
     void updateBackground() {
@@ -959,64 +825,8 @@ $execute {
     using namespace paimon::guide;
 
     GuideEnabledChangedEvent(kGuideEventFilter).listen(
-        [](bool enabled) {
-            auto* scene = CCDirector::get()->getRunningScene();
-            if (!scene) return geode::ListenerResult::Propagate;
-
-            auto* hiddenMenu = scene->getChildByIDRecursive("paimon-hidden-menu"_spr);
-            if (!hiddenMenu) return geode::ListenerResult::Propagate;
-
-            auto* hiddenBtn = hiddenMenu->getChildByIDRecursive("paimon-hidden-btn"_spr);
-            if (!hiddenBtn) return geode::ListenerResult::Propagate;
-
-            auto* btnSpriteExtra = typeinfo_cast<CCMenuItemSpriteExtra*>(hiddenBtn);
-            if (!btnSpriteExtra) return geode::ListenerResult::Propagate;
-
-            auto* staticSprNode = btnSpriteExtra->getNormalImage();
-            auto* staticSpr = typeinfo_cast<CCSprite*>(staticSprNode);
-
-            auto* overlay = hiddenBtn->getChildByIDRecursive("paimon-hidden-animated"_spr);
-
-            if (enabled) {
-                if (staticSpr) staticSpr->setOpacity(0);
-                if (!overlay) {
-                    float spriteScale = staticSpr ? staticSpr->getScale() : 0.5f;
-                    auto* animated = AnimatedPaimon::create(spriteScale);
-                    if (animated) {
-                        animated->setLively(true);
-                        animated->play(AnimatedPaimon::Animation::Idle);
-                        animated->setAnchorPoint({0.5f, 0.5f});
-                        animated->setPosition(btnSpriteExtra->getContentSize() * 0.5f);
-                        animated->setID("paimon-hidden-animated"_spr);
-                        btnSpriteExtra->addChild(animated, 1);
-
-                        WeakRef<AnimatedPaimon> weakAnim(animated);
-                        auto bubbleTick = CallFuncExt::create([weakAnim] {
-                            if (auto anim = weakAnim.lock()) {
-                                static std::mt19937 brng(std::random_device{}());
-                                std::uniform_int_distribution<int> chance(0, 99);
-                                if (chance(brng) < 30) {
-                                    auto txt = Localization::get().getString("pai.guide.bubble");
-                                    anim->showBubble(txt, 3.f);
-                                }
-                            }
-                        });
-                        animated->runAction(CCRepeatForever::create(
-                            CCSequence::create(
-                                CCDelayTime::create(30.f),
-                                bubbleTick,
-                                nullptr
-                            )
-                        ));
-                    }
-                }
-            } else {
-                if (overlay) {
-                    overlay->removeFromParent();
-                }
-                if (staticSpr) staticSpr->setOpacity(180);
-            }
-
+        [](bool) {
+            paimon::hidden_paimon::refresh(CCDirector::get()->getRunningScene());
             return geode::ListenerResult::Propagate;
         }
     ).leak();

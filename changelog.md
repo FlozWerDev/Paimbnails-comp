@@ -136,6 +136,15 @@
 
 ---
 
+## ![](flozwer.paimbnails2/paim_Paimon.png?height=18) <cy>Paimon del menu</c>
+
+- La Paimon escondida ya no se queda <cr>siempre encima del logo</c>: ahora <cg>mira todos los botones del menu</c> y se mete <cg>debajo de uno</c>, con la cabeza tapada y solo la cara asomando, como si estuviera vigilando. Cada vez que entras elige otro. Descarta los botones que no tienen sitio debajo y los que la taparian entera, asi que siempre queda algo que ver, y se pone por detras del boton, que sigue clicandose igual.
+- Con la <cl>Guia de Paimon</c> puesta deja de esconderse y <cg>te espera asomada en el boton del Paimon Hub</c>, que es desde donde se abre el chat. Antes se quedaba donde le tocase por azar y habia que buscarla para preguntarle algo.
+- La <cg>explosion se rehizo entera</c>. De los cinco sonidos que sorteaba, <cr>dos no existen en el juego</c> y otros dos eran el de salir de un nivel y el de acabarlo, asi que la mayoria de los clicks no sonaba a explosion o no sonaba a nada. Ahora se monta <cg>por capas</c> - chasquido, cuerpo grave y cola - con el tono cambiado en cada click, y una de cada tres veces cae un segundo estallido. De los cinco efectos de particulas, <cr>tres tampoco existian</c>; ahora sale una de las tres explosiones del juego mas escombros y un destello.
+- Se apaga desde <cg>Modulos > Menu > Paimon Escondida</c>.
+
+---
+
 ## ![](frame:chestIcon_001.png?height=18) <cy>Compatibilidad</c>
 
 - <cl>Level Thumbnails</c>: ya es <cg>compatible</c>. Se quita el cartel de inicio que pedia desactivarlo y se pueden tener los dos mods puestos a la vez.
