@@ -185,7 +185,7 @@ char const* soundFileFor(ClickSound sound) {
         case ClickSound::Explosion:   return "explode_11.ogg";
         case ClickSound::Magic:       return "magicExplosion.ogg";
         case ClickSound::Key:         return "secretKey.ogg";
-        case ClickSound::Chest:       return "chest01.ogg";
+        case ClickSound::Chest:       return "chestOpen01.ogg";
         case ClickSound::Score:       return "highscoreGet02.ogg";
         default:                      return nullptr;
     }

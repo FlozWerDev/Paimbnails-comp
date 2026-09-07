@@ -144,6 +144,8 @@
 
 ## ![](frame:GJ_optionsBtn_001.png?height=18) <cy>Correcciones</c>
 
+- <cl>Efectos de la Muerte</c>: el sonido que eligieras <cr>se colaba fuera del nivel</c>. Se sustituia el explode_11 del juego mirase donde mirase, asi que tambien sonaba en la explosion de la Paimon del menu y en el efecto de click del cursor. Ahora solo se cambia dentro del nivel o del editor.
+- <cl>Efectos de Click</c>: el sonido <cg>Cofre</c> <cr>no sonaba</c>, apuntaba a un archivo que no viene con el juego.
 - <cl>Cancion Dinamica</c>: la escucha en streaming - la que suena mientras el juego se descarga la cancion del nivel - <cr>no hacia caso al volumen</c>. Va por un canal propio, fuera del grupo de musica del juego, asi que bajar el control no la tocaba y se seguia oyendo aunque estuviera en <cg>0</c>. Ahora sigue el volumen mientras suena, y en 0 se corta en vez de quedarse descargando de fondo.
 
 ---

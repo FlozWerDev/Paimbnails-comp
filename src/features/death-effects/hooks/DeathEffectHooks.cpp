@@ -5,6 +5,7 @@
 #include "../../../framework/HookConventions.hpp"
 #include "../../../utils/SpriteHelper.hpp"
 
+#include <Geode/binding/LevelEditorLayer.hpp>
 #include <Geode/modify/FMODAudioEngine.hpp>
 #include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
@@ -22,6 +23,12 @@ bool isDeathSound(gd::string const& path) {
     auto slash = value.find_last_of('/');
     auto filename = slash == std::string::npos ? value : value.substr(slash + 1);
     return filename == "explode_11.ogg";
+}
+
+// explode_11 is also the menu blast and the cursor click effect, so the swap
+// only belongs where the player can actually die.
+bool inGameplay() {
+    return PlayLayer::get() != nullptr || LevelEditorLayer::get() != nullptr;
 }
 
 CCSprite* createDeathEffectsIcon() {
@@ -87,7 +94,7 @@ class $modify(PaimonDeathEffectsAudioEngine, FMODAudioEngine) {
     $override
     int playEffect(gd::string path, float speed, float unknown, float volume) {
         if (!paimon::gameplayperf::isOptionActive(
-                paimon::gameplayperf::kModVisualsModuleId) && isDeathSound(path) &&
+                paimon::gameplayperf::kModVisualsModuleId) && inGameplay() && isDeathSound(path) &&
             paimon::modules::isEnabled("paimbnails.deatheffects.gameplay") &&
             paimon::death_effects::DeathEffectManager::get().playDeath(
                 this, speed, volume
