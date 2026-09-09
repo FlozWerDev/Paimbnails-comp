@@ -1,6 +1,7 @@
 #include "CollabPresence.hpp"
 
 #include "../../utils/WebHelper.hpp"
+#include "../../core/RuntimeLifecycle.hpp"
 #include "CollabInviteBanner.hpp"
 #include "CollabManager.hpp"
 #include "CollabPopups.hpp"
