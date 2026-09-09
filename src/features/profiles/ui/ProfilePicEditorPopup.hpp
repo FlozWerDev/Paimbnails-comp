@@ -68,6 +68,7 @@ protected:
     // Photo tab: image source + framing
     cocos2d::CCNode* createPhotoTab();
     void onPhotoSourceProfile(cocos2d::CCObject* sender);
+    void onPhotoClear(cocos2d::CCObject* sender);
     void onPickCustomPhoto(cocos2d::CCObject* sender);
     void onImgZoomChanged(cocos2d::CCObject* sender);
     void onImgRotationChanged(cocos2d::CCObject* sender);

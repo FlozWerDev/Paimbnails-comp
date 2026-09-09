@@ -290,39 +290,29 @@ CCNode* ProfilePicEditorPopup::createPhotoTab() {
     srcMenu->setLayout(RowLayout::create()->setGap(4.f)->setAutoScale(false));
     root->addChild(srcMenu);
 
-    auto profileSpr = ButtonSprite::create("My Profile", "goldFont.fnt",
-        customActive ? "GJ_button_04.png" : "GJ_button_01.png", 0.65f);
-    profileSpr->setScale(0.42f);
-    srcMenu->addChild(CCMenuItemSpriteExtra::create(profileSpr, this,
-        menu_selector(ProfilePicEditorPopup::onPhotoSourceProfile)));
+    bool hasCustomPhoto = !m_editConfig.photoPath.empty();
 
-    auto customSpr = ButtonSprite::create(customActive ? "Change..." : "Custom...", "goldFont.fnt",
-        customActive ? "GJ_button_01.png" : "GJ_button_04.png", 0.65f);
-    customSpr->setScale(0.42f);
-    srcMenu->addChild(CCMenuItemSpriteExtra::create(customSpr, this,
+    auto pickSpr = ButtonSprite::create(hasCustomPhoto ? "Change..." : "Pick Image...", "goldFont.fnt",
+        hasCustomPhoto ? "GJ_button_01.png" : "GJ_button_04.png", 0.65f);
+    pickSpr->setScale(0.42f);
+    srcMenu->addChild(CCMenuItemSpriteExtra::create(pickSpr, this,
         menu_selector(ProfilePicEditorPopup::onPickCustomPhoto)));
+
+    if (hasCustomPhoto) {
+        auto clearSpr = ButtonSprite::create("Remove", "goldFont.fnt", "GJ_button_06.png", 0.65f);
+        clearSpr->setScale(0.42f);
+        srcMenu->addChild(CCMenuItemSpriteExtra::create(clearSpr, this,
+            menu_selector(ProfilePicEditorPopup::onPhotoClear)));
+    }
     srcMenu->updateLayout();
 
     std::string status;
-    using Source = paimon::profile_pic::ResolvedProfilePhoto::Source;
-    switch (photo.source) {
-        case Source::Custom: {
-            auto name = std::filesystem::path(m_editConfig.photoPath).filename().string();
-            if (name.size() > 28) name = name.substr(0, 25) + "...";
-            status = fmt::format("Custom image: {}", name);
-            break;
-        }
-        case Source::OwnProfile:
-            status = "Using your profile picture";
-            break;
-        case Source::LegacyBackground:
-            status = "Using profile background (no profile picture found)";
-            break;
-        default:
-            status = photo.ownPhotoMissing
-                ? "Downloading your profile picture..."
-                : "No image available - pick a custom one";
-            break;
+    if (photo.source == paimon::profile_pic::ResolvedProfilePhoto::Source::Custom && !m_editConfig.photoPath.empty()) {
+        auto name = std::filesystem::path(m_editConfig.photoPath).filename().string();
+        if (name.size() > 28) name = name.substr(0, 25) + "...";
+        status = fmt::format("Custom image: {}", name);
+    } else {
+        status = "No image selected - pick a custom one";
     }
     auto statusLbl = smallLabel(status, 0.3f, "chatFont.fnt");
     statusLbl->setColor({180, 180, 200});
@@ -403,7 +393,12 @@ CCNode* ProfilePicEditorPopup::createPhotoTab() {
 }
 
 void ProfilePicEditorPopup::onPhotoSourceProfile(CCObject*) {
-    m_editConfig.photoSource = "profile";
+    onPhotoClear(nullptr);
+}
+
+void ProfilePicEditorPopup::onPhotoClear(CCObject*) {
+    m_editConfig.photoPath.clear();
+    m_editConfig.photoSource = "none";
     rebuildCurrentTab();
     rebuildPreview();
 }
@@ -1643,28 +1638,7 @@ void ProfilePicEditorPopup::onResetAll(CCObject*) {
 
 
 void ProfilePicEditorPopup::triggerImageDownloadIfNeeded() {
-    if (m_triggeredDownload) return;
-    auto* acc = GJAccountManager::sharedState();
-    if (!acc) return;
-    int myID = acc->m_accountID;
-    if (myID <= 0) return;
-
-    if (ProfileThumbs::get().has(myID)) return;
-
-    m_triggeredDownload = true;
-
-    Ref<CCNode> safeSelf = this;
-    ProfileImageService::get().downloadProfileImg(myID, [safeSelf, this, myID](bool success, CCTexture2D* tex) {
-        if (success && tex) {
-            ProfileThumbs::get().cacheProfile(myID, tex, {255,255,255}, {255,255,255}, 0.5f);
-        }
-        Loader::get()->queueInMainThread([safeSelf, this]() {
-            if (paimon::isRuntimeShuttingDown()) return;
-            if (!safeSelf || !safeSelf->getParent()) return;
-            rebuildPreview();
-            if (m_currentTab == 0) rebuildCurrentTab();
-        });
-    }, true);
+    // Deprecated: The profile button has its own configuration and does not download the profile popup's backdrop.
 }
 
 void ProfilePicEditorPopup::rebuildPreview() {
@@ -1688,14 +1662,8 @@ void ProfilePicEditorPopup::rebuildPreview() {
         imageNode = paimon::profile_pic::createResolvedPhotoNode(photo);
 
         switch (photo.source) {
-            case Photo::Source::Custom:           statusText = "Custom image"; break;
-            case Photo::Source::OwnProfile:       statusText = "Your profile picture"; break;
-            case Photo::Source::LegacyBackground: statusText = "Profile BG (fallback)"; break;
-            default:                              statusText = photo.ownPhotoMissing ? "Downloading..." : "No image"; break;
-        }
-
-        if (!imageNode && photo.ownPhotoMissing) {
-            triggerImageDownloadIfNeeded();
+            case Photo::Source::Custom: statusText = "Custom image"; break;
+            default:                    statusText = "No image"; break;
         }
     }
 

@@ -32,48 +32,13 @@ namespace {
 ResolvedProfilePhoto resolveProfilePhoto(ProfilePicConfig const& cfg) {
     ResolvedProfilePhoto out;
 
-    // explicit custom file picked in the editor
-    if (cfg.photoSource == "custom" && resolveFileSource(cfg.photoPath, out)) {
+    // The profile button has its own configuration and must not borrow the
+    // profile popup's backdrop (profileimg / profile-bg-path).
+    if (cfg.photoSource != "none" && !cfg.photoPath.empty() && resolveFileSource(cfg.photoPath, out)) {
         out.source = ResolvedProfilePhoto::Source::Custom;
         return out;
     }
 
-    // own profile picture (profileimg): animated cache -> RAM -> disk
-    auto* acc = GJAccountManager::sharedState();
-    int myID = acc ? acc->m_accountID : 0;
-    if (myID > 0) {
-        auto gifKey = getProfileImgGifCacheKey(myID);
-        if (!gifKey.empty() && AnimatedGIFSprite::isCached(gifKey)) {
-            out.kind = ResolvedProfilePhoto::Kind::GifCacheKey;
-            out.source = ResolvedProfilePhoto::Source::OwnProfile;
-            out.gifKey = gifKey;
-            return out;
-        }
-        if (auto* tex = getProfileImgCachedTexture(myID)) {
-            out.kind = ResolvedProfilePhoto::Kind::Texture;
-            out.source = ResolvedProfilePhoto::Source::OwnProfile;
-            out.texture = tex;
-            return out;
-        }
-        if (auto* tex = loadProfileImgFromDisk(myID)) {
-            cacheProfileImgTexture(myID, tex);
-            out.kind = ResolvedProfilePhoto::Kind::Texture;
-            out.source = ResolvedProfilePhoto::Source::OwnProfile;
-            out.texture = tex;
-            return out;
-        }
-        out.ownPhotoMissing = true;
-    }
-
-    // legacy fallback: the profile background image (kept so existing setups
-    // that only configured "profile-bg-path" don't lose their button photo)
-    auto bgType = Mod::get()->getSavedValue<std::string>("profile-bg-type", "none");
-    if (bgType == "custom") {
-        auto bgPath = Mod::get()->getSavedValue<std::string>("profile-bg-path", "");
-        if (resolveFileSource(bgPath, out)) {
-            out.source = ResolvedProfilePhoto::Source::LegacyBackground;
-        }
-    }
     return out;
 }
 

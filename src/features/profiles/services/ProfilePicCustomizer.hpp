@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <Geode/DefaultInclude.hpp>
 #include <string>
 #include <vector>
@@ -64,9 +64,9 @@ struct ProfilePicConfig {
     float size = 120.f;
     float rotation = 0.f;
 
-    // "profile" = own profile picture (profileimg), with the legacy profile
-    // background image as fallback; "custom" = a locally picked file (photoPath)
-    std::string photoSource = "profile";
+    // Custom photo picked specifically for the profile button redesign.
+    // Kept completely separate from the profile popup's backdrop.
+    std::string photoSource = "custom";
     std::string photoPath = "";
 
     float imageZoom = 1.f;

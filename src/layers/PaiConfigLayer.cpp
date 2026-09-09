@@ -1582,16 +1582,19 @@ void PaiConfigLayer::onProfileImage() {
         auto pathOpt = std::move(result).unwrapOr(std::nullopt);
         if (!pathOpt || pathOpt->empty()) return;
 
-        auto imported = paimon::assets::importToBucket(*pathOpt, "profile_picture",
+        auto imported = paimon::assets::importToBucket(*pathOpt, "profile_photo",
                                                        paimon::assets::Kind::Image);
         if (!imported.success || imported.path.empty()) {
             PaimonNotify::create("Failed to import image", NotificationIcon::Error)->show();
             return;
         }
-        Mod::get()->setSavedValue<std::string>("profile-bg-type", "custom");
-        Mod::get()->setSavedValue<std::string>("profile-bg-path",
-                                               paimon::assets::normalizePathString(imported.path));
-        (void)Mod::get()->saveData();
+        auto cfg = ProfilePicCustomizer::get().getConfig();
+        cfg.photoSource = "custom";
+        cfg.photoPath = paimon::assets::normalizePathString(imported.path);
+        ProfilePicCustomizer::get().setConfig(cfg);
+        ProfilePicCustomizer::get().save();
+        ProfilePicCustomizer::get().setDirty(true);
+
         PaimonNotify::create(tr("pai.config.notify.profile_image_set", "Profile image set!"),
                              NotificationIcon::Success)->show();
         layer->rebuildProfilePreview();
@@ -1599,9 +1602,13 @@ void PaiConfigLayer::onProfileImage() {
 }
 
 void PaiConfigLayer::onProfileClear() {
-    Mod::get()->setSavedValue<std::string>("profile-bg-type", "none");
-    Mod::get()->setSavedValue<std::string>("profile-bg-path", "");
-    (void)Mod::get()->saveData();
+    auto cfg = ProfilePicCustomizer::get().getConfig();
+    cfg.photoSource = "none";
+    cfg.photoPath = "";
+    ProfilePicCustomizer::get().setConfig(cfg);
+    ProfilePicCustomizer::get().save();
+    ProfilePicCustomizer::get().setDirty(true);
+
     PaimonNotify::create(tr("pai.config.notify.profile_image_cleared", "Profile image cleared!"),
                          NotificationIcon::Success)->show();
     rebuildProfilePreview();

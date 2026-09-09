@@ -154,7 +154,10 @@ void ProfilePicCustomizer::load() {
     if (root.contains("scaleY")) m_config.scaleY = root["scaleY"].asDouble().unwrapOr(1.0);
     if (root.contains("size")) m_config.size = root["size"].asDouble().unwrapOr(120.0);
     if (root.contains("rotation")) m_config.rotation = root["rotation"].asDouble().unwrapOr(0.0);
-    if (root.contains("photoSource")) m_config.photoSource = root["photoSource"].asString().unwrapOr("profile");
+    if (root.contains("photoSource")) m_config.photoSource = root["photoSource"].asString().unwrapOr("custom");
+    if (m_config.photoSource == "profile") {
+        m_config.photoSource = m_config.photoPath.empty() ? "none" : "custom";
+    }
     if (root.contains("photoPath")) m_config.photoPath = root["photoPath"].asString().unwrapOr("");
     if (root.contains("imageZoom")) m_config.imageZoom = root["imageZoom"].asDouble().unwrapOr(1.0);
     if (root.contains("imageRotation")) m_config.imageRotation = root["imageRotation"].asDouble().unwrapOr(0.0);
