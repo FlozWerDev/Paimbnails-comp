@@ -102,7 +102,7 @@ int setupWindow(PlayLayer* pl, float zoneX, float designW) {
 
 bool renderWindow(CCNode* scene, int rw, int rh, std::vector<uint8_t>& out) {
     RenderTexture rt(static_cast<uint32_t>(rw), static_cast<uint32_t>(rh));
-    rt.begin();
+    if (!rt.begin()) return false;
     scene->visit();
     rt.end();
     auto data = rt.getData();

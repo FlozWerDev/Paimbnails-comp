@@ -25,6 +25,7 @@
 #include "QualityConfig.hpp"
 #include "MainLevels.hpp"
 #include "Settings.hpp"
+#include "../features/capture/services/FramebufferCapture.hpp"
 #include "../features/discord-presence/services/DiscordPresenceManager.hpp"
 #include "../features/beat-shaders/services/BeatShaderManager.hpp"
 #include "../features/dynamic-volume/services/DynamicVolumeManager.hpp"
@@ -111,6 +112,7 @@ $on_game(Exiting) {
     paimon::EventBus::get().beginShutdown();
 
     paimon::markRuntimeShuttingDown();
+    FramebufferCapture::cancelPending();
     paimon::ThreadTracker::get().shutdown();
     log::info("[SHUTDOWN] === BEGIN EXIT SEQUENCE ===");
 

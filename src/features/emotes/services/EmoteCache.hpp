@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <chrono>
 #include <atomic>
+#include <memory>
 
 namespace paimon::emotes {
 
@@ -94,6 +95,11 @@ private:
 
     std::atomic<bool> m_preloading{false};
     std::atomic<bool> m_preloadCancel{false};
+    struct PreloadListeners {
+        std::vector<PreloadCallback> callbacks;
+        std::vector<PreloadProgressCallback> progressCallbacks;
+    };
+    std::weak_ptr<PreloadListeners> m_preloadListeners;
 
     struct DecodeTask {
         EmoteInfo info;

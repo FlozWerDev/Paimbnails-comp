@@ -62,6 +62,8 @@ GIFDecoder::GIFData GIFDecoder::decode(uint8_t const* data, size_t size, int max
     }
 
     int frameCount = 0;
+    size_t decodedBytes = 0;
+    constexpr size_t kMaxDecodedBytes = 256ull * 1024ull * 1024ull;
     int currentDelay = 100; // default: 100 ms
     int transparentIndex = -1;
     bool hasTransparency = false;
@@ -172,8 +174,14 @@ GIFDecoder::GIFData GIFDecoder::decode(uint8_t const* data, size_t size, int max
                 frame.width = result.width;
                 frame.height = result.height;
                 frame.delayMs = currentDelay;
+
+                if (canvas.size() > kMaxDecodedBytes - decodedBytes) {
+                    log::error("[GIFDecoder] Decoded GIF exceeds memory budget");
+                    break;
+                }
                 frame.pixels = canvas;
-                
+                decodedBytes += canvas.size();
+
                 result.frames.push_back(frame);
                 frameCount++;
                 
@@ -292,6 +300,7 @@ static bool lzwDecode(std::vector<uint8_t> const& compressed, std::vector<uint8_
                     temp = dictionary[temp].prefix;
                 }
                 std::reverse(sequence.begin(), sequence.end());
+                if (sequence.empty()) return false;
                 sequence.push_back(sequence[0]);
             } else {
                 return false;
@@ -305,6 +314,8 @@ static bool lzwDecode(std::vector<uint8_t> const& compressed, std::vector<uint8_
             std::reverse(sequence.begin(), sequence.end());
         }
         
+        if (sequence.empty()) return false;
+        if (sequence.size() > static_cast<size_t>(pixelCount) - output.size()) return false;
         output.insert(output.end(), sequence.begin(), sequence.end());
         
         if (dictSize < 4096) {

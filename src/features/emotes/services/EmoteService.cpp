@@ -44,11 +44,18 @@ static EmoteType classifyByFilename(std::string const& filename) {
     return EmoteType::Static;
 }
 
-static void dispatchCatalogCallback(EmoteService::CatalogCallback const& callback, bool success) {
-    if (!callback) return;
-    Loader::get()->queueInMainThread([callback, success]() {
-        if (paimon::isRuntimeShuttingDown()) return;
-        callback(success);
+void EmoteService::dispatchCatalogCallbacks(std::vector<CatalogCallback> callbacks, bool success, size_t generation) {
+    if (callbacks.empty()) return;
+    Loader::get()->queueInMainThread([this, callbacks = std::move(callbacks), success, generation]() {
+        for (auto const& callback : callbacks) {
+            if (paimon::isRuntimeShuttingDown()) return;
+            bool current;
+            {
+                std::lock_guard lock(m_mutex);
+                current = generation == m_catalogGeneration;
+            }
+            callback(success && current);
+        }
     });
 }
 
@@ -64,27 +71,38 @@ static std::string migrateEmoteUrl(std::string const& url, std::string const& fi
 }
 
 void EmoteService::fetchAllEmotes(CatalogCallback callback) {
-    if (m_fetching.exchange(true, std::memory_order_acq_rel)) {
-        dispatchCatalogCallback(callback, false);
-        return;
-    }
+    if (paimon::isRuntimeShuttingDown()) return;
 
     std::string currentTimelast;
+    size_t generation;
+    std::shared_ptr<std::vector<CatalogCallback>> callbacks;
     {
         std::lock_guard lock(m_mutex);
+        if (auto pending = m_catalogCallbacks.lock()) {
+            if (callback) pending->push_back(std::move(callback));
+            return;
+        }
+        callbacks = std::make_shared<std::vector<CatalogCallback>>();
+        if (callback) callbacks->push_back(std::move(callback));
+        // The web request owns callbacks so shutdown cannot strand UI refs in the singleton.
+        m_catalogCallbacks = callbacks;
+        m_fetching.store(true, std::memory_order_release);
+        generation = m_catalogGeneration;
         currentTimelast = m_timelast;
     }
 
     auto accumulator = std::make_shared<std::vector<EmoteInfo>>();
-    auto cb = std::make_shared<CatalogCallback>(std::move(callback));
 
-    fetchPage(1, 100, currentTimelast, accumulator, [this, accumulator, cb](bool success) {
-        if (success && !accumulator->empty()) {
-            size_t allCount = 0;
-            size_t gifCount = 0;
-            size_t staticCount = 0;
-            {
-                std::lock_guard lock(m_mutex);
+    fetchPage(1, 100, currentTimelast, accumulator, generation, [this, accumulator, callbacks, generation](bool success) {
+        if (paimon::isRuntimeShuttingDown()) return;
+        size_t allCount = 0;
+        size_t gifCount = 0;
+        size_t staticCount = 0;
+        std::vector<CatalogCallback> pending;
+        {
+            std::lock_guard lock(m_mutex);
+            if (generation != m_catalogGeneration) return;
+            if (success && !accumulator->empty()) {
                 m_allEmotes = std::move(*accumulator);
                 buildIndex();
                 allCount = m_allEmotes.size();
@@ -92,6 +110,11 @@ void EmoteService::fetchAllEmotes(CatalogCallback callback) {
                 staticCount = m_staticEmotes.size();
                 m_loaded.store(true, std::memory_order_release);
             }
+            pending.swap(*callbacks);
+            m_catalogCallbacks.reset();
+            m_fetching.store(false, std::memory_order_release);
+        }
+        if (allCount > 0) {
             saveCatalogToDisk();
             log::info("[EmoteService] Catalog loaded: {} emotes ({} gif, {} static)",
                 allCount, gifCount, staticCount);
@@ -100,13 +123,12 @@ void EmoteService::fetchAllEmotes(CatalogCallback callback) {
         } else {
             log::warn("[EmoteService] Failed to fetch emote catalog from server");
         }
-        m_fetching.store(false, std::memory_order_release);
-        dispatchCatalogCallback(*cb, success);
+        dispatchCatalogCallbacks(std::move(pending), success, generation);
     });
 }
 
 void EmoteService::fetchPage(int page, int limit, std::string const& timelast,
-                             std::shared_ptr<std::vector<EmoteInfo>> accumulator, CatalogCallback callback) {
+                             std::shared_ptr<std::vector<EmoteInfo>> accumulator, size_t generation, CatalogCallback callback) {
     std::string url = fmt::format("{}/api/paimon-emote?page={}&limit={}", resolveEmoteServer(), page, limit);
     if (!timelast.empty()) {
         url += "&timelast=" + timelast;
@@ -117,7 +139,12 @@ void EmoteService::fetchPage(int page, int limit, std::string const& timelast,
     req.acceptEncoding("gzip, deflate");
     req.header("Accept", "application/json");
 
-    WebHelper::dispatch(std::move(req), "GET", url, [this, page, limit, timelast, accumulator, callback = std::move(callback)](web::WebResponse res) mutable {
+    WebHelper::dispatch(std::move(req), "GET", url, [this, page, limit, timelast, accumulator, generation, callback = std::move(callback)](web::WebResponse res) mutable {
+        if (paimon::isRuntimeShuttingDown()) return;
+        {
+            std::lock_guard lock(m_mutex);
+            if (generation != m_catalogGeneration) return;
+        }
         if (!res.ok()) {
             log::warn("[EmoteService] HTTP {} fetching emote page {}", res.code(), page);
             callback(false);
@@ -144,6 +171,7 @@ void EmoteService::fetchPage(int page, int limit, std::string const& timelast,
             auto newTimelast = json["timelast"].asString().unwrapOr("");
             if (!newTimelast.empty()) {
                 std::lock_guard lock(m_mutex);
+                if (generation != m_catalogGeneration) return;
                 m_timelast = newTimelast;
             }
         }
@@ -180,7 +208,7 @@ void EmoteService::fetchPage(int page, int limit, std::string const& timelast,
         }
 
         if (hasNext) {
-            fetchPage(page + 1, limit, "", std::move(accumulator), std::move(callback));
+            fetchPage(page + 1, limit, "", std::move(accumulator), generation, std::move(callback));
         } else {
             callback(true);
         }
@@ -425,21 +453,24 @@ std::optional<EmoteInfo> EmoteService::getRandomEmote() const {
 }
 
 void EmoteService::clearCatalog() {
+    std::vector<CatalogCallback> callbacks;
+    size_t generation;
     {
         std::lock_guard lock(m_mutex);
+        generation = ++m_catalogGeneration;
+        if (auto pending = m_catalogCallbacks.lock()) callbacks.swap(*pending);
+        m_catalogCallbacks.reset();
+        m_fetching.store(false, std::memory_order_release);
         m_allEmotes.clear();
         m_gifEmotes.clear();
         m_staticEmotes.clear();
         m_nameIndex.clear();
-    }
-    m_loaded.store(false, std::memory_order_release);
-
-    {
-        std::lock_guard lock(m_mutex);
+        m_loaded.store(false, std::memory_order_release);
         m_timelast.clear();
     }
 
     std::error_code ec;
     std::filesystem::remove(getCatalogPath(), ec);
+    dispatchCatalogCallbacks(std::move(callbacks), false, generation);
     log::info("[EmoteService] Catalog cleared");
 }

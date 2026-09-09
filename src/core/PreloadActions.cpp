@@ -118,10 +118,10 @@ void schedulePrefetchEmotes() {
 
     if (service.isFetching()) {
         log::info("[Paimbnails Preload] EmoteService ya esta fetcheando catalogo; esperaremos al callback");
-        return;
+    } else {
+        log::info("[Paimbnails Preload] Catalogo de emotes no disponible - pidiendo al server");
     }
 
-    log::info("[Paimbnails Preload] Catalogo de emotes no disponible - pidiendo al server");
     service.fetchAllEmotes([](bool success) {
         if (paimon::isRuntimeShuttingDown()) return;
         if (!success) {

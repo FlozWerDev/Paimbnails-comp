@@ -330,7 +330,13 @@ void EmoteCache::cancelPreload() {
 }
 
 void EmoteCache::preloadAllToDisk(PreloadCallback callback, PreloadProgressCallback progressCallback) {
+    if (paimon::isRuntimeShuttingDown()) return;
     if (m_preloading.exchange(true, std::memory_order_acq_rel)) {
+        if (auto listeners = m_preloadListeners.lock()) {
+            if (callback) listeners->callbacks.push_back(std::move(callback));
+            if (progressCallback) listeners->progressCallbacks.push_back(std::move(progressCallback));
+            return;
+        }
         dispatchPreloadCallback(std::move(callback), 0, 0, 0);
         return;
     }
@@ -347,25 +353,37 @@ void EmoteCache::preloadAllToDisk(PreloadCallback callback, PreloadProgressCallb
     auto emotes = std::make_shared<std::vector<EmoteInfo>>(std::move(allEmotes));
     auto skipped = std::make_shared<size_t>(0);
     auto downloaded = std::make_shared<size_t>(0);
-    auto cb = std::make_shared<PreloadCallback>(std::move(callback));
-    auto progressCb = std::make_shared<PreloadProgressCallback>(std::move(progressCallback));
-
-    auto reportProgress = [progressCb](size_t completed, size_t total) {
-        if (!progressCb || !*progressCb) return;
-        Loader::get()->queueInMainThread([progressCb, completed, total]() {
+    auto completed = std::make_shared<size_t>(0);
+    // Preload entry points and HTTP continuations run on the main thread.
+    auto listeners = std::make_shared<PreloadListeners>();
+    if (callback) listeners->callbacks.push_back(std::move(callback));
+    if (progressCallback) listeners->progressCallbacks.push_back(std::move(progressCallback));
+    m_preloadListeners = listeners;
+    auto cb = std::make_shared<PreloadCallback>([listeners](size_t downloaded, size_t skipped, size_t total) {
+        for (auto const& callback : listeners->callbacks) {
             if (paimon::isRuntimeShuttingDown()) return;
-            if (*progressCb) (*progressCb)(completed, total);
+            callback(downloaded, skipped, total);
+        }
+    });
+
+    auto reportProgress = [listeners](size_t completed, size_t total) {
+        if (listeners->progressCallbacks.empty()) return;
+        Loader::get()->queueInMainThread([callbacks = listeners->progressCallbacks, completed, total]() {
+            for (auto const& callback : callbacks) {
+                if (paimon::isRuntimeShuttingDown()) return;
+                callback(completed, total);
+            }
         });
     };
 
     auto downloadNext = std::make_shared<std::function<void()>>();
     std::weak_ptr<std::function<void()>> weakDownloadNext = downloadNext;
-    *downloadNext = [this, idx, emotes, skipped, downloaded, weakDownloadNext, cb, reportProgress]() {
+    *downloadNext = [this, idx, emotes, skipped, downloaded, completed, weakDownloadNext, cb, reportProgress]() {
         if (m_preloadCancel.load(std::memory_order_acquire) || paimon::isRuntimeShuttingDown()) {
             log::info("[EmoteCache] Preload cancelled ({}/{} done, {} skipped)",
                 *downloaded, emotes->size(), *skipped);
             m_preloading.store(false, std::memory_order_release);
-            reportProgress(*downloaded + *skipped, emotes->size());
+            reportProgress(*completed, emotes->size());
             if (*cb) {
                 size_t d = *downloaded, s = *skipped, t = emotes->size();
                 dispatchPreloadCallback(*cb, d, s, t);
@@ -378,7 +396,8 @@ void EmoteCache::preloadAllToDisk(PreloadCallback callback, PreloadProgressCallb
             if (isDiskEntryValid(info.filename)) {
                 ++(*skipped);
                 ++(*idx);
-                reportProgress(*downloaded + *skipped, emotes->size());
+                ++(*completed);
+                reportProgress(*completed, emotes->size());
                 continue;
             }
             break;
@@ -388,7 +407,7 @@ void EmoteCache::preloadAllToDisk(PreloadCallback callback, PreloadProgressCallb
             log::info("[EmoteCache] Preload complete: {} downloaded, {} already cached",
                 *downloaded, *skipped);
             m_preloading.store(false, std::memory_order_release);
-            reportProgress(*downloaded + *skipped, emotes->size());
+            reportProgress(*completed, emotes->size());
             if (*cb) {
                 size_t d = *downloaded, s = *skipped, t = emotes->size();
                 dispatchPreloadCallback(*cb, d, s, t);
@@ -405,14 +424,20 @@ void EmoteCache::preloadAllToDisk(PreloadCallback callback, PreloadProgressCallb
         // re-invoke; the closure itself holds a weak self-ref (avoids leak cycle).
         auto strongNext = weakDownloadNext.lock();
         if (!strongNext) return;
-        HttpClient::get().downloadFromUrlRaw(url, [this, filename, downloaded, skipped, emotes, strongNext, reportProgress](
+        HttpClient::get().downloadFromUrlRaw(url, [this, filename, downloaded, completed, emotes, strongNext, reportProgress](
             bool success, std::vector<uint8_t> const& data, int, int) {
 
+            if (paimon::isRuntimeShuttingDown()) return;
+            if (m_preloadCancel.load(std::memory_order_acquire)) {
+                (*strongNext)();
+                return;
+            }
             if (success && !data.empty()) {
                 saveToDisk(filename, data);
                 ++(*downloaded);
             }
-            reportProgress(*downloaded + *skipped, emotes->size());
+            ++(*completed);
+            reportProgress(*completed, emotes->size());
 
             Loader::get()->queueInMainThread([strongNext]() {
                 if (paimon::isRuntimeShuttingDown()) return;

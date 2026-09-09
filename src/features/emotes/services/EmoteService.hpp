@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <atomic>
+#include <memory>
 
 namespace paimon::emotes {
 
@@ -60,7 +61,8 @@ private:
     EmoteService& operator=(EmoteService const&) = delete;
 
     void fetchPage(int page, int limit, std::string const& timelast,
-                   std::shared_ptr<std::vector<EmoteInfo>> accumulator, CatalogCallback callback);
+                   std::shared_ptr<std::vector<EmoteInfo>> accumulator, size_t generation, CatalogCallback callback);
+    void dispatchCatalogCallbacks(std::vector<CatalogCallback> callbacks, bool success, size_t generation);
     void buildIndex();
 
     mutable std::mutex m_mutex;
@@ -70,6 +72,8 @@ private:
     std::unordered_map<std::string, size_t> m_nameIndex;
 
     std::string m_timelast;
+    size_t m_catalogGeneration = 0;
+    std::weak_ptr<std::vector<CatalogCallback>> m_catalogCallbacks;
 
     std::atomic<bool> m_loaded{false};
     std::atomic<bool> m_fetching{false};

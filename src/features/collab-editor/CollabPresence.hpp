@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
+#include <memory>
 #include <string>
 
 namespace paimon::collab {
@@ -29,6 +31,7 @@ private:
     int m_accountId = 0;
     std::string m_token;
     uint64_t m_gen = 0;
+    std::shared_ptr<std::atomic<bool>> m_lifetime = std::make_shared<std::atomic<bool>>(true);
 };
 
 } // namespace paimon::collab

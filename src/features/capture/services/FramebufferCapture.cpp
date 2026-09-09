@@ -7,6 +7,8 @@
 #include "../../../core/Settings.hpp"
 #include "../../../core/RuntimeLifecycle.hpp"
 #include "../../../utils/PlayerToggleHelper.hpp"
+#include "../../../utils/RgbaScaler.hpp"
+#include "../../../utils/RenderTexture.hpp"
 #include "../../../utils/ThreadTracker.hpp"
 #include "../../../utils/Localization.hpp"
 
@@ -57,6 +59,9 @@ using namespace cocos2d;
 #ifndef GL_STREAM_READ
 #define GL_STREAM_READ 0x88E1
 #endif
+#ifndef GL_MAX_RENDERBUFFER_SIZE
+#define GL_MAX_RENDERBUFFER_SIZE 0x84E8
+#endif
 
 // Suppress background-art camera helpers while the retargeted render owns the
 // camera; they can dereference stale game-layer state mid-drawScene.
@@ -101,6 +106,9 @@ static bool sehGuardedCall(void (*fn)(PlayLayer*), PlayLayer* pl) {
 #endif
 
 FramebufferCapture::CaptureRequest FramebufferCapture::s_request;
+geode::CopyableFunction<void(bool, CCTexture2D*, std::shared_ptr<uint8_t>, int, int)>
+    FramebufferCapture::s_processingCallback;
+uint64_t FramebufferCapture::s_processingGeneration = 0;
 std::vector<FramebufferCapture::DeferredCallback> FramebufferCapture::s_deferredCallbacks;
 bool FramebufferCapture::s_isCapturing  = false;
 int  FramebufferCapture::s_captureW     = 0;
@@ -121,6 +129,10 @@ enum class Phase {
 std::atomic<Phase> g_phase{Phase::Idle};
 
 std::atomic<uint64_t> g_generation{0};
+
+#ifdef GEODE_IS_WINDOWS
+void deletePboIfAny();
+#endif
 
 int g_waitingTicks = 0;
 constexpr int kMaxWaitingTicks = 6;
@@ -544,13 +556,10 @@ void restoreHiddenState() {
 }
 
 bool pixelBufferHasContent(uint8_t const* pixels, size_t bytes) {
-    if (bytes < 4) return false;
-    uint8_t r0 = pixels[0], g0 = pixels[1], b0 = pixels[2];
-    size_t step = 4 * 97;
-    for (size_t i = step; i + 2 < bytes; i += step) {
-        if (pixels[i] != r0 || pixels[i + 1] != g0 || pixels[i + 2] != b0) return true;
-    }
-    return false;
+    // A completely black level is a valid capture. Content heuristics caused
+    // false negatives on empty/minimal levels and made the fallback path loop.
+    // The GL error check at each read is the authoritative validity test.
+    return pixels != nullptr && bytes >= 4;
 }
 
 void flipVerticalInPlace(uint8_t* data, int width, int height, int channels) {
@@ -567,104 +576,6 @@ void flipVerticalInPlace(uint8_t* data, int width, int height, int channels) {
 
 void forceAlphaOpaque(uint8_t* data, size_t bytes) {
     for (size_t i = 3; i < bytes; i += 4) data[i] = 255;
-}
-
-// Separable Lanczos-3 resize with precomputed weights.
-struct ResizeAxis {
-    std::vector<int>   starts;
-    std::vector<float> weights;
-    int taps = 0;
-};
-
-ResizeAxis buildLanczosAxis(int srcN, int dstN) {
-    constexpr float A = 3.0f;
-    ResizeAxis ax;
-    float scale       = static_cast<float>(dstN) / srcN;
-    float filterScale = std::max(1.0f, 1.0f / scale);
-    float support     = A * filterScale;
-    ax.taps = static_cast<int>(std::ceil(support * 2.0f)) + 1;
-    ax.starts.resize(dstN);
-    ax.weights.assign(static_cast<size_t>(dstN) * ax.taps, 0.0f);
-
-    auto sinc = [](float x) {
-        if (x == 0.0f) return 1.0f;
-        float px = 3.14159265358979f * x;
-        return std::sin(px) / px;
-    };
-    auto lanczos = [&](float x) {
-        x = std::abs(x);
-        return x < A ? sinc(x) * sinc(x / A) : 0.0f;
-    };
-
-    for (int i = 0; i < dstN; ++i) {
-        float center = (i + 0.5f) / scale - 0.5f;
-        int start = static_cast<int>(std::floor(center - support)) + 1;
-        ax.starts[i] = start;
-        float sum = 0.0f;
-        float* w = &ax.weights[static_cast<size_t>(i) * ax.taps];
-        for (int t = 0; t < ax.taps; ++t) {
-            w[t] = lanczos((start + t - center) / filterScale);
-            sum += w[t];
-        }
-        if (sum != 0.0f) {
-            for (int t = 0; t < ax.taps; ++t) w[t] /= sum;
-        }
-    }
-    return ax;
-}
-
-std::shared_ptr<uint8_t> lanczosResizeRGBA(
-    uint8_t const* src, int srcW, int srcH, int dstW, int dstH)
-{
-    ResizeAxis axX = buildLanczosAxis(srcW, dstW);
-    ResizeAxis axY = buildLanczosAxis(srcH, dstH);
-
-    std::vector<float> mid(static_cast<size_t>(dstW) * srcH * 3);
-    for (int y = 0; y < srcH; ++y) {
-        uint8_t const* row = src + static_cast<size_t>(y) * srcW * 4;
-        float* out = mid.data() + static_cast<size_t>(y) * dstW * 3;
-        for (int x = 0; x < dstW; ++x) {
-            float const* w = &axX.weights[static_cast<size_t>(x) * axX.taps];
-            int start = axX.starts[x];
-            float r = 0.0f, g = 0.0f, b = 0.0f;
-            for (int t = 0; t < axX.taps; ++t) {
-                int sx = std::clamp(start + t, 0, srcW - 1);
-                float wt = w[t];
-                uint8_t const* p = row + static_cast<size_t>(sx) * 4;
-                r += p[0] * wt;
-                g += p[1] * wt;
-                b += p[2] * wt;
-            }
-            float* o = out + static_cast<size_t>(x) * 3;
-            o[0] = r; o[1] = g; o[2] = b;
-        }
-    }
-
-    size_t outBytes = static_cast<size_t>(dstW) * dstH * 4;
-    std::shared_ptr<uint8_t> out(new uint8_t[outBytes], std::default_delete<uint8_t[]>());
-    uint8_t* dst = out.get();
-    for (int y = 0; y < dstH; ++y) {
-        float const* w = &axY.weights[static_cast<size_t>(y) * axY.taps];
-        int start = axY.starts[y];
-        uint8_t* dRow = dst + static_cast<size_t>(y) * dstW * 4;
-        for (int x = 0; x < dstW; ++x) {
-            float r = 0.0f, g = 0.0f, b = 0.0f;
-            for (int t = 0; t < axY.taps; ++t) {
-                int sy = std::clamp(start + t, 0, srcH - 1);
-                float wt = w[t];
-                float const* p = mid.data() + (static_cast<size_t>(sy) * dstW + x) * 3;
-                r += p[0] * wt;
-                g += p[1] * wt;
-                b += p[2] * wt;
-            }
-            uint8_t* d = dRow + static_cast<size_t>(x) * 4;
-            d[0] = static_cast<uint8_t>(std::clamp(r, 0.0f, 255.0f) + 0.5f);
-            d[1] = static_cast<uint8_t>(std::clamp(g, 0.0f, 255.0f) + 0.5f);
-            d[2] = static_cast<uint8_t>(std::clamp(b, 0.0f, 255.0f) + 0.5f);
-            d[3] = 255;
-        }
-    }
-    return out;
 }
 
 CCTexture2D* makeTextureRGBA(uint8_t const* data, int W, int H) {
@@ -782,7 +693,8 @@ std::pair<int, int> resolveRenderTargetSize() {
     if      (res == "4k")    w = 3840;
     else if (res == "1440p") w = 2560;
     w = std::min(w, FramebufferCapture::getMaxTextureSize());
-    int h = (w * 9 / 16) & ~1;
+    w = std::max(2, w & ~1);
+    int h = std::max(2, (w * 9 / 16) & ~1);
     return {w, h};
 }
 
@@ -1000,6 +912,164 @@ std::shared_ptr<std::vector<uint8_t>> renderPlayLayerToTexture(
     return raw;
 }
 
+// The capture path deliberately uses the same depth/stencil-capable helper as
+// the auto-preview renderer. The legacy implementation above is retained only
+// as a reference while older drivers are being compared during development;
+// all new captures use this implementation.
+std::shared_ptr<std::vector<uint8_t>> renderPlayLayerToTextureV2(
+    PlayLayer* pl, int W, int H)
+{
+    auto* director = CCDirector::get();
+    auto* glView = director ? director->getOpenGLView() : nullptr;
+    if (!pl || !director || !glView || W <= 0 || H <= 0) return nullptr;
+
+    CCSize const oldWinSize = director->getWinSize();
+    float const displayFactor = geode::utils::getDisplayFactor();
+    if (oldWinSize.width <= 0.f || oldWinSize.height <= 0.f || displayFactor <= 0.f) {
+        return nullptr;
+    }
+
+    while (glGetError() != GL_NO_ERROR) {}
+    SuppressCameraArtGuard suppressCameraArt;
+
+    RenderTexture renderTarget(static_cast<uint32_t>(W), static_cast<uint32_t>(H));
+    if (!renderTarget.isValid()) {
+        log::warn("[FramebufferCapture] Depth/stencil render target unavailable at {}x{}", W, H);
+        return nullptr;
+    }
+    if (!renderTarget.begin()) {
+        log::warn("[FramebufferCapture] Failed to begin render target at {}x{}", W, H);
+        return nullptr;
+    }
+    struct EndRenderTarget {
+        RenderTexture& target;
+        ~EndRenderTarget() { target.end(); }
+    } endRenderTarget{renderTarget};
+
+    auto sizesMatch = [](CCSize const& a, CCSize const& b) {
+        constexpr float EPS = 0.1f;
+        return std::abs(a.width - b.width) < EPS
+            && std::abs(a.height - b.height) < EPS;
+    };
+
+    CCSize const newWinSize = director->getWinSize();
+    bool const aspectMatches = sizesMatch(oldWinSize, newWinSize);
+    paimon::capture::ActiveGuard sceneCapture(newWinSize);
+
+    static bool s_cameraModWarned = false;
+    bool const thirdPartyCameraMod = Loader::get()->isModLoaded("dankmeme.globed2");
+    if (thirdPartyCameraMod && !s_cameraModWarned) {
+        s_cameraModWarned = true;
+        log::warn("[FramebufferCapture] Third-party camera mod detected; skipping "
+                  "out-of-band camera recalc during offscreen render for safety");
+    }
+    bool const doCameraRecalc = !aspectMatches && !thirdPartyCameraMod;
+
+    bool hadUIPos = false;
+    CCPoint oldUIPos{};
+    if (doCameraRecalc) {
+        pl->m_calculateTargetHeightOffset = true;
+        pl->m_updateGroundShadows = true;
+        if (!sehGuardedCall(+[](PlayLayer* p) { p->updateCamera(0.f); }, pl)) {
+            log::warn("[FramebufferCapture] updateCamera faulted during offscreen render");
+        }
+        if (auto* uiTrigger = pl->m_uiTriggerUI;
+            uiTrigger && uiTrigger->getChildrenCount() > 0) {
+            oldUIPos = uiTrigger->getPosition();
+            hadUIPos = true;
+            uiTrigger->setPosition(oldUIPos + ccp(
+                newWinSize.width - oldWinSize.width,
+                newWinSize.height - oldWinSize.height));
+        }
+    }
+
+    struct UIPositionGuard {
+        PlayLayer* playLayer;
+        CCPoint oldPosition;
+        bool active;
+        ~UIPositionGuard() {
+            if (active && playLayer && playLayer->m_uiTriggerUI) {
+                playLayer->m_uiTriggerUI->setPosition(oldPosition);
+            }
+        }
+    } uiPositionGuard{pl, oldUIPos, hadUIPos};
+
+    auto* shader = pl->m_shaderLayer;
+    CCSize const captureSize{static_cast<float>(W), static_cast<float>(H)};
+    bool const hadShader = shader && shader->getParent()
+                        && !sizesMatch(shader->m_targetTextureSize, captureSize);
+    CCSize const oldShaderScreen = hadShader ? shader->m_screenSize : CCSize{};
+    CCSize const oldShaderTarget = hadShader ? shader->m_targetTextureSize : CCSize{};
+    bool const pixelateHardEdges = hadShader ? shader->m_state.m_pixelateHardEdges : false;
+
+    auto applyLinearFilter = [&]() {
+        if (shader && shader->m_sprite && shader->m_sprite->getTexture()) {
+            ccTexParams params{GL_LINEAR, GL_LINEAR, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE};
+            shader->m_sprite->getTexture()->setTexParameters(&params);
+        }
+    };
+
+    struct ShaderRestoreGuard {
+        PlayLayer* playLayer;
+        ShaderLayer* shader;
+        CCSize oldScreen;
+        CCSize oldTarget;
+        bool pixelateHardEdges;
+        bool armed;
+        ~ShaderRestoreGuard() {
+            if (!armed || !shader) return;
+            shader->m_screenSize = oldScreen;
+            shader->m_targetTextureSize = oldTarget;
+            sehGuardedCall(+[](PlayLayer* p) {
+                if (p->m_shaderLayer) p->m_shaderLayer->setupShader(false);
+            }, playLayer);
+            if (!pixelateHardEdges && shader->m_sprite && shader->m_sprite->getTexture()) {
+                ccTexParams params{GL_LINEAR, GL_LINEAR, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE};
+                shader->m_sprite->getTexture()->setTexParameters(&params);
+            }
+            sehGuardedCall(+[](PlayLayer* p) {
+                if (p->m_shaderLayer) p->m_shaderLayer->prePixelateShader();
+            }, playLayer);
+        }
+    } shaderGuard{pl, hadShader ? shader : nullptr, oldShaderScreen,
+                  oldShaderTarget, pixelateHardEdges, hadShader};
+
+    if (hadShader) {
+        shader->m_screenSize = newWinSize;
+        shader->m_targetTextureSize = captureSize;
+        sehGuardedCall(+[](PlayLayer* p) {
+            if (p->m_shaderLayer) p->m_shaderLayer->setupShader(false);
+        }, pl);
+        if (!pixelateHardEdges) applyLinearFilter();
+        sehGuardedCall(+[](PlayLayer* p) {
+            if (p->m_shaderLayer) p->m_shaderLayer->prePixelateShader();
+        }, pl);
+        sehGuardedCall(+[](PlayLayer* p) { p->updateShaderLayer(0.f); }, pl);
+        renderTarget.bind();
+    }
+
+    if (doCameraRecalc
+        && !sehGuardedCall(+[](PlayLayer* p) { p->preUpdateVisibility(0.f); }, pl)) {
+        log::warn("[FramebufferCapture] preUpdateVisibility faulted during offscreen render");
+    }
+
+    if (!sehGuardedCall(+[](PlayLayer* p) { p->visit(); }, pl)) {
+        log::warn("[FramebufferCapture] pl->visit() faulted during offscreen render");
+        return nullptr;
+    }
+
+    auto pixels = renderTarget.getData();
+    if (!pixels) {
+        log::warn("[FramebufferCapture] Offscreen readback failed at {}x{}", W, H);
+        return nullptr;
+    }
+
+    auto raw = std::make_shared<std::vector<uint8_t>>(
+        static_cast<size_t>(W) * static_cast<size_t>(H) * 4);
+    std::memcpy(raw->data(), pixels.get(), raw->size());
+    return raw;
+}
+
 #ifdef GEODE_IS_WINDOWS
 GLuint g_pbo  = 0;
 int    g_pboW = 0;
@@ -1062,9 +1132,16 @@ std::pair<int, int> FramebufferCapture::getCaptureSize() {
 int FramebufferCapture::getMaxTextureSize() {
     if (s_maxTextureSize <= 0) {
         GLint maxTex = 0;
+        GLint maxRenderbuffer = 0;
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTex);
-        s_maxTextureSize = (maxTex > 0) ? static_cast<int>(maxTex) : 4096;
-        log::info("[FramebufferCapture] GL_MAX_TEXTURE_SIZE = {}", s_maxTextureSize);
+        glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &maxRenderbuffer);
+        if (maxTex <= 0) maxTex = 4096;
+        if (maxRenderbuffer > 0) {
+            maxTex = std::min(maxTex, maxRenderbuffer);
+        }
+        s_maxTextureSize = static_cast<int>(maxTex);
+        log::info("[FramebufferCapture] max color/depth target = {} (texture={}, renderbuffer={})",
+                  s_maxTextureSize, maxTex, maxRenderbuffer);
     }
     return s_maxTextureSize;
 }
@@ -1105,6 +1182,31 @@ void FramebufferCapture::clearCaptureFlags() {
     s_captureH    = 0;
 }
 
+void FramebufferCapture::finishPendingFailure() {
+    g_phase.store(Phase::Idle);
+    g_generation.fetch_add(1, std::memory_order_relaxed);
+
+    auto requestCallback = std::move(s_request.callback);
+    auto processingCallback = std::move(s_processingCallback);
+    s_processingGeneration = 0;
+    s_request.active        = false;
+    s_request.nodeToCapture = nullptr;
+    s_request.hidePlayer1   = false;
+    s_request.hidePlayer2   = false;
+
+    restoreHiddenState();
+    clearCaptureFlags();
+#ifdef GEODE_IS_WINDOWS
+    deletePboIfAny();
+#endif
+
+    for (auto& d : s_deferredCallbacks) if (d.texture) d.texture->release();
+    s_deferredCallbacks.clear();
+
+    if (requestCallback) requestCallback(false, nullptr, nullptr, 0, 0);
+    if (processingCallback) processingCallback(false, nullptr, nullptr, 0, 0);
+}
+
 namespace {
     inline void restoreCaptureState() {
         restoreHiddenState();
@@ -1124,34 +1226,43 @@ void FramebufferCapture::requestCapture(
               levelID, hidePlayer1, hidePlayer2, s_hdrMode);
 
     Phase prev = g_phase.exchange(Phase::Idle);
-    if (prev != Phase::Idle) {
+    auto previousRequestCallback = std::move(s_request.callback);
+    auto previousProcessingCallback = std::move(s_processingCallback);
+    s_processingGeneration = 0;
+    bool const hadPreviousRequest = s_request.active;
+
+    if (prev != Phase::Idle || hadPreviousRequest || previousRequestCallback || previousProcessingCallback) {
         log::warn("[FramebufferCapture] Replacing in-flight capture (prev phase={})", static_cast<int>(prev));
-        if (s_request.callback) {
-            auto old = std::move(s_request.callback);
-            old(false, nullptr, nullptr, 0, 0);
-        }
+        s_request.active        = false;
+        s_request.nodeToCapture = nullptr;
+        s_request.hidePlayer1   = false;
+        s_request.hidePlayer2   = false;
         if (g_prep.active) restoreCaptureState();
 #ifdef GEODE_IS_WINDOWS
         deletePboIfAny();
 #endif
+        for (auto& d : s_deferredCallbacks) if (d.texture) d.texture->release();
+        s_deferredCallbacks.clear();
     }
 
+    g_generation.fetch_add(1, std::memory_order_relaxed);
     s_request.levelID       = levelID;
     s_request.callback      = std::move(callback);
     s_request.nodeToCapture = nodeToCapture;
     s_request.hidePlayer1   = hidePlayer1;
     s_request.hidePlayer2   = hidePlayer2;
     s_request.active        = true;
-
-    g_generation.fetch_add(1, std::memory_order_relaxed);
     g_waitingTicks = 0;
     g_phase.store(Phase::ArmedHide);
+
+    if (previousRequestCallback) previousRequestCallback(false, nullptr, nullptr, 0, 0);
+    if (previousProcessingCallback) previousProcessingCallback(false, nullptr, nullptr, 0, 0);
 }
 
 void FramebufferCapture::cancelPending() {
     Phase prev = g_phase.exchange(Phase::Idle);
     g_generation.fetch_add(1, std::memory_order_relaxed);
-    if (prev == Phase::Idle && !s_request.active) {
+    if (prev == Phase::Idle && !s_request.active && !s_processingCallback) {
         for (auto& d : s_deferredCallbacks) if (d.texture) d.texture->release();
         s_deferredCallbacks.clear();
         return;
@@ -1159,12 +1270,10 @@ void FramebufferCapture::cancelPending() {
 
     log::info("[FramebufferCapture] cancelPending (phase={})", static_cast<int>(prev));
 
-    if (s_request.callback) {
-        auto old = std::move(s_request.callback);
-        old(false, nullptr, nullptr, 0, 0);
-    }
+    auto requestCallback = std::move(s_request.callback);
+    auto processingCallback = std::move(s_processingCallback);
+    s_processingGeneration = 0;
     s_request.active        = false;
-    s_request.callback      = nullptr;
     s_request.nodeToCapture = nullptr;
     s_request.hidePlayer1   = false;
     s_request.hidePlayer2   = false;
@@ -1176,25 +1285,19 @@ void FramebufferCapture::cancelPending() {
 
     for (auto& d : s_deferredCallbacks) if (d.texture) d.texture->release();
     s_deferredCallbacks.clear();
+
+    if (requestCallback) requestCallback(false, nullptr, nullptr, 0, 0);
+    if (processingCallback) processingCallback(false, nullptr, nullptr, 0, 0);
 }
 
 void FramebufferCapture::executeIfPending() {
     Phase phase = g_phase.load();
 
     if (paimon::isRuntimeShuttingDown()) {
-        if (phase != Phase::Idle || s_request.active) {
+        if (phase != Phase::Idle || s_request.active || s_processingCallback) {
             log::warn("[FramebufferCapture] Runtime shutting down; aborting pending capture (phase={})",
                       static_cast<int>(phase));
-            if (s_request.callback) {
-                auto cb = std::move(s_request.callback);
-                cb(false, nullptr, nullptr, 0, 0);
-            }
-            s_request.active = false;
-            if (g_prep.active) restoreCaptureState();
-#ifdef GEODE_IS_WINDOWS
-            deletePboIfAny();
-#endif
-            g_phase.store(Phase::Idle);
+            cancelPending();
         }
         return;
     }
@@ -1202,10 +1305,6 @@ void FramebufferCapture::executeIfPending() {
     if (phase == Phase::ArmedHide) {
         if (s_request.nodeToCapture) {
             doCaptureNode(s_request.nodeToCapture);
-            s_request.active = false;
-            s_request.callback = nullptr;
-            s_request.nodeToCapture = nullptr;
-            g_phase.store(Phase::Idle);
             return;
         }
 
@@ -1261,19 +1360,13 @@ void FramebufferCapture::executeIfPending() {
             }
             if (dead) {
                 log::info("[FramebufferCapture] Player died mid-capture; aborting render");
-                restoreCaptureState();
-                if (s_request.callback) {
-                    auto cb = std::move(s_request.callback);
-                    cb(false, nullptr, nullptr, 0, 0);
-                }
-                s_request.active = false;
-                g_phase.store(Phase::Idle);
+                finishPendingFailure();
                 return;
             }
 
             auto [targetW, targetH] = resolveRenderTargetSize();
 
-    // HDR uses supersampling plus worker-side Lanczos; skip large shader FBOs.
+    // HDR uses supersampling plus worker-side SIMD scaling; skip large shader FBOs.
             int renderW = targetW;
             int renderH = targetH;
             bool shaderActive = pl->m_shaderLayer && pl->m_shaderLayer->getParent();
@@ -1288,7 +1381,7 @@ void FramebufferCapture::executeIfPending() {
 
             s_captureW = targetW;
             s_captureH = targetH;
-            if (auto raw = renderPlayLayerToTexture(pl, renderW, renderH)) {
+            if (auto raw = renderPlayLayerToTextureV2(pl, renderW, renderH)) {
                 restoreCaptureState();
                 dispatchProcessing(std::move(raw), renderW, renderH);
                 return;
@@ -1334,13 +1427,7 @@ void FramebufferCapture::executeIfPending() {
                 }
                 if (dead) {
                     log::info("[FramebufferCapture] Player died mid-capture; aborting read");
-                    restoreCaptureState();
-                    if (s_request.callback) {
-                        auto cb = std::move(s_request.callback);
-                        cb(false, nullptr, nullptr, 0, 0);
-                    }
-                    s_request.active = false;
-                    g_phase.store(Phase::Idle);
+                    finishPendingFailure();
                     return;
                 }
             }
@@ -1350,13 +1437,7 @@ void FramebufferCapture::executeIfPending() {
         auto* glView   = director ? director->getOpenGLView() : nullptr;
         if (!director || !glView) {
             log::error("[FramebufferCapture] Reading: director/glView null");
-            restoreCaptureState();
-            if (s_request.callback) {
-                auto cb = std::move(s_request.callback);
-                cb(false, nullptr, nullptr, 0, 0);
-            }
-            s_request.active = false;
-            g_phase.store(Phase::Idle);
+            finishPendingFailure();
             return;
         }
 
@@ -1370,13 +1451,7 @@ void FramebufferCapture::executeIfPending() {
         }
         if (W <= 0 || H <= 0) {
             log::error("[FramebufferCapture] Invalid back-buffer dimensions");
-            restoreCaptureState();
-            if (s_request.callback) {
-                auto cb = std::move(s_request.callback);
-                cb(false, nullptr, nullptr, 0, 0);
-            }
-            s_request.active = false;
-            g_phase.store(Phase::Idle);
+            finishPendingFailure();
             return;
         }
 
@@ -1420,12 +1495,7 @@ void FramebufferCapture::executeIfPending() {
 
         if (!readOk) {
             log::warn("[FramebufferCapture] Back-buffer read returned empty content");
-            if (s_request.callback) {
-                auto cb = std::move(s_request.callback);
-                cb(false, nullptr, nullptr, 0, 0);
-            }
-            s_request.active = false;
-            g_phase.store(Phase::Idle);
+            finishPendingFailure();
             return;
         }
 
@@ -1437,12 +1507,7 @@ void FramebufferCapture::executeIfPending() {
     if (phase == Phase::MapPBO) {
         if (!g_pbo) {
             log::error("[FramebufferCapture] MapPBO with no PBO");
-            if (s_request.callback) {
-                auto cb = std::move(s_request.callback);
-                cb(false, nullptr, nullptr, 0, 0);
-            }
-            s_request.active = false;
-            g_phase.store(Phase::Idle);
+            finishPendingFailure();
             return;
         }
 
@@ -1463,12 +1528,7 @@ void FramebufferCapture::executeIfPending() {
 
         if (!readOk) {
             log::warn("[FramebufferCapture] PBO map failed or returned empty content");
-            if (s_request.callback) {
-                auto cb = std::move(s_request.callback);
-                cb(false, nullptr, nullptr, 0, 0);
-            }
-            s_request.active = false;
-            g_phase.store(Phase::Idle);
+            finishPendingFailure();
             return;
         }
 
@@ -1487,7 +1547,7 @@ void FramebufferCapture::dispatchProcessing(
         std::round(static_cast<double>(H) * targetW / W)));
     int levelID = s_request.levelID;
 
-    auto callback = std::move(s_request.callback);
+    s_processingCallback = std::move(s_request.callback);
     s_request.active        = false;
     s_request.callback      = nullptr;
     s_request.nodeToCapture = nullptr;
@@ -1498,11 +1558,11 @@ void FramebufferCapture::dispatchProcessing(
     g_phase.store(Phase::Reading);
 
     uint64_t gen = g_generation.load(std::memory_order_relaxed);
+    s_processingGeneration = gen;
     bool hdrOn = s_hdrMode;
 
-    paimon::ThreadTracker::get().spawn(
-        [rawPixels, W, H, targetW, targetH, gen, hdrOn,
-         callback = std::move(callback)]() mutable {
+    bool const started = paimon::ThreadTracker::get().spawn(
+        [rawPixels, W, H, targetW, targetH, gen, hdrOn]() mutable {
             geode::utils::thread::setName("Paimon Capture Downscale");
             if (paimon::isRuntimeShuttingDown()) return;
 
@@ -1512,31 +1572,42 @@ void FramebufferCapture::dispatchProcessing(
             std::shared_ptr<uint8_t> outBuf;
             int outW = W, outH = H;
             if (targetW < W) {
-                outBuf = lanczosResizeRGBA(
+                auto scaled = paimon::rgba::scale(
                     rawPixels->data(), W, H, targetW, targetH);
-                outW = targetW; outH = targetH;
+                if (scaled) {
+                    outBuf = std::shared_ptr<uint8_t>(
+                        scaled.release(), std::default_delete<uint8_t[]>());
+                }
+                outW = targetW;
+                outH = targetH;
             } else {
                 outBuf = std::shared_ptr<uint8_t>(rawPixels, rawPixels->data());
             }
 
-            if (paimon::isRuntimeShuttingDown() || !outBuf) {
-                if (g_generation.load(std::memory_order_relaxed) == gen) {
-                    g_phase.store(Phase::Idle);
-                }
-                return;
-            }
+            if (paimon::isRuntimeShuttingDown()) return;
 
-            if (hdrOn && targetW >= W) {
+            if (hdrOn && targetW >= W && outBuf) {
                 applyFXAA(outBuf.get(), outW, outH);
             }
 
             Loader::get()->queueInMainThread(
-                [outBuf, outW, outH, gen,
-                 callback = std::move(callback)]() mutable {
-                    if (paimon::isRuntimeShuttingDown()) return;
-
+                [outBuf, outW, outH, gen]() mutable {
                     if (g_generation.load(std::memory_order_relaxed) != gen) {
                         log::info("[FramebufferCapture] Worker dropped: superseded");
+                        return;
+                    }
+
+                    auto callback = std::move(FramebufferCapture::s_processingCallback);
+                    FramebufferCapture::s_processingGeneration = 0;
+                    g_phase.store(Phase::Idle);
+
+                    if (paimon::isRuntimeShuttingDown()) {
+                        if (callback) callback(false, nullptr, nullptr, 0, 0);
+                        return;
+                    }
+
+                    if (!outBuf) {
+                        if (callback) callback(false, nullptr, nullptr, 0, 0);
                         return;
                     }
 
@@ -1544,9 +1615,15 @@ void FramebufferCapture::dispatchProcessing(
                     bool ok = tex != nullptr;
                     if (callback) callback(ok, tex, outBuf, outW, outH);
                     if (tex) tex->release();
-                    g_phase.store(Phase::Idle);
                 });
         });
+
+    if (!started) {
+        auto callback = std::move(s_processingCallback);
+        s_processingGeneration = 0;
+        g_phase.store(Phase::Idle);
+        if (callback) callback(false, nullptr, nullptr, 0, 0);
+    }
 }
 
 void FramebufferCapture::processDeferredCallbacks() {
@@ -1577,7 +1654,7 @@ CCTexture2D* FramebufferCapture::renderPreviewTexture(
     if (hidP1) paimTogglePlayer(pl->m_player1, p1State, true);
     if (hidP2) paimTogglePlayer(pl->m_player2, p2State, true);
 
-    auto raw = renderPlayLayerToTexture(pl, width, height);
+    auto raw = renderPlayLayerToTextureV2(pl, width, height);
 
     if (hidP1) paimTogglePlayer(pl->m_player1, p1State, false);
     if (hidP2) paimTogglePlayer(pl->m_player2, p2State, false);
@@ -1603,8 +1680,17 @@ CCTexture2D* FramebufferCapture::renderPreviewTexture(
 }
 
 void FramebufferCapture::doCaptureNode(CCNode* node) {
+    auto callback = std::move(s_request.callback);
+    s_request.active = false;
+    s_request.nodeToCapture = nullptr;
+    g_phase.store(Phase::Idle);
+
+    auto fail = [&]() {
+        if (callback) callback(false, nullptr, nullptr, 0, 0);
+    };
+
     if (!node) {
-        if (s_request.callback) s_request.callback(false, nullptr, nullptr, 0, 0);
+        fail();
         return;
     }
     auto contentSize = node->getContentSize();
@@ -1614,12 +1700,24 @@ void FramebufferCapture::doCaptureNode(CCNode* node) {
 
     auto* rt = CCRenderTexture::create(W, H, kCCTexture2DPixelFormat_RGBA8888, GL_DEPTH24_STENCIL8);
     if (!rt) {
-        if (s_request.callback) s_request.callback(false, nullptr, nullptr, 0, 0);
+        fail();
         return;
     }
 
     auto origPos = node->getPosition();
     auto origAnchor = node->getAnchorPoint();
+    struct NodeTransformGuard {
+        CCNode* node;
+        CCPoint position;
+        CCPoint anchor;
+        ~NodeTransformGuard() {
+            if (node) {
+                node->setPosition(position);
+                node->setAnchorPoint(anchor);
+            }
+        }
+    } transformGuard{node, origPos, origAnchor};
+
     node->setPosition(ccp(W / 2.f, H / 2.f));
     node->setAnchorPoint(ccp(0.5f, 0.5f));
 
@@ -1627,12 +1725,9 @@ void FramebufferCapture::doCaptureNode(CCNode* node) {
     node->visit();
     rt->end();
 
-    node->setPosition(origPos);
-    node->setAnchorPoint(origAnchor);
-
     CCImage* img = rt->newCCImage(true);
     if (!img) {
-        if (s_request.callback) s_request.callback(false, nullptr, nullptr, 0, 0);
+        fail();
         return;
     }
 
@@ -1640,7 +1735,7 @@ void FramebufferCapture::doCaptureNode(CCNode* node) {
     unsigned char* data = img->getData();
     if (!data || iw <= 0 || ih <= 0) {
         img->release();
-        if (s_request.callback) s_request.callback(false, nullptr, nullptr, 0, 0);
+        fail();
         return;
     }
 
@@ -1652,11 +1747,11 @@ void FramebufferCapture::doCaptureNode(CCNode* node) {
 
     auto* tex = makeTextureRGBA(rgba.get(), iw, ih);
     if (!tex) {
-        if (s_request.callback) s_request.callback(false, nullptr, nullptr, 0, 0);
+        fail();
         return;
     }
-    if (s_request.callback) {
-        s_deferredCallbacks.push_back({s_request.callback, true, tex, rgba, iw, ih});
+    if (callback) {
+        s_deferredCallbacks.push_back({std::move(callback), true, tex, rgba, iw, ih});
     } else {
         tex->release();
     }

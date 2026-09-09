@@ -26,7 +26,6 @@
 #include "../features/paidraw/PaiDrawManager.hpp"
 #include "../video/VideoPlayer.hpp"
 #include "../utils/Shaders.hpp"
-#include "../utils/GLSLLoader.hpp"
 #include "../blur/BlurSystem.hpp"
 #include "../blur/BlurDiskCache.hpp"
 #include "../utils/GDRobTopCache.hpp"
@@ -89,6 +88,14 @@ void bootstrap() {
 
     paimon::versus::init();
 
+    // These managers publish shared config and touch Geode/Cocos state.
+    LayerBackgroundManager::get().migrateFromLegacy();
+    LayerBackgroundManager::get().migrateToGlobalMusic();
+    LayerBackgroundManager::get().migrateExternalAssetsToManagedStorage();
+    TransitionManager::get().loadConfig();
+    ProgressBarManager::get().loadConfig();
+    paimon::slider::CustomSliderManager::get().loadConfig();
+
     bool const clearCacheAtStartup = paimon::settings::general::clearCacheOnExit();
 
     paimon::ThreadTracker::get().spawn([clearCacheAtStartup]() {
@@ -109,17 +116,6 @@ void bootstrap() {
 
         if (paimon::isRuntimeShuttingDown()) return;
         LevelColors::get().preloadIndexFromDisk();
-        LayerBackgroundManager::get().migrateFromLegacy();
-        LayerBackgroundManager::get().migrateToGlobalMusic();
-        LayerBackgroundManager::get().migrateExternalAssetsToManagedStorage();
-    });
-
-    paimon::ThreadTracker::get().spawn([]() {
-        geode::utils::thread::setName("PaimonConfigLoad");
-        if (paimon::isRuntimeShuttingDown()) return;
-        TransitionManager::get().loadConfig();
-        ProgressBarManager::get().loadConfig();
-        paimon::slider::CustomSliderManager::get().loadConfig();
     });
 
     log::info("[PaimonThumbnails] Queueing main level thumbnails...");
@@ -215,7 +211,6 @@ void bootstrap() {
         if (paimon::isRuntimeShuttingDown()) return;
         Shaders::prewarmLevelInfoShaders();
         Shaders::prewarmConfiguredBackgroundShaders();
-        paimon::shaders::preloadBlurShaders();
     });
 
     paimon::scheduleMainThreadDelay(8.0f, []() {

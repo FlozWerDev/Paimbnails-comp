@@ -2171,7 +2171,11 @@ void LocalThumbnailViewPopup::onDownloadBtn(CCObject*) {
             int w = safeRef->m_thumbnailTexture->getPixelsWide();
             int h = safeRef->m_thumbnailTexture->getPixelsHigh();
             ::RenderTexture rt(static_cast<uint32_t>(w), static_cast<uint32_t>(h));
-            rt.begin();
+            if (!rt.begin()) {
+                log::error("[LocalThumbnailViewPopup] Failed to begin render target");
+                safeRef->m_isDownloading = false;
+                return;
+            }
             auto* spr = CCSprite::createWithTexture(safeRef->m_thumbnailTexture);
             if (spr) {
                 spr->setPosition({ static_cast<float>(w) * 0.5f, static_cast<float>(h) * 0.5f });

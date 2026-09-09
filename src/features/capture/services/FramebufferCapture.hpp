@@ -77,6 +77,11 @@ private:
     };
 
     static CaptureRequest s_request;
+    // Kept outside s_request while CPU processing is in flight so cancellation
+    // can still complete the caller exactly once.
+    static geode::CopyableFunction<void(bool, cocos2d::CCTexture2D*, std::shared_ptr<uint8_t>, int, int)>
+        s_processingCallback;
+    static uint64_t s_processingGeneration;
     static std::vector<DeferredCallback> s_deferredCallbacks;
     static bool s_isCapturing;
     static int  s_captureW;
@@ -85,6 +90,7 @@ private:
     static bool s_hdrMode;
 
     static void doCaptureNode(cocos2d::CCNode* node);
+    static void finishPendingFailure();
 
     static void dispatchProcessing(std::shared_ptr<std::vector<uint8_t>> rawPixels, int width, int height);
 };

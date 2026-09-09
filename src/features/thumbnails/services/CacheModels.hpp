@@ -8,6 +8,7 @@
 #include <mutex>
 #include <filesystem>
 #include <functional>
+#include <atomic>
 
 namespace paimon::cache {
 

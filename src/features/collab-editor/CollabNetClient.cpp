@@ -1,6 +1,7 @@
 #include "CollabNetClient.hpp"
 
 #include "../../utils/WebHelper.hpp"
+#include "../../utils/ThreadTracker.hpp"
 
 #include <Geode/Geode.hpp>
 #include <algorithm>
@@ -453,26 +454,26 @@ void CollabNetClient::poll() {
 
 void CollabNetClient::scheduleJoinRetry(uint64_t gen, int ms) {
     auto lifetime = std::weak_ptr<uint8_t>(m_lifetime);
-    std::thread([this, lifetime, gen, ms]() {
+    ThreadTracker::get().spawn([this, lifetime, gen, ms]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         if (lifetime.expired()) return;
         Loader::get()->queueInMainThread([this, lifetime, gen]() {
             if (lifetime.expired()) return;
             if (m_active && gen == m_gen) doJoin();
         });
-    }).detach();
+    });
 }
 
 void CollabNetClient::scheduleRetry(uint64_t gen, int ms) {
     auto lifetime = std::weak_ptr<uint8_t>(m_lifetime);
-    std::thread([this, lifetime, gen, ms]() {
+    ThreadTracker::get().spawn([this, lifetime, gen, ms]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         if (lifetime.expired()) return;
         Loader::get()->queueInMainThread([this, lifetime, gen]() {
             if (lifetime.expired()) return;
             if (m_active && gen == m_gen) poll();
         });
-    }).detach();
+    });
 }
 
 void CollabNetClient::dispatchStateJson(std::string channel, std::string suffix,

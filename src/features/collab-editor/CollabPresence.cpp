@@ -5,6 +5,7 @@
 #include "CollabManager.hpp"
 #include "CollabPopups.hpp"
 #include "CollabTypes.hpp"
+#include "../../utils/ThreadTracker.hpp"
 
 #include <Geode/Geode.hpp>
 #include <Geode/binding/GJAccountManager.hpp>
@@ -28,8 +29,8 @@ std::string baseUrl() {
 } // namespace
 
 CollabPresence& CollabPresence::get() {
-    static CollabPresence instance;
-    return instance;
+    static auto* instance = new CollabPresence();
+    return *instance;
 }
 
 void CollabPresence::start() {
@@ -38,6 +39,9 @@ void CollabPresence::start() {
     if (!acc || acc->m_accountID <= 0) return; // not signed in: nothing to reach
 
     m_accountId = acc->m_accountID;
+    if (!m_lifetime->load(std::memory_order_acquire)) {
+        m_lifetime = std::make_shared<std::atomic<bool>>(true);
+    }
     m_started = true;
     ++m_gen;
     registerSelf();
@@ -50,6 +54,7 @@ void CollabPresence::stop() {
     m_started = false;
     m_token.clear();
     ++m_gen; // invalidate in-flight polls
+    m_lifetime->store(false, std::memory_order_release);
 
     if (account > 0) {
         auto body = matjson::makeObject({{"accountID", static_cast<int64_t>(account)}});
@@ -143,13 +148,16 @@ void CollabPresence::poll() {
 }
 
 void CollabPresence::scheduleRetry(uint64_t gen, int ms) {
-    std::thread([this, gen, ms]() {
+    auto lifetime = std::weak_ptr<std::atomic<bool>>(m_lifetime);
+    ThreadTracker::get().spawn([this, lifetime, gen, ms]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        if (auto alive = lifetime.lock(); !alive || !alive->load(std::memory_order_acquire)) return;
         Loader::get()->queueInMainThread([this, gen]() {
+            if (paimon::isRuntimeShuttingDown()) return;
             if (!m_started || gen != m_gen) return;
             registerSelf();
         });
-    }).detach();
+    });
 }
 
 void CollabPresence::handleInvite(std::string const& room, std::string const& fromName) {

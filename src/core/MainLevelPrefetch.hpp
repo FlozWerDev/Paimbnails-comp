@@ -30,7 +30,8 @@ void staggerMainLevelThumbnailLoads(LoadFn&& loadFn, int batchSize = 4, float ba
     });
 
     auto step = std::make_shared<std::function<void()>>();
-    *step = [ctx, step]() {
+    std::weak_ptr<std::function<void()>> weakStep = step;
+    *step = [ctx, weakStep]() {
         if (isRuntimeShuttingDown()) return;
 
         int enqueued = 0;
@@ -41,7 +42,9 @@ void staggerMainLevelThumbnailLoads(LoadFn&& loadFn, int batchSize = 4, float ba
         }
 
         if (ctx->nextId <= kMainLevelMaxID) {
-            scheduleMainThreadDelay(ctx->delay, [step]() { (*step)(); });
+            if (auto next = weakStep.lock()) {
+                scheduleMainThreadDelay(ctx->delay, [next]() { (*next)(); });
+            }
         }
     };
 
