@@ -2,6 +2,7 @@
 
 #include <thread>
 #include <chrono>
+#include <future>
 #include <atomic>
 #include <algorithm>
 #include <cstdint>
