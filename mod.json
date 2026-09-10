@@ -16,7 +16,7 @@
     "community": "https://discord.gg/5N5vpSfZwY",
     "source": "https://github.com/FlozWerDev/Paimbnails"
   },
-
+  "early-load": true,
 
   "resources": {
     "sprites": ["resources/*.png", "Logo.png"],

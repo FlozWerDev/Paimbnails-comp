@@ -73,9 +73,9 @@ if (libyuv_ADDED)
     )
     set_target_properties(yuv PROPERTIES POSITION_INDEPENDENT_CODE ON)
     if (MSVC)
-        target_compile_options(yuv PRIVATE /w)
+        target_compile_options(yuv PRIVATE /w /O2 /Gy /Gw)
     else()
-        target_compile_options(yuv PRIVATE -w)
+        target_compile_options(yuv PRIVATE -w -O3 -ffunction-sections -fdata-sections)
     endif()
 
     # row_neon64.cc and compare_neon64.cc use sdot/udot/usdot, which the
@@ -125,12 +125,18 @@ if (MSVC)
         /bigobj
         /O2
         /fp:fast
+        /Gy
+        /Gw
     )
     # /GL + /LTCG disabled: breaks Geode $modify linking (LNK2001 on
     # undefined GD functions). ICF also disabled to preserve function
     # addresses for hook identity and crash symbolication.
+    # /OPT:REF eliminates unused functions and data from GeodeBindings and static libs,
+    # drastically reducing DLL binary size, relocations, and LoadLibraryW load time.
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_link_options(${PROJECT_NAME} PRIVATE LINKER:/OPT:NOICF)
+        target_link_options(${PROJECT_NAME} PRIVATE LINKER:/OPT:REF LINKER:/OPT:NOICF)
+    else()
+        target_link_options(${PROJECT_NAME} PRIVATE /OPT:REF /OPT:NOICF)
     endif()
 
     # Workaround: MSVC v180 ICE on /O2 for these TUs; /O1 has no measurable cost
@@ -255,6 +261,16 @@ endif()
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 
 setup_geode_mod(${PROJECT_NAME})
+
+# Enable function-level and data-level linking on GeodeBindings so /OPT:REF / --gc-sections
+# can eliminate unreferenced GD binding stubs from the final binary.
+if (TARGET GeodeBindings)
+    if (MSVC)
+        target_compile_options(GeodeBindings PRIVATE /Gy /Gw)
+    else()
+        target_compile_options(GeodeBindings PRIVATE -ffunction-sections -fdata-sections)
+    endif()
+endif()
 
 # Globed is an optional dependency; its headers are only needed for the soft
 # link API, and every use of them is behind __has_include so the mod still

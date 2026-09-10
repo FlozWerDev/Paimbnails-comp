@@ -3,6 +3,8 @@
 #include <Geode/loader/Loader.hpp>
 #include <Geode/utils/file.hpp>
 #include <Geode/utils/string.hpp>
+#include "../../../utils/ThreadTracker.hpp"
+#include "../../../core/RuntimeLifecycle.hpp"
 #include <fmt/format.h>
 
 using namespace geode::prelude;
@@ -149,35 +151,34 @@ static void scanAndLoadSongs() {
 
 $on_mod(Loaded) {
     auto& sm = MenuLoopManager::get();
-    auto configDir = sm.getConfigDir();
-
-    ensureFileExists(configDir / "playlistOne.txt", "# Menu Loop Playlist 1\n");
-    ensureFileExists(configDir / "playlistTwo.txt", "# Menu Loop Playlist 2\n");
-    ensureFileExists(configDir / "playlistThree.txt", "# Menu Loop Playlist 3\n");
-    ensureFileExists(configDir / "blacklist.txt",
-        "# Menu Loop Blacklist\n"
-        "# Add song paths (one per line) to blacklist them\n"
-    );
-    ensureFileExists(configDir / "favorites.txt",
-        "# Menu Loop Favorites\n"
-        "# Add song paths (one per line) to favorite them\n"
-    );
-
-    // Initialize state from settings
-    sm.setConstantShuffleMode(Mod::get()->getSettingValue<bool>("menuLoopConstantShuffle"));
-    sm.setLastMenuLoopPosition(0);
-    sm.setShouldRestoreMenuLoopPoint(true);
-    sm.setFinishedCalculatingSongLengths(false);
-    sm.setAdvancedLogs(Mod::get()->getSavedValue<bool>("menuLoopAdvancedLogs", false));
-    sm.setPlaylistIsEmpty(true);
-    sm.setCalledOnce(false);
-
     auto* loader = Loader::get();
     sm.setVibecodedVentilla(loader->isModLoaded("joseii.ventilla"));
 
-    scanAndLoadSongs();
-
     listenForSettingChanges<bool>("menuLoopConstantShuffle", [](bool enabled) {
         MenuLoopManager::get().setConstantShuffleMode(enabled);
+    });
+
+    auto configDir = sm.getConfigDir();
+
+    // Run file creation and recursive song scanning in background to prevent
+    // freezing the main thread at startup.
+    paimon::ThreadTracker::get().spawn([configDir]() {
+        geode::utils::thread::setName("PaimonMenuLoopInit");
+        if (paimon::isRuntimeShuttingDown()) return;
+
+        ensureFileExists(configDir / "playlistOne.txt", "# Menu Loop Playlist 1\n");
+        ensureFileExists(configDir / "playlistTwo.txt", "# Menu Loop Playlist 2\n");
+        ensureFileExists(configDir / "playlistThree.txt", "# Menu Loop Playlist 3\n");
+        ensureFileExists(configDir / "blacklist.txt",
+            "# Menu Loop Blacklist\n"
+            "# Add song paths (one per line) to blacklist them\n"
+        );
+        ensureFileExists(configDir / "favorites.txt",
+            "# Menu Loop Favorites\n"
+            "# Add song paths (one per line) to favorite them\n"
+        );
+
+        if (paimon::isRuntimeShuttingDown()) return;
+        scanAndLoadSongs();
     });
 }

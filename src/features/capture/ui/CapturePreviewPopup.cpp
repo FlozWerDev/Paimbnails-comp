@@ -108,6 +108,11 @@ CapturePreviewPopup* CapturePreviewPopup::create(
 }
 
 CapturePreviewPopup::~CapturePreviewPopup() {
+    if (auto* director = CCDirector::get(); director && director->getScheduler()) {
+        director->getScheduler()->unscheduleSelector(
+            schedule_selector(CapturePreviewPopup::delayedRecapture), this
+        );
+    }
     m_activeTouches.clear();
 }
 
@@ -118,6 +123,11 @@ void CapturePreviewPopup::registerWithTouchDispatcher() {
 }
 
 void CapturePreviewPopup::onExit() {
+    if (auto* director = CCDirector::get(); director && director->getScheduler()) {
+        director->getScheduler()->unscheduleSelector(
+            schedule_selector(CapturePreviewPopup::delayedRecapture), this
+        );
+    }
     this->unschedule(schedule_selector(CapturePreviewPopup::onRecaptureTimeout));
     Popup::onExit();
 }

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <Geode/Geode.hpp>
 #include <string>
@@ -244,8 +244,15 @@ inline void runOneShotMigrations() {
 }
 
 inline void migrateToSavedValues() {
+    auto* mod = geode::Mod::get();
+    if (mod && mod->getSavedValue<bool>("settings-defaults-migrated-v2", false)) {
+        return;
+    }
     internal::applyDefaults(false);
     internal::runOneShotMigrations();
+    if (mod) {
+        mod->setSavedValue<bool>("settings-defaults-migrated-v2", true);
+    }
 }
 
 // Restore clean-install defaults.
@@ -259,6 +266,7 @@ inline void forceResetSavedValuesToDefaults() {
     mod->setSavedValue<bool>("popup-blur-style-migrated-to-paimonblur", true);
     mod->setSavedValue<bool>("popup-blur-style-migrated-to-paiblur", true);
     mod->setSavedValue<bool>("profile-img-zlayer-fixed-default", true);
+    mod->setSavedValue<bool>("settings-defaults-migrated-v2", true);
 }
 
 }

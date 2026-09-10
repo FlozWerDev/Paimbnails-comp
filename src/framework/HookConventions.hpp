@@ -26,8 +26,8 @@ inline void afterNodeIdsOrLate(auto& self, std::string_view method) {
     std::string const fn{method};
     (void)self.setHookPriorityPost(fn, geode::Priority::Late);
     if (!self.setHookPriorityAfterPost(fn, "geode.node-ids")) {
-        geode::log::warn(
-            "[Paimbnails] setHookPriorityAfterPost({}, geode.node-ids) failed; using Late",
+        geode::log::debug(
+            "[Paimbnails] setHookPriorityAfterPost({}, geode.node-ids) fallback to Late",
             fn
         );
     }
@@ -39,8 +39,8 @@ inline void afterAllPaimonUiOrVeryLate(auto& self, std::string_view method) {
     std::string const fn{method};
     (void)self.setHookPriorityPost(fn, geode::Priority::VeryLate);
     if (!self.setHookPriorityAfterPost(fn, "flozwer.paimbnails2")) {
-        geode::log::warn(
-            "[Paimbnails] setHookPriorityAfterPost({}, flozwer.paimbnails2) failed; using VeryLate",
+        geode::log::debug(
+            "[Paimbnails] setHookPriorityAfterPost({}, flozwer.paimbnails2) fallback to VeryLate",
             fn
         );
     }

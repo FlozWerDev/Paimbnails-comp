@@ -1188,6 +1188,8 @@ void FramebufferCapture::finishPendingFailure() {
 
     auto requestCallback = std::move(s_request.callback);
     auto processingCallback = std::move(s_processingCallback);
+    s_request.callback = nullptr;
+    s_processingCallback = nullptr;
     s_processingGeneration = 0;
     s_request.active        = false;
     s_request.nodeToCapture = nullptr;
@@ -1203,8 +1205,14 @@ void FramebufferCapture::finishPendingFailure() {
     for (auto& d : s_deferredCallbacks) if (d.texture) d.texture->release();
     s_deferredCallbacks.clear();
 
-    if (requestCallback) requestCallback(false, nullptr, nullptr, 0, 0);
-    if (processingCallback) processingCallback(false, nullptr, nullptr, 0, 0);
+    if (requestCallback) {
+        requestCallback(false, nullptr, nullptr, 0, 0);
+        requestCallback = nullptr;
+    }
+    if (processingCallback) {
+        processingCallback(false, nullptr, nullptr, 0, 0);
+        processingCallback = nullptr;
+    }
 }
 
 namespace {
@@ -1228,6 +1236,8 @@ void FramebufferCapture::requestCapture(
     Phase prev = g_phase.exchange(Phase::Idle);
     auto previousRequestCallback = std::move(s_request.callback);
     auto previousProcessingCallback = std::move(s_processingCallback);
+    s_request.callback = nullptr;
+    s_processingCallback = nullptr;
     s_processingGeneration = 0;
     bool const hadPreviousRequest = s_request.active;
 
@@ -1255,8 +1265,14 @@ void FramebufferCapture::requestCapture(
     g_waitingTicks = 0;
     g_phase.store(Phase::ArmedHide);
 
-    if (previousRequestCallback) previousRequestCallback(false, nullptr, nullptr, 0, 0);
-    if (previousProcessingCallback) previousProcessingCallback(false, nullptr, nullptr, 0, 0);
+    if (previousRequestCallback) {
+        previousRequestCallback(false, nullptr, nullptr, 0, 0);
+        previousRequestCallback = nullptr;
+    }
+    if (previousProcessingCallback) {
+        previousProcessingCallback(false, nullptr, nullptr, 0, 0);
+        previousProcessingCallback = nullptr;
+    }
 }
 
 void FramebufferCapture::cancelPending() {
@@ -1272,6 +1288,8 @@ void FramebufferCapture::cancelPending() {
 
     auto requestCallback = std::move(s_request.callback);
     auto processingCallback = std::move(s_processingCallback);
+    s_request.callback = nullptr;
+    s_processingCallback = nullptr;
     s_processingGeneration = 0;
     s_request.active        = false;
     s_request.nodeToCapture = nullptr;
@@ -1286,8 +1304,14 @@ void FramebufferCapture::cancelPending() {
     for (auto& d : s_deferredCallbacks) if (d.texture) d.texture->release();
     s_deferredCallbacks.clear();
 
-    if (requestCallback) requestCallback(false, nullptr, nullptr, 0, 0);
-    if (processingCallback) processingCallback(false, nullptr, nullptr, 0, 0);
+    if (requestCallback) {
+        requestCallback(false, nullptr, nullptr, 0, 0);
+        requestCallback = nullptr;
+    }
+    if (processingCallback) {
+        processingCallback(false, nullptr, nullptr, 0, 0);
+        processingCallback = nullptr;
+    }
 }
 
 void FramebufferCapture::executeIfPending() {
@@ -1598,31 +1622,45 @@ void FramebufferCapture::dispatchProcessing(
                     }
 
                     auto callback = std::move(FramebufferCapture::s_processingCallback);
+                    FramebufferCapture::s_processingCallback = nullptr;
                     FramebufferCapture::s_processingGeneration = 0;
                     g_phase.store(Phase::Idle);
 
                     if (paimon::isRuntimeShuttingDown()) {
-                        if (callback) callback(false, nullptr, nullptr, 0, 0);
+                        if (callback) {
+                            callback(false, nullptr, nullptr, 0, 0);
+                            callback = nullptr;
+                        }
                         return;
                     }
 
                     if (!outBuf) {
-                        if (callback) callback(false, nullptr, nullptr, 0, 0);
+                        if (callback) {
+                            callback(false, nullptr, nullptr, 0, 0);
+                            callback = nullptr;
+                        }
                         return;
                     }
 
                     CCTexture2D* tex = makeTextureRGBA(outBuf.get(), outW, outH);
                     bool ok = tex != nullptr;
-                    if (callback) callback(ok, tex, outBuf, outW, outH);
+                    if (callback) {
+                        callback(ok, tex, outBuf, outW, outH);
+                        callback = nullptr;
+                    }
                     if (tex) tex->release();
                 });
         });
 
     if (!started) {
         auto callback = std::move(s_processingCallback);
+        s_processingCallback = nullptr;
         s_processingGeneration = 0;
         g_phase.store(Phase::Idle);
-        if (callback) callback(false, nullptr, nullptr, 0, 0);
+        if (callback) {
+            callback(false, nullptr, nullptr, 0, 0);
+            callback = nullptr;
+        }
     }
 }
 
@@ -1633,6 +1671,7 @@ void FramebufferCapture::processDeferredCallbacks() {
     for (auto& d : callbacks) {
         if (d.callback) {
             d.callback(d.success, d.texture, d.rgbaData, d.width, d.height);
+            d.callback = nullptr;
         }
         if (d.texture) d.texture->release();
     }
@@ -1681,12 +1720,16 @@ CCTexture2D* FramebufferCapture::renderPreviewTexture(
 
 void FramebufferCapture::doCaptureNode(CCNode* node) {
     auto callback = std::move(s_request.callback);
+    s_request.callback = nullptr;
     s_request.active = false;
     s_request.nodeToCapture = nullptr;
     g_phase.store(Phase::Idle);
 
     auto fail = [&]() {
-        if (callback) callback(false, nullptr, nullptr, 0, 0);
+        if (callback) {
+            callback(false, nullptr, nullptr, 0, 0);
+            callback = nullptr;
+        }
     };
 
     if (!node) {
@@ -1752,6 +1795,7 @@ void FramebufferCapture::doCaptureNode(CCNode* node) {
     }
     if (callback) {
         s_deferredCallbacks.push_back({std::move(callback), true, tex, rgba, iw, ih});
+        callback = nullptr;
     } else {
         tex->release();
     }
