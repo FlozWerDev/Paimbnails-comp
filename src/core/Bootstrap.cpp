@@ -34,6 +34,7 @@
 #include "../features/beat-shaders/services/BeatShaderManager.hpp"
 #include "../features/rtx/services/RTXManager.hpp"
 #include "../features/frame-interp/services/FrameInterpolator.hpp"
+#include "../features/icon-gradients/GradientCache.hpp"
 #include "../utils/ThreadTracker.hpp"
 #include <thread>
 #include <chrono>
@@ -211,6 +212,15 @@ void bootstrap() {
         if (paimon::isRuntimeShuttingDown()) return;
         Shaders::prewarmLevelInfoShaders();
         Shaders::prewarmConfiguredBackgroundShaders();
+    });
+
+    // The gradient shader set is ~1240 independent programs (one per sprite
+    // key; each holds its own uniforms). Compiling them on mod load blocked the
+    // main thread for over a minute on low-end machines, so it is spread across
+    // frames once the game is already past its own loading.
+    paimon::scheduleMainThreadDelay(10.0f, []() {
+        if (paimon::isRuntimeShuttingDown()) return;
+        paimon::icon_gradients::GradientCache::prewarmShaders();
     });
 
     paimon::scheduleMainThreadDelay(8.0f, []() {

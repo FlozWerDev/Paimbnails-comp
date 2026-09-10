@@ -1,8 +1,15 @@
 #include "GradientCache.hpp"
 #include "GradientUtils.hpp"
 #include "services/GradientAnimationManager.hpp"
+#include "../../core/RuntimeLifecycle.hpp"
+#include "../../utils/MainThreadDelay.hpp"
 
 #include <Geode/loader/Event.hpp>
+
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <vector>
 
 // Every shader key the animation sprites (robot/spider parts, extra sprite,
 // line overlays) can ask for, compiled ahead of time on load so mid-gameplay
@@ -39,6 +46,78 @@ constexpr static std::array cacheIDs = std::to_array<std::string_view>({
     "{}-3-705-false-{}-true-true-2","{}-4-105-false-{}-true-true-2","{}-4-205-false-{}-true-true-2","{}-4-305-false-{}-true-true-2","{}-4-405-false-{}-true-true-2","{}-4-505-false-{}-true-true-2","{}-4-605-false-{}-true-true-2","{}-4-705-false-{}-true-true-2",
     "{}-3-104-false-{}-false-true-44","{}-3-204-false-{}-false-true-44","{}-3-304-false-{}-false-true-44","{}-3-404-false-{}-false-true-44","{}-3-504-false-{}-false-true-44","{}-3-604-false-{}-false-true-44","{}-3-704-false-{}-false-true-44","{}-3-105-false-{}-false-true-2",
     "{}-3-205-false-{}-false-true-2","{}-3-305-false-{}-false-true-2","{}-3-405-false-{}-false-true-2","{}-3-505-false-{}-false-true-2","{}-3-605-false-{}-false-true-2","{}-3-705-false-{}-false-true-2",
+});
+
+// The editor popup (preview, buttons, color toggles) and garage use their own
+// shader keys that are not in cacheIDs. Compiled with the same staggered
+// prewarm so dragging a point or picking a color never hits a synchronous
+// on-the-fly GLSL compile (the main source of the stutter).
+// Format: {isLinear}-{iconType}-{id}-{blend}-{line}-{secondPlayer}-{playerObject}-{extra}
+constexpr static std::array uiKeys = std::to_array<std::string_view>({
+    "{}-0-1000-false-false-{}-false-1000",
+    "{}-0-105-false-false-{}-false-66",
+    "{}-0-205-false-false-{}-false-66",
+    "{}-0-305-false-false-{}-false-66",
+    "{}-0-405-false-false-{}-false-66",
+    "{}-0-505-false-false-{}-false-66",
+    "{}-0-605-false-false-{}-false-66",
+    "{}-0-705-false-false-{}-false-66",
+    "{}-0-105-false-false-{}-false-201",
+    "{}-0-205-false-false-{}-false-201",
+    "{}-0-305-false-false-{}-false-201",
+    "{}-0-405-false-false-{}-false-201",
+    "{}-0-505-false-false-{}-false-201",
+    "{}-0-605-false-false-{}-false-201",
+    "{}-0-705-false-false-{}-false-201",
+    "{}-0-105-false-false-{}-false-202",
+    "{}-0-205-false-false-{}-false-202",
+    "{}-0-305-false-false-{}-false-202",
+    "{}-0-405-false-false-{}-false-202",
+    "{}-0-505-false-false-{}-false-202",
+    "{}-0-605-false-false-{}-false-202",
+    "{}-0-705-false-false-{}-false-202",
+    "{}-1-105-false-false-{}-false-99",
+    "{}-1-205-false-false-{}-false-99",
+    "{}-1-305-false-false-{}-false-99",
+    "{}-1-405-false-false-{}-false-99",
+    "{}-1-505-false-false-{}-false-99",
+    "{}-1-605-false-false-{}-false-99",
+    "{}-1-705-false-false-{}-false-99",
+    "{}-0-105-false-false-{}-false-121",
+    "{}-0-205-false-false-{}-false-121",
+    "{}-0-305-false-false-{}-false-121",
+    "{}-0-405-false-false-{}-false-121",
+    "{}-0-505-false-false-{}-false-121",
+    "{}-0-605-false-false-{}-false-121",
+    "{}-0-705-false-false-{}-false-121",
+    "{}-0-105-false-false-{}-false-123",
+    "{}-0-205-false-false-{}-false-123",
+    "{}-0-305-false-false-{}-false-123",
+    "{}-0-405-false-false-{}-false-123",
+    "{}-0-505-false-false-{}-false-123",
+    "{}-0-605-false-false-{}-false-123",
+    "{}-0-705-false-false-{}-false-123",
+    "{}-0-105-false-false-{}-false-124",
+    "{}-0-205-false-false-{}-false-124",
+    "{}-0-305-false-false-{}-false-124",
+    "{}-0-405-false-false-{}-false-124",
+    "{}-0-505-false-false-{}-false-124",
+    "{}-0-605-false-false-{}-false-124",
+    "{}-0-705-false-false-{}-false-124",
+    "{}-0-105-false-false-{}-false-120",
+    "{}-0-205-false-false-{}-false-120",
+    "{}-0-305-false-false-{}-false-120",
+    "{}-0-405-false-false-{}-false-120",
+    "{}-0-505-false-false-{}-false-120",
+    "{}-0-605-false-false-{}-false-120",
+    "{}-0-705-false-false-{}-false-120",
+    "{}-0-105-false-false-{}-false-372",
+    "{}-0-205-false-false-{}-false-372",
+    "{}-0-305-false-false-{}-false-372",
+    "{}-0-405-false-false-{}-false-372",
+    "{}-0-505-false-false-{}-false-372",
+    "{}-0-605-false-false-{}-false-372",
+    "{}-0-705-false-false-{}-false-372",
 });
 
 constexpr char const* kSeparate2PMigration = "icon-gradients-separate-2p-default-v2";
@@ -88,98 +167,128 @@ $on_mod(Loaded) {
     listenForSettingChanges<bool>(kSettingMenu, [](bool value) {
         GradientCache::setMenuGradientsEnabled(value);
     });
+}
 
-    if (Mod::get()->getSettingValue<bool>(kSettingPreloadShaders)) {
-        GradientUtils::hideSprite(CCSprite::create());
+namespace {
 
-        for (const auto& str : cacheIDs) {
-            GradientUtils::createShader(fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, false), true, false, false);
-            GradientUtils::createShader(fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), false, true), false, false, true);
-            GradientUtils::createShader(fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), false, false), false, false, false);
-            GradientUtils::createShader(fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, true), true, false, true);
+// Each key maps to its own CCGLProgram on purpose: applyGradient writes
+// per-sprite uniforms (uvMin/uvMax, stops, colors) straight into the program,
+// so sharing one instance between two sprites would clobber them. That makes
+// the full set ~1240 compiles, and doing it inside $on_mod(Loaded) blocked the
+// main thread for over a minute on low-end machines. Instead it runs after the
+// game is up, spread across frames with a soft time budget so it never freezes
+// the menu waiting for it.
+constexpr auto kPrewarmFrameBudget = std::chrono::milliseconds(6);
+
+void runGradientPrewarm(std::vector<std::function<void()>> steps) {
+    if (steps.empty()) return;
+
+    struct State {
+        std::vector<std::function<void()>> steps;
+        size_t index = 0;
+    };
+
+    auto state = std::make_shared<State>(State{std::move(steps), 0});
+
+    auto tick = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weakTick = tick;
+    *tick = [state, weakTick]() {
+        if (paimon::isRuntimeShuttingDown()) return;
+
+        auto deadline = std::chrono::steady_clock::now() + kPrewarmFrameBudget;
+        while (state->index < state->steps.size()
+               && std::chrono::steady_clock::now() < deadline) {
+            state->steps[state->index]();
+            ++state->index;
         }
 
-        // The editor popup (preview, buttons, color toggles) and garage use
-        // their own shader keys that are not in cacheIDs. Compile those ahead
-        // of time too so dragging a point or picking a color never hits a
-        // synchronous on-the-fly GLSL compile (the main source of the stutter).
-        // Format: {isLinear}-{iconType}-{id}-{blend}-{line}-{secondPlayer}-{playerObject}-{extra}
-        std::array uiKeys = std::to_array<std::string_view>({
-            "{}-0-1000-false-false-{}-false-1000",
-            "{}-0-105-false-false-{}-false-66",
-            "{}-0-205-false-false-{}-false-66",
-            "{}-0-305-false-false-{}-false-66",
-            "{}-0-405-false-false-{}-false-66",
-            "{}-0-505-false-false-{}-false-66",
-            "{}-0-605-false-false-{}-false-66",
-            "{}-0-705-false-false-{}-false-66",
-            "{}-0-105-false-false-{}-false-201",
-            "{}-0-205-false-false-{}-false-201",
-            "{}-0-305-false-false-{}-false-201",
-            "{}-0-405-false-false-{}-false-201",
-            "{}-0-505-false-false-{}-false-201",
-            "{}-0-605-false-false-{}-false-201",
-            "{}-0-705-false-false-{}-false-201",
-            "{}-0-105-false-false-{}-false-202",
-            "{}-0-205-false-false-{}-false-202",
-            "{}-0-305-false-false-{}-false-202",
-            "{}-0-405-false-false-{}-false-202",
-            "{}-0-505-false-false-{}-false-202",
-            "{}-0-605-false-false-{}-false-202",
-            "{}-0-705-false-false-{}-false-202",
-            "{}-1-105-false-false-{}-false-99",
-            "{}-1-205-false-false-{}-false-99",
-            "{}-1-305-false-false-{}-false-99",
-            "{}-1-405-false-false-{}-false-99",
-            "{}-1-505-false-false-{}-false-99",
-            "{}-1-605-false-false-{}-false-99",
-            "{}-1-705-false-false-{}-false-99",
-            "{}-0-105-false-false-{}-false-121",
-            "{}-0-205-false-false-{}-false-121",
-            "{}-0-305-false-false-{}-false-121",
-            "{}-0-405-false-false-{}-false-121",
-            "{}-0-505-false-false-{}-false-121",
-            "{}-0-605-false-false-{}-false-121",
-            "{}-0-705-false-false-{}-false-121",
-            "{}-0-105-false-false-{}-false-123",
-            "{}-0-205-false-false-{}-false-123",
-            "{}-0-305-false-false-{}-false-123",
-            "{}-0-405-false-false-{}-false-123",
-            "{}-0-505-false-false-{}-false-123",
-            "{}-0-605-false-false-{}-false-123",
-            "{}-0-705-false-false-{}-false-123",
-            "{}-0-105-false-false-{}-false-124",
-            "{}-0-205-false-false-{}-false-124",
-            "{}-0-305-false-false-{}-false-124",
-            "{}-0-405-false-false-{}-false-124",
-            "{}-0-505-false-false-{}-false-124",
-            "{}-0-605-false-false-{}-false-124",
-            "{}-0-705-false-false-{}-false-124",
-            "{}-0-105-false-false-{}-false-120",
-            "{}-0-205-false-false-{}-false-120",
-            "{}-0-305-false-false-{}-false-120",
-            "{}-0-405-false-false-{}-false-120",
-            "{}-0-505-false-false-{}-false-120",
-            "{}-0-605-false-false-{}-false-120",
-            "{}-0-705-false-false-{}-false-120",
-            "{}-0-105-false-false-{}-false-372",
-            "{}-0-205-false-false-{}-false-372",
-            "{}-0-305-false-false-{}-false-372",
-            "{}-0-405-false-false-{}-false-372",
-            "{}-0-505-false-false-{}-false-372",
-            "{}-0-605-false-false-{}-false-372",
-            "{}-0-705-false-false-{}-false-372",
-        });
+        if (state->index < state->steps.size()) {
+            // Strong ref only in the pending continuation; the closure holds a
+            // weak self-ref to avoid a self-owning shared_ptr cycle.
+            if (auto strong = weakTick.lock()) {
+                paimon::scheduleMainThreadDelay(0.f, [strong]() { (*strong)(); });
+            }
+        }
+    };
 
-        for (const auto& str : uiKeys) {
-            // linear (blend=false, line=false) and line (blend=false, line=true)
-            GradientUtils::createShader(fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, false), true, false, false);
-            GradientUtils::createShader(fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, true), true, false, true);
-            // radial variants share the same key layout with isLinear=false
-            GradientUtils::createShader(fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), false, false), false, false, false);
-            GradientUtils::createShader(fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), false, true), false, false, true);
+    (*tick)();
+}
+
+// getSavedConfig falls back to a default whose points all share the player
+// colour, and applyGradient bails on those before touching a shader. So unless
+// the user actually saved a gradient for some icon type, none of the keys
+// above is ever looked up and compiling them is pure startup cost.
+bool hasAnySavedGradient() {
+    constexpr std::array types = {
+        static_cast<IconType>(-1),
+        IconType::Cube,
+        IconType::Ship,
+        IconType::Ball,
+        IconType::Ufo,
+        IconType::Wave,
+        IconType::Robot,
+        IconType::Spider,
+        IconType::Swing,
+        IconType::Jetpack
+    };
+
+    for (IconType type : types) {
+        for (bool secondPlayer : {false, true}) {
+            if (Mod::get()->hasSavedValue(GradientUtils::getConfigKey(type, secondPlayer)))
+                return true;
         }
     }
+    return false;
+}
+
+std::vector<std::function<void()>> buildGradientPrewarmSteps() {
+    std::vector<std::function<void()>> steps;
+    steps.reserve((cacheIDs.size() + uiKeys.size()) * 4);
+
+    for (const auto& str : cacheIDs) {
+        steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, false)]() {
+            GradientUtils::createShader(key, true, false, false);
+        });
+        steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), false, true)]() {
+            GradientUtils::createShader(key, false, false, true);
+        });
+        steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), false, false)]() {
+            GradientUtils::createShader(key, false, false, false);
+        });
+        steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, true)]() {
+            GradientUtils::createShader(key, true, false, true);
+        });
+    }
+
+    for (const auto& str : uiKeys) {
+        // linear (blend=false, line=false) and line (blend=false, line=true)
+        steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, false)]() {
+            GradientUtils::createShader(key, true, false, false);
+        });
+        steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, true)]() {
+            GradientUtils::createShader(key, true, false, true);
+        });
+        // radial variants share the same key layout with isLinear=false
+        steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), false, false)]() {
+            GradientUtils::createShader(key, false, false, false);
+        });
+        steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), false, true)]() {
+            GradientUtils::createShader(key, false, false, true);
+        });
+    }
+
+    return steps;
+}
+
+} // namespace
+
+void GradientCache::prewarmShaders() {
+    if (isModDisabled()) return;
+    if (!Mod::get()->getSettingValue<bool>(kSettingPreloadShaders)) return;
+    if (!hasAnySavedGradient()) return;
+
+    GradientUtils::hideSprite(CCSprite::create());
+    runGradientPrewarm(buildGradientPrewarmSteps());
 }
 
 

@@ -50,6 +50,10 @@ public:
 
     static GradientCache& get();
 
+    // Compiles the gradient shader set across frames after the game is up;
+    // never blocks the loading screen (see GradientCache.cpp).
+    static void prewarmShaders();
+
     static IconType getLastSelected();
 
     static void setLastSelected(IconType);
