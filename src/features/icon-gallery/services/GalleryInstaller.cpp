@@ -235,8 +235,7 @@ void GalleryInstaller::registerAllInstalled() {
 
     std::error_code ec;
     auto dir = GalleryStore::installDir();
-    if (!std::filesystem::is_directory(dir, ec) || ec) return;
-    if (std::filesystem::is_empty(dir, ec) || ec) return;
+    if (!std::filesystem::is_directory(dir, ec)) return;
 
     int registered = 0;
     bool touched = false;
