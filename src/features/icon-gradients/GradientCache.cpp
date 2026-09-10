@@ -6,6 +6,7 @@
 
 #include <Geode/loader/Event.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -216,36 +217,59 @@ void runGradientPrewarm(std::vector<std::function<void()>> steps) {
 
 // getSavedConfig falls back to a default whose points all share the player
 // colour, and applyGradient bails on those before touching a shader. So unless
-// the user actually saved a gradient for some icon type, none of the keys
-// above is ever looked up and compiling them is pure startup cost.
-bool hasAnySavedGradient() {
-    constexpr std::array types = {
-        static_cast<IconType>(-1),
-        IconType::Cube,
-        IconType::Ship,
-        IconType::Ball,
-        IconType::Ufo,
-        IconType::Wave,
-        IconType::Robot,
-        IconType::Spider,
-        IconType::Swing,
-        IconType::Jetpack
-    };
+// the user saved a gradient, none of the keys above is ever looked up and
+// compiling them is pure startup cost. When one is saved, cacheIDs are limited
+// to the icon types that actually have a config: the second token of a key is
+// the IconType, and a saved global config keeps them all. The uiKeys stay
+// whole because the editor/garage previews are not tied to a saved type.
+std::array<bool, 9> activeGradientTypes() {
+    std::array<bool, 9> active{};
+    active.fill(false);
 
-    for (IconType type : types) {
+    if (Mod::get()->hasSavedValue(GradientUtils::getConfigKey(static_cast<IconType>(-1), false))
+        || Mod::get()->hasSavedValue(GradientUtils::getConfigKey(static_cast<IconType>(-1), true))) {
+        active.fill(true);
+        return active;
+    }
+
+    for (int type = 0; type < static_cast<int>(active.size()); ++type) {
         for (bool secondPlayer : {false, true}) {
-            if (Mod::get()->hasSavedValue(GradientUtils::getConfigKey(type, secondPlayer)))
-                return true;
+            if (Mod::get()->hasSavedValue(
+                    GradientUtils::getConfigKey(static_cast<IconType>(type), secondPlayer))) {
+                active[type] = true;
+                break;
+            }
         }
     }
-    return false;
+    return active;
+}
+
+bool hasActiveGradientType(std::array<bool, 9> const& active) {
+    return std::ranges::find(active, true) != active.end();
+}
+
+bool keyTypeIsActive(std::string_view key, std::array<bool, 9> const& active) {
+    auto dash = key.find('-');
+    if (dash == std::string_view::npos) return true;
+
+    int type = 0;
+    size_t pos = dash + 1;
+    while (pos < key.size() && key[pos] >= '0' && key[pos] <= '9') {
+        type = type * 10 + (key[pos] - '0');
+        ++pos;
+    }
+    if (type < 0 || type >= static_cast<int>(active.size())) return true;
+    return active[type];
 }
 
 std::vector<std::function<void()>> buildGradientPrewarmSteps() {
+    auto active = activeGradientTypes();
     std::vector<std::function<void()>> steps;
+    if (!hasActiveGradientType(active)) return steps;
     steps.reserve((cacheIDs.size() + uiKeys.size()) * 4);
 
     for (const auto& str : cacheIDs) {
+        if (!keyTypeIsActive(str, active)) continue;
         steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, false)]() {
             GradientUtils::createShader(key, true, false, false);
         });
@@ -261,6 +285,7 @@ std::vector<std::function<void()>> buildGradientPrewarmSteps() {
     }
 
     for (const auto& str : uiKeys) {
+        // The editor preview keys are not tied to a saved type, so they all go.
         // linear (blend=false, line=false) and line (blend=false, line=true)
         steps.push_back([key = fmt::format(fmt::runtime(fmt::format("{}"_spr, str)), true, false)]() {
             GradientUtils::createShader(key, true, false, false);
@@ -285,10 +310,14 @@ std::vector<std::function<void()>> buildGradientPrewarmSteps() {
 void GradientCache::prewarmShaders() {
     if (isModDisabled()) return;
     if (!Mod::get()->getSettingValue<bool>(kSettingPreloadShaders)) return;
-    if (!hasAnySavedGradient()) return;
+
+    // No saved gradients means no key is ever looked up, so the (empty) step
+    // list is the only thing built.
+    auto steps = buildGradientPrewarmSteps();
+    if (steps.empty()) return;
 
     GradientUtils::hideSprite(CCSprite::create());
-    runGradientPrewarm(buildGradientPrewarmSteps());
+    runGradientPrewarm(std::move(steps));
 }
 
 

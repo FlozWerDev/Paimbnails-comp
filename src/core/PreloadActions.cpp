@@ -13,6 +13,7 @@
 #include "../features/global-icon/services/GlobalIconStorage.hpp"
 #include "../utils/HttpClient.hpp"
 #include "../utils/MainThreadDelay.hpp"
+#include "../utils/ThreadTracker.hpp"
 
 #include <functional>
 
@@ -145,10 +146,15 @@ void startFullPreload() {
         schedulePrefetchEmotes();
     });
     // Downloaded global icons pile up one directory per visited profile; trim
-    // the oldest once the startup rush is over.
+    // the oldest once the startup rush is over. disk-only, so it runs off the
+    // main thread instead of hitching the menu 20s in.
     scheduleAfterGameLoaded(20.0f, []() {
         if (paimon::isRuntimeShuttingDown()) return;
-        paimon::globalicon::GlobalIconStorage::get().pruneCache();
+        paimon::ThreadTracker::get().spawn([]() {
+            geode::utils::thread::setName("PaimonGlobalIconPrune");
+            if (paimon::isRuntimeShuttingDown()) return;
+            paimon::globalicon::GlobalIconStorage::get().pruneCache();
+        });
     });
 }
 

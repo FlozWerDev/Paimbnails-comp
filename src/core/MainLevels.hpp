@@ -130,14 +130,33 @@ inline int64_t mainLevelsCachedAtEpoch() {
     return geode::Mod::get()->getSavedValue<int64_t>(kMainLevelsCachedAtKey, 0);
 }
 
+// allMainLevelThumbnailsOnDisk does up to 44 stat calls, and startup checks
+// this from both LoadingLayer and the prefetch path. Two or three full scans
+// add up on a slow drive, so the answer is cached for the session once known.
+inline std::atomic<int>& mainLevelsFreshCache() {
+    static std::atomic<int> value{-1}; // -1 unknown, 0 no, 1 yes
+    return value;
+}
+
+inline void invalidateMainLevelsFreshCache() {
+    mainLevelsFreshCache().store(-1, std::memory_order_release);
+}
+
 inline void markMainLevelsCached() {
     geode::Mod::get()->setSavedValue<int64_t>(kMainLevelsCachedAtKey, mainLevelsNowEpoch());
+    invalidateMainLevelsFreshCache();
 }
 
 inline bool areMainLevelsFreshlyCached() {
+    int cached = mainLevelsFreshCache().load(std::memory_order_acquire);
+    if (cached >= 0) return cached == 1;
+
     int64_t cachedAt = mainLevelsCachedAtEpoch();
-    if (!isMainLevelsCacheAgeFresh(cachedAt, mainLevelsNowEpoch())) return false;
-    return allMainLevelThumbnailsOnDisk();
+    bool fresh = isMainLevelsCacheAgeFresh(cachedAt, mainLevelsNowEpoch())
+        && allMainLevelThumbnailsOnDisk();
+
+    mainLevelsFreshCache().store(fresh ? 1 : 0, std::memory_order_release);
+    return fresh;
 }
 
 } // namespace paimon
